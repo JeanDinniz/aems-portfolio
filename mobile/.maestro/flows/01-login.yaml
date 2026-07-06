@@ -1,0 +1,33 @@
+# Fluxo 1 — Login → bootstrap → lista de O.S.
+#
+# Cobre: tela de login, autenticação, bootstrap pós-login (permissões + lojas)
+# que renderiza a Home, e navegação até a lista de Ordens de Serviço.
+#
+# Pré-requisitos:
+#  - Usuário de teste válido com permissão de ver O.S. (aba "O.S." visível).
+#  - App apontando para o ambiente HML (ver README → Ambiente/API).
+#
+# Variáveis: APP_ID, EMAIL, SENHA (ver README → Variáveis).
+appId: ${APP_ID}
+---
+# Começa do zero: limpa estado (SecureStore/AsyncStorage) para forçar o login.
+- launchApp:
+    clearState: true
+
+# --- Login (reusa o subflow) ---
+- runFlow: ../subflows/login.yaml
+
+# --- Bootstrap concluído: a Home está no ar ---
+- assertVisible: 'Wash Control'
+# Um dos indicadores da grade 2x2 confirma que a Home montou de fato.
+- assertVisible: 'Ordens em Atraso'
+
+# --- Navega até a lista de O.S. pela aba inferior ---
+# "O.S." é o rótulo (tabBarLabel) da aba de Ordens de Serviço.
+- tapOn: 'O.S.'
+- extendedWaitUntil:
+    visible: 'Ordens de Serviço'   # título do header da lista
+    timeout: 20000
+# A busca ("Buscar por placa ou O.S.") só existe na tela de lista → confirma a tela.
+- assertVisible:
+    id: 'Buscar por placa ou O.S.'

@@ -1,0 +1,23 @@
+{
+  "name": "AEMS — Sistema de Gestão",
+  "short_name": "AEMS",
+  "description": "Sistema de gestão para rede de lojas de estética automotiva",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1A1A1A",
+  "theme_color": "#F5A800",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/brand/favicon.png",
+      "sizes": "1000x1000",
+      "type": "image/png"
+    },
+    {
+      "src": "/brand/favicon.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

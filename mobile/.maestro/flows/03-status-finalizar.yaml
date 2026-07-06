@@ -1,0 +1,70 @@
+# Fluxo 3 — Trocar status → finalizar O.S.
+#
+# Abre uma O.S. da lista e conduz a troca de status pelo StatusChangeSheet,
+# respeitando as transições REAIS (waiting → doing → ready). Nunca usa
+# quality_check/delivered (não existem no sistema).
+#
+# Rótulos do StatusChangeSheet (accessibilityLabel das opções):
+#   "Iniciar O.S"     → doing   (waiting → in_progress)
+#   "Finalizado"      → ready   (completed)  ← finalização SIMPLES (sem foto/bobina)
+#   "Lançado Errado"  → wrong
+#   "Voltar para Aguardando"
+# Após escolher a opção há um passo de CONFIRMAÇÃO com o botão "Confirmar".
+#
+# Estratégia: busca a O.S. pela PLACA_TESTE (a mesma do fluxo 2, se rodado antes)
+# para abrir uma O.S. conhecida. Se a O.S. estiver "Aguardando", inicia primeiro;
+# depois finaliza. O fluxo tolera os dois estados iniciais (waiting ou doing).
+#
+# Pré-requisito: existir ao menos 1 O.S. NÃO finalizada/cancelada para essa placa
+# (o fluxo 2 cria uma; ou informe uma PLACA_TESTE existente no HML).
+#
+# Variáveis: APP_ID, EMAIL, SENHA, PLACA_TESTE.
+appId: ${APP_ID}
+---
+- launchApp
+- runFlow: ../subflows/login.yaml
+
+# --- Lista de O.S. + busca pela placa ---
+- tapOn: 'O.S.'
+- assertVisible: 'Ordens de Serviço'
+- tapOn:
+    id: 'Buscar por placa ou O.S.'
+- inputText: ${PLACA_TESTE}
+- hideKeyboard
+# Aguarda a lista filtrar (debounce ~400ms) e o card aparecer.
+- extendedWaitUntil:
+    visible: 'Visualizar'
+    timeout: 20000
+
+# --- Abre o detalhe da primeira O.S. (botão "Visualizar" do primeiro card) ---
+- tapOn:
+    text: 'Visualizar'
+    index: 0
+# O detalhe tem a seção "Detalhes" e as ações de status.
+- assertVisible: 'Detalhes'
+
+# --- Se estiver "Aguardando", inicia a O.S. antes de finalizar ---
+- runFlow:
+    when:
+        visible: 'Iniciar O.S'
+    commands:
+        - tapOn: 'Iniciar O.S'          # abre o StatusChangeSheet
+        - assertVisible: 'Alterar status'   # título do sheet
+        - tapOn: 'Iniciar O.S'          # opção doing dentro do sheet
+        - assertVisible: 'Confirmar'
+        - tapOn: 'Confirmar'
+        - extendedWaitUntil:
+            visible: 'Alterar status'   # botão de ação após refetch
+            timeout: 20000
+
+# --- Finaliza: abre "Alterar status" → "Finalizado" → "Confirmar" ---
+- tapOn: 'Alterar status'
+- assertVisible: 'Alterar status'       # título do sheet
+- tapOn: 'Finalizado'
+- assertVisible: 'Confirmar'
+- tapOn: 'Confirmar'
+
+# --- Confirmação: toast de sucesso ---
+- extendedWaitUntil:
+    visible: 'Status alterado para "Finalizado".'
+    timeout: 30000

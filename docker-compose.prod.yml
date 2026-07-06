@@ -1,0 +1,203 @@
+version: '3.8'
+
+services:
+  # Nginx reverse proxy — serves static frontend and proxies API/WebSocket
+  nginx:
+    image: nginx:alpine
+    container_name: aems_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend_dist:/var/www/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - api
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # FastAPI application (production — no --reload, single worker for 1GB droplet)
+  api:
+    image: ${DOCKER_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aems_api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips '*'
+    env_file: .env.production
+    volumes:
+      - uploads_data:/app/uploads
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Celery worker for background tasks
+  celery_worker:
+    image: ${DOCKER_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aems_celery_worker
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    env_file: .env.production
+    # Healthcheck herdado da imagem (curl /health) so vale para a API; desabilita para nao reportar falso unhealthy
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Celery beat scheduler for periodic tasks
+  celery_beat:
+    image: ${DOCKER_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aems_celery_beat
+    # O container roda como usuario sem escrita no workdir; beat grava o schedule em /tmp
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    env_file: .env.production
+    # Healthcheck herdado da imagem (curl /health) so vale para a API; desabilita para nao reportar falso unhealthy
+    healthcheck:
+      disable: true
+    depends_on:
+      - redis
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: aems_postgres
+    env_file: .env.production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No external ports exposed — access only via internal Docker network
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aems_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis for caching and Celery broker
+  redis:
+    image: redis:7-alpine
+    container_name: aems_redis
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    # No external ports exposed — access only via internal Docker network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # MinIO — S3-compatible object storage for photo uploads
+  minio:
+    image: minio/minio:latest
+    container_name: aems_minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    # Ports not exposed externally — API accesses via http://minio:9000
+    # To create bucket on first run: temporarily expose 9001 for console access
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploads_data:
+    driver: local
+  minio_data:
+    driver: local

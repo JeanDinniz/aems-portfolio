@@ -1,0 +1,126 @@
+name: Mobile CI
+
+# CI do app mobile (Expo/React Native) em `mobile/`.
+# Fluxo do projeto (time solo): develop = HML, main = produção; sem PR obrigatório.
+# - Qualidade (lint/type-check/test) roda em todo push/PR que toque `mobile/**`.
+# - Build EAS é OPCIONAL e guardado: só dispara em push nas branches certas E
+#   somente se o secret EXPO_TOKEN estiver configurado (senão pula sem falhar).
+#   Usa `--no-wait`: enfileira o build nos servidores da EAS sem prender o runner
+#   do Actions (mínimo de minutos consumidos). Submit às lojas NÃO é automático
+#   (ver docs/mobile — evita envio acidental).
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'mobile/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'mobile/**'
+
+jobs:
+  quality:
+    name: Lint, Type Check & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript type check
+        run: npm run type-check
+
+      - name: Jest
+        run: npm test -- --ci
+
+  # Detecta se o secret EXPO_TOKEN existe (secrets não podem ser lidos em `if`
+  # de job diretamente; expomos como output).
+  check-secrets:
+    name: Check EAS credentials
+    runs-on: ubuntu-latest
+    outputs:
+      has_expo_token: ${{ steps.check.outputs.has_expo_token }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "has_expo_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_expo_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::EXPO_TOKEN não configurado — build EAS será pulado. Configure em Settings → Secrets para habilitar builds no CI."
+          fi
+
+  # HML: build de homologação (Android) a cada push na develop.
+  build-preview:
+    name: EAS Build (preview / HML)
+    needs: [quality, check-secrets]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop' &&
+      needs.check-secrets.outputs.has_expo_token == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Set up EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: EAS Build (Android, perfil preview)
+        run: eas build --platform android --profile preview --non-interactive --no-wait
+
+  # Produção: build de release (Android) ao chegar código na main (merge manual).
+  build-production:
+    name: EAS Build (production)
+    needs: [quality, check-secrets]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.check-secrets.outputs.has_expo_token == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Set up EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: EAS Build (Android, perfil production)
+        run: eas build --platform android --profile production --non-interactive --no-wait

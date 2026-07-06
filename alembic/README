@@ -1,0 +1,7 @@
+Generic single-database configuration for AEMS.
+
+Commands:
+- Create migration: alembic revision --autogenerate -m "description"
+- Apply migrations: alembic upgrade head
+- Rollback: alembic downgrade -1
+- Show history: alembic history

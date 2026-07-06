@@ -1,0 +1,80 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ['./src/**/*.{ts,tsx}'],
+  presets: [require('nativewind/preset')],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          DEFAULT: '#F5B800',
+          hover: '#FFB800',
+          black: '#1A1A1A',
+        },
+        primary: {
+          50: '#FFF8E1',
+          100: '#FFECB3',
+          200: '#FFE082',
+          300: '#FFD54F',
+          400: '#FCAF16',
+          500: '#F5A000',
+          600: '#E89200',
+          700: '#D47F00',
+          800: '#B86D00',
+          900: '#8C5200',
+        },
+        neutral: {
+          50: '#F8F9FB',
+          100: '#F0F2F5',
+          150: '#E4E7EC',
+          200: '#D0D5DD',
+          300: '#98A2B3',
+          400: '#667085',
+          500: '#475467',
+          600: '#344054',
+          700: '#1D2939',
+          800: '#141B2D',
+          900: '#0C111D',
+          950: '#080B14',
+        },
+        success: { DEFAULT: '#12B76A', light: '#ECFDF3', dark: '#34D399' },
+        warning: { DEFAULT: '#F79009', light: '#FFFAEB', dark: '#FBBF24' },
+        error: { DEFAULT: '#F04438', light: '#FEF3F2', dark: '#F87171' },
+        info: { DEFAULT: '#2E90FA', light: '#EFF8FF', dark: '#60A5FA' },
+        purple: { DEFAULT: '#7A5AF8', light: '#F4F3FF', dark: '#A48AFB' },
+        stock: { green: '#12B76A', yellow: '#F79009', red: '#F04438' },
+        // Superfícies do tema escuro (06_DESIGN_SYSTEM §2.2 / globals.css .dark)
+        dark: {
+          bg: '#111111',
+          surface: '#1A1A1A',
+          elevated: '#222222',
+          input: '#0D0D0D',
+          border: '#2A2A2A',
+          'border-soft': '#1E1E1E',
+          'border-strong': '#333333',
+          text: '#FFFFFF',
+          'text-muted': '#999999',
+          'text-subtle': '#555555',
+        },
+      },
+      fontFamily: {
+        // DM Sans — corpo/UI. Pesos carregados: Regular/Medium/SemiBold/Bold.
+        sans: ['DMSans_400Regular'],
+        'sans-medium': ['DMSans_500Medium'],
+        'sans-semibold': ['DMSans_600SemiBold'],
+        'sans-bold': ['DMSans_700Bold'],
+        // Barlow — títulos/display. Pesos carregados: SemiBold/Bold.
+        display: ['Barlow_600SemiBold'],
+        'display-bold': ['Barlow_700Bold'],
+      },
+      borderRadius: {
+        sm: 6,
+        DEFAULT: 8,
+        lg: 12,
+        xl: 16,
+        '2xl': 20,
+      },
+    },
+  },
+  plugins: [],
+};

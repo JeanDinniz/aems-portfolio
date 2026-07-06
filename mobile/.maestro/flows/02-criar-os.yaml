@@ -1,0 +1,135 @@
+# Fluxo 2 — Criar O.S. com foto → upload → submissão.
+#
+# Cobre a regra de negócio de criação (doc 03 / service.py):
+#   - mínimo 1 foto (Foto da O.S.)  ← passo crítico, ver README → Foto no emulador
+#   - placa/chassi válido
+#   - ao menos 1 serviço
+#   - tipo (Normal/Cortesia/Retorno), departamento, data (default hoje),
+#     loja, modelo, consultor (obrigatório quando não é galpão)
+#
+# IMPORTANTE sobre a FOTO:
+#   O Maestro NÃO mocka a câmera. Este fluxo usa a GALERIA e assume que há ao
+#   menos 1 imagem pré-carregada na galeria do emulador/aparelho (README explica
+#   como semear). Após escolher a foto, o app comprime e faz upload; o botão
+#   "Salvar" fica "Enviando fotos..." até o upload terminar — o fluxo espera o
+#   rótulo voltar a "Salvar" antes de submeter.
+#
+# Seletores dinâmicos (dependem dos dados do ambiente) via variáveis:
+#   MODELO_TESTE     → rótulo do modelo no sheet "Selecionar modelo"
+#   CONSULTOR_TESTE  → rótulo do consultor no sheet "Selecionar consultor"
+#   SERVICO_TESTE    → rótulo do serviço no ServiceItemPicker
+#   DEPARTAMENTO     → label do chip de departamento (ex.: "Estética", "Película")
+#   PLACA_TESTE      → placa/chassi válido (ex.: ABC1D23)
+# Loja: se o usuário só tem 1 loja, o campo é fixo (sem sheet) — o fluxo trata
+#       os dois casos abaixo. Se houver várias lojas, defina LOJA_TESTE.
+#
+# Variáveis: APP_ID, EMAIL, SENHA, PLACA_TESTE, DEPARTAMENTO, MODELO_TESTE,
+#            CONSULTOR_TESTE, SERVICO_TESTE, (opcional) LOJA_TESTE.
+appId: ${APP_ID}
+---
+- launchApp
+# Garante sessão (loga se necessário; no-op se já logado).
+- runFlow: ../subflows/login.yaml
+
+# --- Abre a lista de O.S. e o formulário de criação ---
+- tapOn: 'O.S.'
+- assertVisible: 'Ordens de Serviço'
+# FAB "Nova O.S" (accessibilityLabel "Nova ordem de serviço").
+- tapOn:
+    id: 'Nova ordem de serviço'
+- assertVisible: 'Lançar O.S'
+
+# --- Loja (só quando há várias lojas; com 1 loja o campo é fixo) ---
+- runFlow:
+    when:
+        visible: 'Selecionar loja...'
+    commands:
+        - tapOn: 'Selecionar loja...'
+        - assertVisible: 'Selecionar loja'
+        - tapOn: ${LOJA_TESTE}
+
+# --- Tipo: Normal (chip) ---
+- tapOn: 'Normal'
+
+# --- Departamento (chip com o label do depto) ---
+- tapOn: ${DEPARTAMENTO}
+
+# --- Data do serviço: já vem preenchida com hoje (default) → não mexe ---
+
+# --- Nº O.S. Concessionária (obrigatório fora de VN/VD/VU) ---
+# Preenche por segurança; se o depto for de venda o campo nem aparece (o
+# tapOn/inputText abaixo fica condicionado à visibilidade do rótulo).
+- runFlow:
+    when:
+        visible: 'Nº O.S. Concessionária'
+    commands:
+        - tapOn:
+            id: 'Nº O.S. Concessionária'
+        - inputText: '99999'
+        - hideKeyboard
+
+# --- Placa / Chassi ---
+- tapOn:
+    id: 'Placa / Chassi *'
+- inputText: ${PLACA_TESTE}
+- hideKeyboard
+
+# --- Modelo (sheet "Selecionar modelo") ---
+- tapOn: 'Selecionar modelo...'
+- assertVisible: 'Selecionar modelo'
+- tapOn: ${MODELO_TESTE}
+
+# --- Cor ---
+- tapOn:
+    id: 'Cor *'
+- inputText: 'Preto'
+- hideKeyboard
+
+# --- Consultor (obrigatório quando não é galpão) ---
+- tapOn: 'Selecionar consultor...'
+- assertVisible: 'Selecionar consultor'
+- tapOn: ${CONSULTOR_TESTE}
+
+# --- Serviços (ServiceItemPicker → sheet multi-select "Selecionar serviços") ---
+# O campo tem accessibilityLabel "Selecionar serviços. N selecionado(s)."; o
+# id casa por substring. Abre o sheet e marca 1 serviço (checkbox, o sheet fica
+# aberto por ser multi-select) e depois fecha arrastando pra baixo.
+- tapOn:
+    id: 'Selecionar serviços'
+- assertVisible: 'Selecionar serviços'
+- tapOn: ${SERVICO_TESTE}
+# Fecha o sheet multi-select arrastando pra baixo (não fecha ao marcar item).
+- swipe:
+    from: 50%, 20%
+    to: 50%, 90%
+# Confirma que o serviço entrou na lista de escolhidos abaixo do campo.
+- assertVisible: ${SERVICO_TESTE}
+
+# --- FOTO DA O.S. (mínimo 1) via galeria ---
+- tapOn:
+    id: 'Adicionar foto'
+- assertVisible: 'Adicionar foto'      # título do Sheet de origem
+- tapOn: 'Escolher da galeria'
+# >>> Passo NATIVO da galeria do SO (fora do app) <<<
+# A UI da galeria varia por OS/versão. Ver README → "Foto no emulador".
+# Normalmente basta tocar na primeira miniatura. Ajuste o seletor se necessário.
+- tapOn:
+    point: 20%, 35%      # primeira imagem no grid da galeria (fallback por posição)
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible:
+        id: 'Foto enviada'     # accessibilityLabel do thumb quando o upload conclui
+    timeout: 60000
+
+# --- Submissão ---
+# Espera o rótulo do botão voltar a "Salvar" (deixa de ser "Enviando fotos...").
+- extendedWaitUntil:
+    visible: 'Salvar'
+    timeout: 60000
+- tapOn: 'Salvar'
+
+# --- Confirmação: toast de sucesso e retorno à lista ---
+- extendedWaitUntil:
+    visible: 'O.S. lançada com sucesso!'
+    timeout: 30000
+- assertVisible: 'Ordens de Serviço'   # de volta na lista

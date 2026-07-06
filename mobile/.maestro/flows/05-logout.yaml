@@ -1,0 +1,44 @@
+# Fluxo 5 — Logout limpa estado (volta ao login).
+#
+# Entra logado, navega Mais → Perfil → Sair, confirma no Alert nativo e valida
+# que o app volta para a tela de login. Em seguida RELANÇA o app SEM clearState
+# para provar que o logout limpou a sessão persistida (SecureStore/AsyncStorage):
+# o app deve abrir no login, não na Home.
+#
+# Variáveis: APP_ID, EMAIL, SENHA.
+appId: ${APP_ID}
+---
+- launchApp:
+    clearState: true
+- runFlow: ../subflows/login.yaml
+- assertVisible: 'Wash Control'
+
+# --- Mais → Perfil ---
+- tapOn: 'Mais'                 # rótulo da aba
+- assertVisible: 'Mais'         # header da aba Mais
+- tapOn:
+    id: 'Perfil'                # accessibilityLabel do atalho
+- assertVisible: 'Perfil'       # título da tela de perfil
+
+# --- Sair (abre Alert nativo de confirmação) ---
+- tapOn: 'Sair'
+# O Alert tem "Cancelar" e "Sair"; confirma no botão destrutivo "Sair".
+- tapOn:
+    text: 'Sair'
+    index: 1        # 0 = o item "Sair" da tela; 1 = o botão "Sair" do Alert
+
+# --- Verificação: voltou ao login ---
+- extendedWaitUntil:
+    visible:
+        id: 'login-email'
+    timeout: 20000
+- assertVisible: 'Entrar'
+- assertVisible: 'AEMS'   # marca da tela de login (NÃO "Wash Control")
+
+# --- Prova de que a sessão foi limpa: relança SEM clearState ---
+- launchApp                      # sem clearState → estado persistido é reusado
+- extendedWaitUntil:
+    visible:
+        id: 'login-email'        # continua no login → sessão realmente limpa
+    timeout: 20000
+- assertNotVisible: 'Wash Control'

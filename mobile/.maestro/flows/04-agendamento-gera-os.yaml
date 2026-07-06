@@ -1,0 +1,153 @@
+# Fluxo 4 — Criar agendamento → gerar O.S.
+#
+# Parte 1: cria um agendamento (AppointmentFormFields) num departamento
+#          NÃO-película (para o passo de serviços ser um multi-select simples).
+# Parte 2: abre o agendamento recém-criado e gera a O.S. (GenerateOSScreen exige
+#          ≥1 foto do veículo — mesmo pipeline de galeria do fluxo 2).
+#
+# Regras cobertas:
+#   - loja + tipo + departamento + data (default hoje) + horário + placa +
+#     modelo + cor + consultor + ≥1 serviço
+#   - Gerar O.S.: POST generate-os precisa de ≥1 foto → passo de galeria.
+#
+# Pré-requisitos:
+#   - Usuário com permissão de ver/editar Agendamentos e "scheduling_os".edit.
+#   - Uma imagem na galeria do emulador (ver README → "Foto no emulador").
+#
+# Seletores dinâmicos por variável:
+#   DEPARTAMENTO_AGD → chip de departamento NÃO-película (ex.: "Estética")
+#   MODELO_TESTE, CONSULTOR_TESTE, SERVICO_AGD → rótulos nos sheets
+#   PLACA_AGD → placa/chassi válido para o agendamento
+#   HORARIO_AGD → não usado por seletor (o time picker é nativo); ver observação.
+#   (opcional) LOJA_TESTE quando houver várias lojas.
+#
+# Variáveis: APP_ID, EMAIL, SENHA, PLACA_AGD, DEPARTAMENTO_AGD, MODELO_TESTE,
+#            CONSULTOR_TESTE, SERVICO_AGD, (opcional) LOJA_TESTE.
+appId: ${APP_ID}
+---
+- launchApp
+- runFlow: ../subflows/login.yaml
+
+# =========================== PARTE 1: criar agendamento ===========================
+- tapOn: 'Agendamentos'
+- assertVisible: 'Agendamentos'          # título do header da lista
+# FAB "Novo" (accessibilityLabel "Novo agendamento").
+- tapOn:
+    id: 'Novo agendamento'
+- assertVisible: 'Novo Agendamento'      # header da tela de criação
+
+# --- Loja (só quando há várias lojas) ---
+- runFlow:
+    when:
+        visible: 'Selecionar loja...'
+    commands:
+        - tapOn: 'Selecionar loja...'
+        - assertVisible: 'Selecionar loja'
+        - tapOn: ${LOJA_TESTE}
+
+# --- Tipo: Normal ---
+- tapOn: 'Normal'
+
+# --- Departamento (NÃO-película) ---
+- tapOn: ${DEPARTAMENTO_AGD}
+
+# --- Data de entrega: default hoje → não mexe.  Horário (time picker NATIVO) ---
+# O campo "HH:MM" abre o DateTimePicker nativo. No Android, "OK" confirma a hora
+# atual. Ajuste conforme o SO se o botão tiver outro rótulo.
+- tapOn:
+    id: 'HH:MM'
+- tapOn:
+    text: 'OK'
+    optional: true          # em alguns emuladores o picker confirma sozinho
+
+# --- Nº O.S. Concessionária (opcional aqui) ---
+- runFlow:
+    when:
+        visible: 'Nº O.S. Concessionária'
+    commands:
+        - tapOn:
+            id: 'Nº O.S. Concessionária'
+        - inputText: 'OS-E2E-001'
+        - hideKeyboard
+
+# --- Placa / Chassi ---
+- tapOn:
+    id: 'Placa / Chassi *'
+- inputText: ${PLACA_AGD}
+- hideKeyboard
+
+# --- Modelo ---
+- tapOn: 'Selecionar modelo...'
+- assertVisible: 'Selecionar modelo'
+- tapOn: ${MODELO_TESTE}
+
+# --- Cor ---
+- tapOn:
+    id: 'Cor *'
+- inputText: 'Branco'
+- hideKeyboard
+
+# --- Consultor ---
+- tapOn: 'Selecionar consultor...'
+- assertVisible: 'Selecionar consultor'
+- tapOn: ${CONSULTOR_TESTE}
+
+# --- Serviços (multi-select do sheet "Selecionar serviços") ---
+- tapOn: 'Selecionar serviços...'
+- assertVisible: 'Selecionar serviços'
+- tapOn: ${SERVICO_AGD}
+- swipe:
+    from: 50%, 20%
+    to: 50%, 90%
+
+# --- Cria o agendamento ---
+- tapOn: 'Criar agendamento'
+# Sucesso → volta para a lista de Agendamentos.
+- extendedWaitUntil:
+    visible: 'Agendamentos'
+    timeout: 30000
+
+# =========================== PARTE 2: gerar O.S. ===========================
+# Abre o agendamento recém-criado pela placa (busca na lista).
+- tapOn:
+    id: 'Buscar por placa ou O.S.'
+- inputText: ${PLACA_AGD}
+- hideKeyboard
+# O card do agendamento tem accessibilityLabel "Agendamento <placa>, <status>".
+- extendedWaitUntil:
+    visible:
+        id: 'Agendamento ${PLACA_AGD}'
+    timeout: 20000
+- tapOn:
+    id: 'Agendamento ${PLACA_AGD}'
+# Detalhe do agendamento + ação "Gerar O.S.".
+- assertVisible: 'Detalhes'
+- tapOn: 'Gerar O.S.'
+- assertVisible: 'Gerar O.S.'            # header da tela GenerateOS
+
+# --- Foto do veículo (≥1) via galeria ---
+- tapOn:
+    id: 'Adicionar foto'
+- assertVisible: 'Adicionar foto'        # título do Sheet de origem
+- tapOn: 'Escolher da galeria'
+# >>> Passo NATIVO da galeria — ver README → "Foto no emulador" <<<
+- tapOn:
+    point: 20%, 35%
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible:
+        id: 'Foto enviada'
+    timeout: 60000
+
+# --- Gera a O.S. (o botão de ação está no rodapé; o texto "Gerar O.S." também
+#     aparece no header, então desambiguamos pegando a ÚLTIMA ocorrência) ---
+- extendedWaitUntil:
+    visible: 'Gerar O.S.'
+    timeout: 60000
+- tapOn:
+    text: 'Gerar O.S.'
+    index: 1          # 0 = título do header; 1 = botão de ação no rodapé
+# Sucesso: toast "O.S. <numero> gerada com sucesso!" e volta p/ lista (popToTop).
+- extendedWaitUntil:
+    visible: 'gerada com sucesso'
+    timeout: 30000

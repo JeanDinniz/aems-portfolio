@@ -1,0 +1,33 @@
+# Subflow reutilizável: faz login e espera a Home carregar.
+#
+# NÃO chama launchApp — quem chama decide se relança com clearState. Assim este
+# subflow serve tanto no início de um fluxo (após launchApp) quanto no meio.
+#
+# Requer as variáveis EMAIL e SENHA (ver README → Variáveis). O `runFlow` que
+# invoca este subflow herda as variáveis do processo do Maestro.
+#
+# Seletores:
+#  - testID "login-email" / "login-password"  (adicionados em LoginScreen.tsx)
+#  - "Entrar"          → texto do PrimaryButton
+#  - "Wash Control"    → texto sempre presente no header da Home (pós-login)
+appId: ${APP_ID}
+---
+# Se já estivermos logados (Home visível), não há tela de login — pula tudo.
+- runFlow:
+    when:
+        notVisible: 'Wash Control'
+    commands:
+        - assertVisible:
+            id: 'login-email'
+        - tapOn:
+            id: 'login-email'
+        - inputText: ${EMAIL}
+        - tapOn:
+            id: 'login-password'
+        - inputText: ${SENHA}
+        - hideKeyboard
+        - tapOn: 'Entrar'
+        # Espera o bootstrap (permissões + lojas) e a Home renderizar.
+        - extendedWaitUntil:
+            visible: 'Wash Control'
+            timeout: 30000

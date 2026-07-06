@@ -1,0 +1,16 @@
+# Configuração do Maestro para o app mobile AEMS (AEMS).
+# Docs: https://docs.maestro.dev/reference/configuration/workspace-configuration
+#
+# `flows` limita quais arquivos entram numa execução de pasta
+# (`maestro test .maestro/flows`) e a ORDEM em que rodam. Os subflows
+# (.maestro/subflows/*) são reutilizáveis via `runFlow` e ficam de fora da
+# seleção — não são fluxos completos.
+#
+# As credenciais/dados NÃO ficam aqui: são passados por variáveis de ambiente
+# no comando (ver README.md → "Variáveis"). Placeholders documentados lá.
+flows:
+    - flows/01-login.yaml
+    - flows/02-criar-os.yaml
+    - flows/03-status-finalizar.yaml
+    - flows/04-agendamento-gera-os.yaml
+    - flows/05-logout.yaml

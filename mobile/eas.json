@@ -1,0 +1,50 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "APP_ENV": "development"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "APP_ENV": "staging",
+        "API_URL": "https://aems.example.com/api/v1",
+        "WS_URL": "wss://aems.example.com/ws"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "channel": "production",
+      "env": {
+        "APP_ENV": "production",
+        "API_URL": "https://aems.example.com/api/v1",
+        "WS_URL": "wss://aems.example.com/ws"
+      }
+    }
+  },
+  "submit": {
+    "development": {},
+    "preview": {
+      "android": {
+        "track": "internal",
+        "serviceAccountKeyPath": "./play-service-account.json"
+      }
+    },
+    "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "draft",
+        "serviceAccountKeyPath": "./play-service-account.json"
+      }
+    }
+  }
+}
