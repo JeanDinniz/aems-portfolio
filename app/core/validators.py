@@ -116,3 +116,21 @@ def validate_vehicle_plate(v: str) -> str:
     if re.match(PLATE_REGEX, value) or re.match(CHASSI_VIDRO_REGEX, value):
         return value
     raise ValueError(PLATE_ERROR_MESSAGE)
+
+
+# ─── Tonalidade de película ───────────────────────────────────────────────────
+# Padrão G + dígitos (G05, G20, G35...) é armazenado em maiúsculas; outros
+# valores (ex.: "Incolor") apenas têm espaços das bordas removidos.
+_G_TONALITY_REGEX = re.compile(r"^[Gg]\d{1,3}$")
+
+
+def normalize_tonality(v: str | None) -> str | None:
+    """Normaliza tonalidade: trim sempre; upper para o padrão G##. Vazio vira None."""
+    if v is None:
+        return None
+    value = v.strip()
+    if not value:
+        return None
+    if _G_TONALITY_REGEX.match(value):
+        return value.upper()
+    return value

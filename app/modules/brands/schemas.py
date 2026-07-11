@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.schemas import PaginationMeta
+
 
 class BrandBase(BaseModel):
     """Base schema with common brand attributes."""
@@ -44,4 +46,4 @@ class BrandListResponse(BaseModel):
     """Schema for paginated brand list response."""
 
     items: list[BrandResponse]
-    pagination: dict
+    pagination: PaginationMeta

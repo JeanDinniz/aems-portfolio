@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_profile_permission
 from app.db.session import get_db
+from app.dependencies import PaginatedResponse
 from app.modules.auth.models import User
 from app.modules.scheduling import schemas, service
 
@@ -69,15 +70,8 @@ async def list_appointments(
         page=page,
         limit=limit,
     )
-    pages = (total + limit - 1) // limit if limit > 0 else 1
     return schemas.AppointmentListResponse(
-        items=items,
-        pagination={
-            "page": page,
-            "limit": limit,
-            "total": total,
-            "pages": pages,
-        },
+        **PaginatedResponse.create(items=items, total=total, page=page, limit=limit)
     )
 
 

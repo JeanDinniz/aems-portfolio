@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.core.schemas import PaginationMeta
+
 
 class AuditLogResponse(BaseModel):
     """Schema de resposta para um registro de auditoria."""
@@ -29,4 +31,4 @@ class AuditLogListResponse(BaseModel):
     """Schema de resposta paginada para lista de audit logs."""
 
     items: list[AuditLogResponse]
-    pagination: dict
+    pagination: PaginationMeta

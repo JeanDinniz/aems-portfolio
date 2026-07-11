@@ -285,6 +285,96 @@ describe('FechamentoScreen', () => {
         expect(getByText('R$ 130,00')).toBeTruthy();
     });
 
+    it('O.S. VN mista: lavagem vai ao card VN Lavagem, resto fica em VN, sem dupla contagem', async () => {
+        // O.S. VN com Lavagem completa com motor (R$38) + Polimento (R$135):
+        // partição por item entre "VN" e "VN Lavagem"; TOTAL GERAL soma R$173 e
+        // conta a O.S. UMA vez.
+        const verified = [
+            makeOrder({
+                id: 10,
+                department: 'vn',
+                items: [
+                    { service_id: 1, quantity: 1, unit_price: 38, service_name: 'Lavagem completa com motor' },
+                    { service_id: 2, quantity: 1, unit_price: 135, service_name: 'Polimento' },
+                ],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByText } = await renderScreen();
+
+        expect(getByText('VN')).toBeTruthy();
+        expect(getByText('VN Lavagem')).toBeTruthy();
+
+        // Valores particionados por item.
+        expect(getByText('R$ 38,00')).toBeTruthy(); // card VN Lavagem
+        expect(getByText('R$ 135,00')).toBeTruthy(); // card VN
+
+        expect(getByText('TOTAL GERAL — 1 O.S')).toBeTruthy();
+        expect(getByText('R$ 173,00')).toBeTruthy();
+    });
+
+    it('VU: Ducha e Test Drive contam como lavagem e vão para o card VU Lavagem', async () => {
+        const verified = [
+            makeOrder({
+                id: 11,
+                department: 'vu',
+                items: [
+                    { service_id: 1, quantity: 1, unit_price: 18, service_name: 'Ducha acordo 18,00' },
+                    { service_id: 2, quantity: 1, unit_price: 26, service_name: 'Test Drive' },
+                ],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByText, getAllByText, queryByText } = await renderScreen();
+
+        expect(getByText('VU Lavagem')).toBeTruthy();
+        // R$ 44,00 aparece no card VU Lavagem e no TOTAL GERAL.
+        expect(getAllByText('R$ 44,00').length).toBeGreaterThanOrEqual(1);
+        expect(getByText('TOTAL GERAL — 1 O.S')).toBeTruthy();
+        // Sem itens não-lavagem, o card VU nem aparece.
+        expect(queryByText('VU')).toBeNull();
+    });
+
+    it('export dos cards VN e VN Lavagem envia as listas de padrões de lavagem', async () => {
+        const verified = [
+            makeOrder({
+                id: 12,
+                department: 'vn',
+                items: [
+                    { service_id: 1, quantity: 1, unit_price: 38, service_name: 'Lavagem Teste Drive' },
+                    { service_id: 2, quantity: 1, unit_price: 135, service_name: 'Polimento' },
+                ],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Exportar VN Lavagem'));
+        });
+        await act(async () => {
+            fireEvent.press(getByLabelText('Exportar VN'));
+        });
+
+        expect(exportFechamentoMock).toHaveBeenCalledTimes(2);
+
+        const lavagemArg = exportFechamentoMock.mock.calls[0][0];
+        expect(lavagemArg).toMatchObject({ department: 'vn', is_return: false });
+        expect(lavagemArg.service_name_contains).toEqual(
+            expect.arrayContaining(['lavagem', 'ducha', 'test drive'])
+        );
+
+        const vnArg = exportFechamentoMock.mock.calls[1][0];
+        expect(vnArg).toMatchObject({ department: 'vn', is_return: false });
+        expect(vnArg.service_name_not_contains).toEqual(
+            expect.arrayContaining(['lavagem', 'ducha', 'test drive'])
+        );
+        expect(vnArg.service_name_contains).toBeUndefined();
+    });
+
     it('card Oficina Lavagem Simples aparece mesmo sem nenhuma lavagem no período', async () => {
         const verified = [
             makeOrder({

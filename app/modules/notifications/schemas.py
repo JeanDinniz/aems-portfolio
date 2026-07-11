@@ -7,16 +7,15 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
+from app.core.schemas import PaginationMeta
+
 
 class NotificationType(StrEnum):
     """Tipos de notificacao suportados."""
 
     ORDER_CREATED = "order_created"
-    APPROVAL_NEEDED = "approval_needed"
     INVENTORY_ALERT = "inventory_alert"
-    INCIDENT_REPORTED = "incident_reported"
     ORDER_COMPLETED = "order_completed"
-    QUALITY_FAILED = "quality_failed"
     SCHEDULING_CREATED = "scheduling_created"
 
 
@@ -39,7 +38,7 @@ class NotificationListResponse(BaseModel):
     """Schema para lista paginada de notificacoes."""
 
     items: list[NotificationResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class UnreadCountResponse(BaseModel):

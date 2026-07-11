@@ -48,7 +48,8 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useSuppliersAdmin, useCreateSupplier, useUpdateSupplier, useDeactivateSupplier } from '@/hooks/useSuppliers';
-import { suppliersService } from '@/services/api/suppliersService';
+import { useDebounce } from '@/hooks/useDebounce';
+import { suppliersService } from '@/services/api/suppliers.service';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { getApiErrorMessage } from '@/lib/api-error';
 import type { Supplier, SupplierCreate, SupplierUpdate } from '@/types/supplier';
@@ -534,8 +535,10 @@ export function SuppliersPage() {
 
     const isActiveFilter = statusFilter === 'all' ? undefined : statusFilter === 'active';
 
+    const debouncedSearch = useDebounce(search);
+
     const { data, isLoading } = useSuppliersAdmin({
-        search: search.trim() || undefined,
+        search: debouncedSearch.trim() || undefined,
         is_active: isActiveFilter,
         page: 1,
         limit: 100,
@@ -708,7 +711,7 @@ export function SuppliersPage() {
                                     <td className="px-4 py-3 text-right">
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
-                                                <Button variant="ghost" size="icon" className="text-[#F5A800]">
+                                                <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
                                                     <MoreHorizontal className="h-4 w-4" />
                                                 </Button>
                                             </DropdownMenuTrigger>

@@ -36,7 +36,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def get_password_hash(password: str) -> str:
-    """Gera hash bcrypt da senha."""
+    """Gera hash Argon2 da senha."""
     return pwd_context.hash(password)
 
 
@@ -78,6 +78,20 @@ def create_refresh_token(data: dict, expires_delta: timedelta | None = None) -> 
     jti = str(uuid.uuid4())
     to_encode.update({"exp": expire, "type": "refresh", "jti": jti})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM), jti
+
+
+def create_media_token(user_id: int) -> str:
+    """
+    Cria um JWT de acesso a mídia (fotos em /uploads).
+
+    Vai num cookie httpOnly com path=/uploads: o Nginx valida via auth_request
+    antes de servir cada imagem. Validade igual ao refresh token para não
+    quebrar imagens no meio de uma sessão longa. Só concede LEITURA de mídia —
+    não é aceito como access token em nenhum endpoint.
+    """
+    expire = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    payload = {"sub": str(user_id), "exp": expire, "type": "media"}
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 async def revoke_token_jti(redis_client, jti: str, ttl: int) -> None:
@@ -143,12 +157,11 @@ async def get_current_user(
         try:
             import json
 
-            import redis.asyncio as aioredis
+            from app.core.redis import get_redis
 
-            redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            redis_client = get_redis()
             is_revoked = await redis_client.get(f"token_blacklist:{jti}")
             active_raw = await redis_client.get(f"user_active_session:{user_id}")
-            await redis_client.aclose()
 
             if is_revoked:
                 raise AuthenticationError(detail="Token revogado")
@@ -164,7 +177,14 @@ async def get_current_user(
         except Exception as e:
             import logging
 
-            logging.getLogger(__name__).warning("Redis unavailable for token check: %s", str(e))
+            # ERROR (não warning): com Redis fora, revogação de token e sessão
+            # única deixam de valer — decisão fail-open consciente (disponibilidade
+            # acima de revogação), mas que precisa ser visível em monitoramento.
+            logging.getLogger(__name__).error(
+                "SECURITY: Redis indisponível para checagem de token — "
+                "revogação/sessão única NÃO estão sendo aplicadas: %s",
+                str(e),
+            )
 
     # Buscar usuário no banco (com perfis de acesso para filtro de lojas)
     from sqlalchemy.orm import selectinload as _selectinload

@@ -3,9 +3,10 @@ Supplier schemas - Pydantic models for supplier data validation.
 """
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.schemas import PaginationMeta
 
 
 class SupplierBase(BaseModel):
@@ -52,4 +53,4 @@ class SupplierListResponse(BaseModel):
     """Schema for paginated supplier list response."""
 
     items: list[SupplierResponse]
-    pagination: dict[str, Any]
+    pagination: PaginationMeta

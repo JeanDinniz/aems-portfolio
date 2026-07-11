@@ -206,17 +206,17 @@ class TestSvcAggMatchCaseInsensitive:
 
 
 class TestBuildItemFilterNone:
-    """Quando ambos os parâmetros são None, retorna None (sem filtro)."""
+    """Quando ambos os parâmetros são vazios, retorna None (sem filtro)."""
 
     def test_nenhum_param_retorna_none(self):
-        assert _build_item_filter(None, None) is None
+        assert _build_item_filter([], []) is None
 
 
 class TestBuildItemFilterContains:
     """service_name_contains: item passa se service existe e needle está no nome."""
 
     def setup_method(self):
-        self.f = _build_item_filter("lavagem simples", None)
+        self.f = _build_item_filter(["lavagem simples"], [])
 
     def test_item_com_nome_que_casa(self):
         item = _item("Lavagem Simples")
@@ -245,7 +245,7 @@ class TestBuildItemFilterNotContains:
     """service_name_not_contains: item passa se não casa (ou se service é None)."""
 
     def setup_method(self):
-        self.f = _build_item_filter(None, "lavagem simples")
+        self.f = _build_item_filter([], ["lavagem simples"])
 
     def test_item_sem_needle_passa(self):
         item = _item("Polimento")
@@ -269,11 +269,54 @@ class TestBuildItemFilterPrecedencia:
     """Quando ambos são fornecidos, contains tem precedência."""
 
     def test_contains_tem_precedencia_sobre_not_contains(self):
-        f = _build_item_filter("lavagem simples", "lavagem simples")
+        f = _build_item_filter(["lavagem simples"], ["lavagem simples"])
         # Com precedência de contains, item com "lavagem simples" passa
         assert f(_item("Lavagem Simples")) is True
         # E item sem "lavagem simples" não passa
         assert f(_item("Polimento")) is False
+
+
+# Lista usada pelos cards VN/VU Lavagem no frontend (web e mobile)
+_LAVAGEM_VN_VU = [
+    "lavagem", "ducha", "test drive", "teste drive", "lav c/aspira", "lav. simples", "lav test",
+]
+
+
+class TestBuildItemFilterAnyMatch:
+    """Múltiplos padrões (split VN/VU Lavagem): item casa se ALGUM needle está no nome."""
+
+    def setup_method(self):
+        self.f = _build_item_filter(_LAVAGEM_VN_VU, [])
+        self.f_not = _build_item_filter([], _LAVAGEM_VN_VU)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "VN Lavagem completa com motor",
+            "Lavagem com aspiração",
+            "VU Ducha acordo 18,00",
+            "Test Drive",
+            "Lavagem Teste Drive",
+            "LAV C/ASPIRAÇÃO",
+        ],
+    )
+    def test_lavagens_casam_com_contains(self, name):
+        assert self.f(_item(name)) is True
+
+    @pytest.mark.parametrize(
+        "name", ["Polimento", "Higienização", "VIP CAR Polimento+Higienização"]
+    )
+    def test_nao_lavagens_nao_casam_com_contains(self, name):
+        assert self.f(_item(name)) is False
+
+    def test_not_contains_exclui_qualquer_padrao(self):
+        assert self.f_not(_item("Ducha")) is False
+        assert self.f_not(_item("Lavagem completa com motor")) is False
+        assert self.f_not(_item("Polimento")) is True
+
+    def test_item_sem_service_segue_as_regras(self):
+        assert self.f(_item(None)) is False
+        assert self.f_not(_item(None)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -286,18 +329,24 @@ class TestPrefilterContains:
 
     def test_os_com_item_que_casa_e_mantida(self):
         order = _order("workshop", [_item("Lavagem Simples")], is_courtesy=True)
-        result = _prefilter_orders_by_service_name([order], "lavagem simples", None)
+        result = _prefilter_orders_by_service_name([order], ["lavagem simples"], [])
         assert result == [order]
 
     def test_os_sem_item_que_casa_e_omitida(self):
         order = _order("workshop", [_item("Polimento")])
-        result = _prefilter_orders_by_service_name([order], "lavagem simples", None)
+        result = _prefilter_orders_by_service_name([order], ["lavagem simples"], [])
         assert result == []
 
     def test_os_sem_itens_e_omitida(self):
         order = _order("workshop", [])
-        result = _prefilter_orders_by_service_name([order], "lavagem simples", None)
+        result = _prefilter_orders_by_service_name([order], ["lavagem simples"], [])
         assert result == []
+
+    def test_any_match_vn_ducha_e_mantida(self):
+        """Card VN Lavagem: O.S. só com Ducha casa com a lista de padrões."""
+        order = _order("vn", [_item("Ducha")])
+        result = _prefilter_orders_by_service_name([order], _LAVAGEM_VN_VU, [])
+        assert result == [order]
 
 
 class TestPrefilterNotContains:
@@ -306,7 +355,7 @@ class TestPrefilterNotContains:
     def test_cortesia_so_lavagem_e_omitida(self):
         """Card Cortesia não deve trazer O.S. cujo único serviço é Lavagem Simples."""
         order = _order("workshop", [_item("Lavagem Simples")], is_courtesy=True)
-        result = _prefilter_orders_by_service_name([order], None, "lavagem simples")
+        result = _prefilter_orders_by_service_name([order], [], ["lavagem simples"])
         assert result == []
 
     def test_os_mista_e_mantida(self):
@@ -315,19 +364,30 @@ class TestPrefilterNotContains:
             [_item("Lavagem Simples"), _item("Polimento")],
             is_courtesy=True,
         )
-        result = _prefilter_orders_by_service_name([order], None, "lavagem simples")
+        result = _prefilter_orders_by_service_name([order], [], ["lavagem simples"])
         assert result == [order]
 
     def test_os_originalmente_sem_itens_e_mantida(self):
         """O.S. sem itens pertence ao grupo Serviços — mantida (linha zerada original)."""
         order = _order("workshop", [])
-        result = _prefilter_orders_by_service_name([order], None, "lavagem simples")
+        result = _prefilter_orders_by_service_name([order], [], ["lavagem simples"])
         assert result == [order]
 
     def test_item_sem_service_mantem_a_os(self):
         """Item sem service não casa com not_contains → a O.S. ainda tem item válido."""
         order = _order("workshop", [_item("Lavagem Simples"), _item(None)])
-        result = _prefilter_orders_by_service_name([order], None, "lavagem simples")
+        result = _prefilter_orders_by_service_name([order], [], ["lavagem simples"])
+        assert result == [order]
+
+    def test_any_match_vn_so_lavagens_e_omitida(self):
+        """Card VN: O.S. só com lavagens (Lavagem + Ducha) sai do card de serviços."""
+        order = _order("vn", [_item("Lavagem completa com motor"), _item("Ducha")])
+        result = _prefilter_orders_by_service_name([order], [], _LAVAGEM_VN_VU)
+        assert result == []
+
+    def test_any_match_vn_mista_e_mantida(self):
+        order = _order("vn", [_item("Lavagem completa com motor"), _item("Polimento")])
+        result = _prefilter_orders_by_service_name([order], [], _LAVAGEM_VN_VU)
         assert result == [order]
 
 
@@ -336,11 +396,11 @@ class TestPrefilterSemParams:
 
     def test_sem_params_retorna_tudo(self):
         orders = [_order("workshop", [_item("Polimento")])]
-        assert _prefilter_orders_by_service_name(orders, None, None) == orders
+        assert _prefilter_orders_by_service_name(orders, [], []) == orders
 
     def test_contains_tem_precedencia(self):
         order = _order("workshop", [_item("Polimento")])
         result = _prefilter_orders_by_service_name(
-            [order], "lavagem simples", "lavagem simples"
+            [order], ["lavagem simples"], ["lavagem simples"]
         )
         assert result == []

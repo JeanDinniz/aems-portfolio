@@ -5,6 +5,7 @@ import { UsersTable } from '@/components/features/users/UsersTable';
 import { UserFilters } from '@/components/features/users/UserFilters';
 import { CreateUserDialog } from '@/components/features/users/CreateUserDialog';
 import { useUsers } from '@/hooks/useUsers';
+import { useDebounce } from '@/hooks/useDebounce';
 import { usersService } from '@/services/api/users.service';
 import { useAuthStore } from '@/stores/auth.store';
 import type { UserFilters as Filters } from '@/types/user.types';
@@ -17,7 +18,8 @@ export function UserManagementPage() {
 
     const hasPermission = useAuthStore((s) => s.hasPermission);
     const canEdit = hasPermission('users', 'edit');
-    const { users, total, isLoading } = useUsers(filters, page);
+    const debouncedSearch = useDebounce(filters.search);
+    const { users, total, isLoading } = useUsers({ ...filters, search: debouncedSearch }, page);
 
     const handleExport = async () => {
         setIsExporting(true);

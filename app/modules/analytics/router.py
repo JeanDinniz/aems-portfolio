@@ -19,6 +19,42 @@ from app.modules.auth.models import User
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
+# TTL curto: agregações do dashboard são caras (varrem service_orders inteira)
+# e toleram 30s de defasagem. A fila ao vivo (/dashboard/queue) fica FORA do
+# cache de propósito — é a única visão que precisa ser tempo-real.
+_ANALYTICS_CACHE_TTL = 30
+
+
+async def _cached(key: str, compute):
+    """
+    Cache de leitura fail-open para agregações do dashboard.
+
+    A chave DEVE incluir o escopo do usuário (flag galpão) e todos os params —
+    nunca cachear resultado de um perfil e servir para outro.
+
+    Em DEBUG o cache é desligado: dev quer dado fresco e a suíte de testes
+    reutiliza os mesmos períodos com dados diferentes (contaminaria).
+    """
+    from fastapi.encoders import jsonable_encoder
+
+    from app.config import get_settings
+    from app.core.redis import cache_json_get, cache_json_set
+
+    if get_settings().DEBUG:
+        return await compute()
+
+    cached = await cache_json_get(key)
+    if cached is not None:
+        return cached
+    result = await compute()
+    await cache_json_set(key, jsonable_encoder(result), _ANALYTICS_CACHE_TTL)
+    return result
+
+
+def _scope(user: User) -> str:
+    """Fragmento de chave com o escopo de visibilidade do usuário."""
+    return f"g{int(is_galpon_profile_user(user))}"
+
 
 async def require_owner_or_galpon(
     current_user: User = Depends(get_current_user),
@@ -71,12 +107,19 @@ async def get_dashboard_overview(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> dashboard_schemas.DashboardOverview:
     """KPIs do período comparados ao período anterior de mesma duração."""
-    return await analytics_service.get_dashboard_overview(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        store_id=store_id,
+    key = (
+        f"analytics:dash_overview:{_scope(current_user)}:s{store_id}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_dashboard_overview(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        ),
     )
 
 
@@ -93,12 +136,19 @@ async def get_stores_ranking(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.StoreRankingItem]:
     """Ranking de lojas por receita no período."""
-    return await analytics_service.get_stores_ranking(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        store_id=store_id,
+    key = (
+        f"analytics:stores_rank:{_scope(current_user)}:s{store_id}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_stores_ranking(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        ),
     )
 
 
@@ -117,14 +167,21 @@ async def get_services_ranking(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.ServiceRankingItem]:
     """Ranking de serviços por receita no período."""
-    return await analytics_service.get_services_ranking(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        department=department,
-        limit=limit,
-        store_id=store_id,
+    key = (
+        f"analytics:services_rank:{_scope(current_user)}:s{store_id}:d{department}:l{limit}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_services_ranking(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            department=department,
+            limit=limit,
+            store_id=store_id,
+        ),
     )
 
 
@@ -141,12 +198,19 @@ async def get_department_breakdown(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.DepartmentBreakdownItem]:
     """Breakdown de O.S. e receita por departamento."""
-    return await analytics_service.get_department_breakdown(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        store_id=store_id,
+    key = (
+        f"analytics:dept_breakdown:{_scope(current_user)}:s{store_id}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_department_breakdown(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        ),
     )
 
 
@@ -165,14 +229,21 @@ async def get_employees_ranking(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.EmployeeRankingItem]:
     """Ranking de funcionários por O.S. atendidas."""
-    return await analytics_service.get_employees_ranking(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        department=department,
-        limit=limit,
-        store_id=store_id,
+    key = (
+        f"analytics:employees_rank:{_scope(current_user)}:s{store_id}:d{department}:l{limit}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_employees_ranking(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            department=department,
+            limit=limit,
+            store_id=store_id,
+        ),
     )
 
 
@@ -190,13 +261,20 @@ async def get_consultants_ranking(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.ConsultantRankingItem]:
     """Ranking de consultores por receita no período."""
-    return await analytics_service.get_consultants_ranking(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        store_id=store_id,
+    key = (
+        f"analytics:consultants_rank:{_scope(current_user)}:s{store_id}:l{limit}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_consultants_ranking(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            store_id=store_id,
+        ),
     )
 
 
@@ -213,12 +291,19 @@ async def get_sla_metrics(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> dashboard_schemas.SLAMetrics:
     """Métricas de tempo de atendimento (SLA)."""
-    return await analytics_service.get_sla_metrics(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        store_id=store_id,
+    key = (
+        f"analytics:sla:{_scope(current_user)}:s{store_id}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_sla_metrics(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        ),
     )
 
 
@@ -250,13 +335,20 @@ async def get_timeseries(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[dashboard_schemas.TimeSeriesPoint]:
     """Série temporal agrupada por dia, semana ou mês."""
-    return await analytics_service.get_timeseries(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        granularity=granularity,
-        store_id=store_id,
+    key = (
+        f"analytics:timeseries:{_scope(current_user)}:s{store_id}:gr{granularity}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_timeseries(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            granularity=granularity,
+            store_id=store_id,
+        ),
     )
 
 
@@ -274,13 +366,20 @@ async def get_timeseries_by_type(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[TimeSeriesByTypePoint]:
     """Série temporal agrupada por Película, PPF e Estética."""
-    return await analytics_service.get_timeseries_by_type(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        granularity=granularity,
-        store_id=store_id,
+    key = (
+        f"analytics:timeseries_type:{_scope(current_user)}:s{store_id}:gr{granularity}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_timeseries_by_type(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            granularity=granularity,
+            store_id=store_id,
+        ),
     )
 
 
@@ -297,10 +396,17 @@ async def get_film_ppf_ranking(
     current_user: User = Depends(require_owner_or_galpon),
 ) -> list[FilmPpfStoreRankingItem]:
     """Ranking de lojas para O.S. de Película e PPF."""
-    return await analytics_service.get_film_ppf_ranking(
-        db=db,
-        user=current_user,
-        start_date=start_date,
-        end_date=end_date,
-        store_id=store_id,
+    key = (
+        f"analytics:film_ppf_rank:{_scope(current_user)}:s{store_id}:"
+        f"{start_date.isoformat()}:{end_date.isoformat()}"
+    )
+    return await _cached(
+        key,
+        lambda: analytics_service.get_film_ppf_ranking(
+            db=db,
+            user=current_user,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        ),
     )

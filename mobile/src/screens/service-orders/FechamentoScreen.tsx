@@ -55,8 +55,10 @@ const GROUP_ORDER = [
     'security_film',
     'ppf',
     'vn',
+    'vn_lavagem',
     'vd',
     'vu',
+    'vu_lavagem',
     'bodywork',
     'workshop_servicos',
     'workshop_lavagem',
@@ -66,6 +68,8 @@ const GROUP_ORDER = [
 ] as const;
 
 const VIRTUAL_LABELS: Record<string, string> = {
+    vn_lavagem: 'VN Lavagem',
+    vu_lavagem: 'VU Lavagem',
     workshop_servicos: 'Oficina Serviços',
     workshop_lavagem: 'Oficina Lavagem Simples',
     workshop_courtesy: 'Oficina Cortesia',
@@ -88,8 +92,8 @@ interface GroupResult {
         department?: string;
         is_courtesy?: boolean;
         is_return?: boolean;
-        service_name_contains?: string;
-        service_name_not_contains?: string;
+        service_name_contains?: string | string[];
+        service_name_not_contains?: string | string[];
         status?: string;
     };
 }
@@ -114,6 +118,18 @@ function calcTotal(order: OrderWithItems): number {
 
 function isLavagemSimplesItem(item: OrderItem): boolean {
     return item.service_name != null && item.service_name.toLowerCase().includes('lavagem simples');
+}
+
+// Padrões de serviço "de lavagem" para o split VN/VU Lavagem (inclui Ducha e
+// Test Drive). Mesma lista enviada ao export do card via service_name_contains/
+// service_name_not_contains — manter em sincronia com o FechamentoPage web.
+const LAVAGEM_VN_VU_PATTERNS = [
+    'lavagem', 'ducha', 'test drive', 'teste drive', 'lav c/aspira', 'lav. simples', 'lav test',
+];
+
+function isLavagemVnVuItem(item: OrderItem): boolean {
+    const name = item.service_name?.toLowerCase();
+    return !!name && LAVAGEM_VN_VU_PATTERNS.some((p) => name.includes(p));
 }
 
 const FECHAMENTO_PAGE_SIZE = 500;
@@ -157,6 +173,33 @@ function routeOrder(order: OrderWithItems): Array<{ key: string; total: number }
     if (order.is_return) return [{ key: 'retorno', total: calcTotal(order) }];
 
     const dept = order.department as string;
+
+    // VN / VU: partição POR ITEM. Lavagens (incluindo Ducha e Test Drive) vão
+    // para vn_lavagem/vu_lavagem; os demais itens ficam em vn/vu.
+    if (dept === 'vn' || dept === 'vu') {
+        const items = order.items ?? [];
+        if (items.length === 0) return [{ key: dept, total: 0 }];
+
+        let lavagem = 0;
+        let resto = 0;
+        let hasLavagem = false;
+        let hasResto = false;
+        for (const item of items) {
+            if (isLavagemVnVuItem(item)) {
+                lavagem += itemTotal(item);
+                hasLavagem = true;
+            } else {
+                resto += itemTotal(item);
+                hasResto = true;
+            }
+        }
+
+        const buckets: Array<{ key: string; total: number }> = [];
+        if (hasLavagem) buckets.push({ key: `${dept}_lavagem`, total: lavagem });
+        if (hasResto) buckets.push({ key: dept, total: resto });
+        return buckets;
+    }
+
     if (dept !== 'workshop') return [{ key: dept, total: calcTotal(order) }];
 
     // Workshop: partição POR ITEM. Lavagem Simples vai SEMPRE para
@@ -209,6 +252,20 @@ function exportParamsForGroup(key: string): GroupResult['exportParams'] {
             department: 'workshop',
             is_courtesy: false,
             service_name_not_contains: 'Lavagem Simples',
+            is_return: false,
+        };
+    if (key === 'vn_lavagem' || key === 'vu_lavagem')
+        // Só itens de lavagem (incluindo Ducha e Test Drive)
+        return {
+            department: key === 'vn_lavagem' ? 'vn' : 'vu',
+            service_name_contains: LAVAGEM_VN_VU_PATTERNS,
+            is_return: false,
+        };
+    if (key === 'vn' || key === 'vu')
+        // Itens de lavagem ficam fora (vão para o card VN/VU Lavagem)
+        return {
+            department: key,
+            service_name_not_contains: LAVAGEM_VN_VU_PATTERNS,
             is_return: false,
         };
     return { department: key, is_return: false };

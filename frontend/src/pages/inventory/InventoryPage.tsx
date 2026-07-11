@@ -13,11 +13,13 @@ import {
     Trash2,
     Eye,
     EyeOff,
+    AlertCircle,
 } from 'lucide-react';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
     Select,
     SelectContent,
@@ -207,6 +209,31 @@ function computeInventoryGroups(stores: StoreData[]): InventoryGroup[] {
 }
 
 /**
+ * Merges tonality groups from multiple stores of a shared-inventory group:
+ * groups with the same tonality (normalized) become a single row with all rolls.
+ */
+function mergeTonalityGroups(a: RollGroup[], b: RollGroup[]): RollGroup[] {
+    const normKey = (t: string | null) => t?.trim().toUpperCase() ?? '__ppf__';
+    const merged = new Map<string, RollGroup>();
+    for (const group of [...a, ...b]) {
+        const key = normKey(group.tonality);
+        const existing = merged.get(key);
+        if (!existing) {
+            merged.set(key, { tonality: group.tonality, rolls: [...group.rolls] });
+        } else {
+            existing.rolls = [...existing.rolls, ...group.rolls];
+        }
+    }
+    const result = Array.from(merged.values());
+    result.sort((x, y) => {
+        if (x.tonality === null) return 1;
+        if (y.tonality === null) return -1;
+        return x.tonality.localeCompare(y.tonality);
+    });
+    return result;
+}
+
+/**
  * Merges multiple StoreGroups (one per store_id) into a single StoreGroup
  * representing a shared-inventory group. Film type groups across stores are
  * concatenated so they all appear under one card.
@@ -237,7 +264,7 @@ function mergeStoreGroupsForDisplay(
                     if (!existing) {
                         filmTypeMap.set(ft.film_type_id, { ...ft, tonalities: [...ft.tonalities] });
                     } else {
-                        existing.tonalities = [...existing.tonalities, ...ft.tonalities];
+                        existing.tonalities = mergeTonalityGroups(existing.tonalities, ft.tonalities);
                     }
                 }
             }
@@ -879,15 +906,15 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
 
     return (
         <Dialog open={roll !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-            <DialogContent className="max-w-lg">
-                <DialogHeader>
+            <DialogContent className="max-w-lg max-h-[90vh] flex flex-col">
+                <DialogHeader className="shrink-0">
                     <DialogTitle className="flex items-center gap-2">
                         <span className={`w-3 h-3 rounded-full ${config.dot}`} />
                         {roll.visual_id}
                     </DialogTitle>
                 </DialogHeader>
 
-                <div className="space-y-4 py-2">
+                <div className="space-y-4 py-2 flex-1 min-h-0 overflow-y-auto pr-1">
                     {/* Info grid */}
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                         <div>
@@ -987,7 +1014,7 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
                     </div>
                 </div>
 
-                <div className="border-t border-border pt-4 mt-2 flex flex-col gap-3">
+                <div className="border-t border-border pt-4 mt-2 flex flex-col gap-3 shrink-0">
                     {/* Linha 1: Excluir (esquerda) | Fechar + Exportar (direita) */}
                     <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 w-full">
                         <div>
@@ -1210,7 +1237,7 @@ export default function InventoryPage() {
 
     // Busca todas as bobinas sem filtro de loja — filtragem feita 100% no cliente
     // para garantir que bobinas criadas em qualquer loja apareçam imediatamente
-    const { data: rollsData, isLoading } = useQuery({
+    const { data: rollsData, isLoading, isError, refetch } = useQuery({
         queryKey: ['inventory-rolls'],
         queryFn: () => inventoryService.listRolls({ limit: 500 }),
         staleTime: 0,
@@ -1653,8 +1680,25 @@ export default function InventoryPage() {
 
             {/* Main content */}
             {isLoading ? (
-                <div className="flex justify-center py-12">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-4 space-y-3">
+                            <Skeleton className="h-5 w-1/2 bg-gray-200 dark:bg-zinc-800 animate-pulse rounded" />
+                            <Skeleton className="h-4 w-full bg-gray-200 dark:bg-zinc-800 animate-pulse rounded" />
+                            <Skeleton className="h-4 w-full bg-gray-200 dark:bg-zinc-800 animate-pulse rounded" />
+                        </div>
+                    ))}
+                </div>
+            ) : isError ? (
+                // Erro não pode parecer "estoque zerado" — controla película física
+                <div className="flex flex-col items-center justify-center py-16 gap-3">
+                    <p className="flex items-center gap-2 text-red-500 text-sm font-medium">
+                        <AlertCircle className="w-4 h-4" />
+                        Erro ao carregar as bobinas do estoque.
+                    </p>
+                    <Button variant="outline" size="sm" onClick={() => refetch()}>
+                        Tentar novamente
+                    </Button>
                 </div>
             ) : mergedStoreGroups.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3">
@@ -1723,7 +1767,7 @@ export default function InventoryPage() {
                     <DialogHeader>
                         <DialogTitle>Entrada de Bobina</DialogTitle>
                     </DialogHeader>
-                    <div className="space-y-4 py-2 overflow-y-auto flex-1 pr-1">
+                    <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0 pr-1">
                         {/* Toggle Película / PPF */}
                         <div className="space-y-1.5">
                             <Label>Tipo de Estoque</Label>

@@ -251,10 +251,8 @@ async def list_movements(
     for m in items:
         m_full = await _load_movement_full(db, m.id)
         result.append(_movement_to_response(m_full))
-    pages = (total + limit - 1) // limit if limit > 0 else 1
     return MovementListResponse(
-        items=result,
-        pagination={"total": total, "page": page, "limit": limit, "pages": pages},
+        **PaginatedResponse.create(items=result, total=total, page=page, limit=limit)
     )
 
 

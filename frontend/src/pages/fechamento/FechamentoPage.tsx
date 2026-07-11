@@ -18,7 +18,8 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { FileSpreadsheet, Download, ChevronDown, ChevronRight, LayoutList } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { AlertCircle, FileSpreadsheet, Download, ChevronDown, ChevronRight, LayoutList } from 'lucide-react';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,16 @@ function formatDateBR(value: string | null | undefined): string {
 
 function formatCurrency(value: number): string {
     return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+// Remove tags [CORTESIA]/[RETORNO] das observações (mesmo padrão da Conferência)
+function cleanNotes(notes: string | null | undefined): string {
+    if (!notes) return '—';
+    const clean = notes
+        .replace(/\s*\|\s*\[CORTESIA\]|\[CORTESIA\]\s*\|\s*/g, '')
+        .replace(/\s*\|\s*\[RETORNO\]|\[RETORNO\]\s*\|\s*/g, '')
+        .trim();
+    return clean || '—';
 }
 
 type OrderWithItems = ServiceOrder & {
@@ -48,6 +59,18 @@ function calcTotal(order: OrderWithItems): number {
 
 function isLavagemSimplesItem(item: { service_name?: string | null }): boolean {
     return !!item.service_name?.toLowerCase().includes('lavagem simples');
+}
+
+// Padrões de serviço "de lavagem" para o split VN/VU Lavagem (inclui Ducha e
+// Test Drive). Mesma lista enviada ao export do card via service_name_contains/
+// service_name_not_contains — manter em sincronia com o FechamentoScreen mobile.
+const LAVAGEM_VN_VU_PATTERNS = [
+    'lavagem', 'ducha', 'test drive', 'teste drive', 'lav c/aspira', 'lav. simples', 'lav test',
+];
+
+function isLavagemVnVuItem(item: { service_name?: string | null }): boolean {
+    const name = item.service_name?.toLowerCase();
+    return !!name && LAVAGEM_VN_VU_PATTERNS.some((p) => name.includes(p));
 }
 
 const FECHAMENTO_PAGE_SIZE = 500;
@@ -101,13 +124,15 @@ type DeptGroup = {
     count: number;
     total: number;
     /** Params to pass to the per-card download endpoint */
-    exportParams: Record<string, string | boolean | number | undefined>;
+    exportParams: Record<string, string | string[] | boolean | number | undefined>;
 };
 
 // Ordem de exibição dos departamentos
-const DEPT_ORDER = ['film', 'security_film', 'ppf', 'vn', 'vd', 'vu', 'bodywork', 'workshop_servicos', 'workshop_lavagem', 'workshop_courtesy', 'retorno', 'canceladas'];
+const DEPT_ORDER = ['film', 'security_film', 'ppf', 'vn', 'vn_lavagem', 'vd', 'vu', 'vu_lavagem', 'bodywork', 'workshop_servicos', 'workshop_lavagem', 'workshop_courtesy', 'retorno', 'canceladas'];
 
 const VIRTUAL_LABELS: Record<string, string> = {
+    vn_lavagem: 'VN Lavagem',
+    vu_lavagem: 'VU Lavagem',
     workshop_servicos: 'Oficina Serviços',
     workshop_courtesy: 'Oficina Cortesia',
     workshop_lavagem: 'Oficina Lavagem Simples',
@@ -141,7 +166,7 @@ export function FechamentoPage() {
     const selectedStore = availableStores.find((s) => s.id === storeId);
     const storeName = selectedStore?.name ?? `Loja #${storeId}`;
 
-    const { data, isLoading: isLoadingVerified } = useQuery({
+    const { data, isLoading: isLoadingVerified, isError: isErrorVerified, refetch: refetchVerified } = useQuery({
         queryKey: ['service-orders', 'fechamento', storeId, dateFrom, dateTo],
         queryFn: () =>
             fetchAllOrders({
@@ -153,7 +178,7 @@ export function FechamentoPage() {
         enabled: true,
     });
 
-    const { data: cancelledData, isLoading: isLoadingCancelled } = useQuery({
+    const { data: cancelledData, isLoading: isLoadingCancelled, isError: isErrorCancelled, refetch: refetchCancelled } = useQuery({
         queryKey: ['service-orders', 'fechamento-canceladas', storeId, dateFrom, dateTo],
         queryFn: () =>
             fetchAllOrders({
@@ -166,6 +191,13 @@ export function FechamentoPage() {
     });
 
     const isLoading = isLoadingVerified || isLoadingCancelled;
+    // Tela financeira: erro NUNCA pode parecer "não há O.S." — o fechamento
+    // do mês sairia incompleto (achado ALTO-4 da auditoria)
+    const isError = isErrorVerified || isErrorCancelled;
+    const refetchAll = () => {
+        if (isErrorVerified) void refetchVerified();
+        if (isErrorCancelled) void refetchCancelled();
+    };
     const orders = (data?.items ?? []) as OrderWithItems[];
     const cancelledOrders = (cancelledData?.items ?? []) as OrderWithItems[];
     const allOrders = useMemo(() => [...orders, ...cancelledOrders], [orders, cancelledOrders]);
@@ -250,6 +282,23 @@ export function FechamentoPage() {
                 continue;
             }
 
+            // ── VN / VU ──────────────────────────────────────────────────────
+            if (dept === 'vn' || dept === 'vu') {
+                // Classificação POR ITEM: lavagens (incluindo Ducha e Test Drive)
+                // vão para o card "VN/VU Lavagem"; demais itens ficam em VN/VU
+                const items = order.items ?? [];
+                if (items.length === 0) {
+                    addEntry(dept, '—', order, calcTotal(order));
+                } else {
+                    for (const item of items) {
+                        const bucket = isLavagemVnVuItem(item) ? `${dept}_lavagem` : dept;
+                        addEntry(bucket, item.service_name || '—', order,
+                            (item.unit_price ?? 0) * (item.quantity ?? 1));
+                    }
+                }
+                continue;
+            }
+
             // ── Demais departamentos ─────────────────────────────────────────
             const items = order.items ?? [];
             if (items.length === 0) {
@@ -326,6 +375,22 @@ export function FechamentoPage() {
                     department: 'workshop',
                     is_courtesy: false,
                     service_name_not_contains: 'Lavagem Simples',
+                    is_return: false,
+                };
+            } else if (key === 'vn_lavagem' || key === 'vu_lavagem') {
+                // Só itens de lavagem (incluindo Ducha e Test Drive)
+                exportParams = {
+                    ...exportParams,
+                    department: key === 'vn_lavagem' ? 'vn' : 'vu',
+                    service_name_contains: LAVAGEM_VN_VU_PATTERNS,
+                    is_return: false,
+                };
+            } else if (key === 'vn' || key === 'vu') {
+                // Itens de lavagem ficam fora (vão para o card VN/VU Lavagem)
+                exportParams = {
+                    ...exportParams,
+                    department: key,
+                    service_name_not_contains: LAVAGEM_VN_VU_PATTERNS,
                     is_return: false,
                 };
             } else {
@@ -439,6 +504,9 @@ export function FechamentoPage() {
         try {
             const response = await apiClient.get('/service-orders/export/fechamento', {
                 params: group.exportParams,
+                // Arrays repetem a chave sem colchetes (service_name_contains=a&...=b),
+                // formato que o FastAPI espera para list[str]
+                paramsSerializer: { indexes: null },
                 responseType: 'blob',
             });
             downloadBlob(
@@ -560,6 +628,16 @@ export function FechamentoPage() {
                             <Skeleton className="h-5 w-48 bg-gray-200 dark:bg-zinc-800 animate-pulse rounded" />
                         </div>
                     ))
+                ) : isError ? (
+                    <div className="border border-red-300 dark:border-red-900 rounded-xl px-4 py-12 text-center space-y-3">
+                        <p className="flex items-center justify-center gap-2 text-red-500 text-sm font-medium">
+                            <AlertCircle className="w-4 h-4" />
+                            Erro ao carregar as O.S. do fechamento. Os dados exibidos podem estar incompletos.
+                        </p>
+                        <Button variant="outline" size="sm" onClick={refetchAll}>
+                            Tentar novamente
+                        </Button>
+                    </div>
                 ) : allOrders.length === 0 ? (
                     <div className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl px-4 py-12 text-center text-[#999999] dark:text-zinc-500">
                         Nenhuma OS verificada encontrada para o período selecionado
@@ -649,6 +727,8 @@ export function FechamentoPage() {
                                                                     <th className="text-left px-8 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Data</th>
                                                                     <th className="text-left px-4 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Placa</th>
                                                                     <th className="text-left px-4 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Nº OS</th>
+                                                                    <th className="text-left px-4 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Obs</th>
+                                                                    <th className="text-left px-4 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Obs. Interna</th>
                                                                     {showCourtesyCol && (
                                                                         <th className="text-left px-4 py-2 font-semibold text-[#666666] dark:text-zinc-400 text-xs uppercase tracking-wide">Cortesia/Galpão</th>
                                                                     )}
@@ -668,7 +748,20 @@ export function FechamentoPage() {
                                                                             {order.plate}
                                                                         </td>
                                                                         <td className="px-4 py-2 text-[#111111] dark:text-zinc-200">
-                                                                            {order.order_number}
+                                                                            {order.external_os_number || '—'}
+                                                                        </td>
+                                                                        <td className="px-4 py-2 text-[#666666] dark:text-zinc-400 max-w-[180px]">
+                                                                            <span
+                                                                                className="block truncate"
+                                                                                title={cleanNotes(order.notes) !== '—' ? cleanNotes(order.notes) : undefined}
+                                                                            >
+                                                                                {cleanNotes(order.notes)}
+                                                                            </span>
+                                                                        </td>
+                                                                        <td className="px-4 py-2 text-[#666666] dark:text-zinc-400 max-w-[180px]">
+                                                                            <span className="block truncate" title={order.internal_notes || undefined}>
+                                                                                {order.internal_notes || '—'}
+                                                                            </span>
                                                                         </td>
                                                                         {showCourtesyCol && (
                                                                             <td className="px-4 py-2">

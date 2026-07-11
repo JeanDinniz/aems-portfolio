@@ -9,6 +9,7 @@ import { EmployeeFichaDialog } from '@/components/features/employees/EmployeeFic
 import { EmployeeMovementDialog } from '@/components/features/employees/EmployeeMovementDialog';
 import { EmployeeHistoryDialog } from '@/components/features/employees/EmployeeHistoryDialog';
 import { useEmployees, useEmployeeStats } from '@/hooks/useEmployees';
+import { useDebounce } from '@/hooks/useDebounce';
 import { useAuthStore } from '@/stores/auth.store';
 import { useStoreStore } from '@/stores/store.store';
 import type { Employee, EmployeeFilters as Filters } from '@/types/employee.types';
@@ -58,7 +59,11 @@ export function EmployeeManagementPage() {
     const hasPermission = useAuthStore((s) => s.hasPermission);
     const canEdit = hasPermission('employees', 'edit');
     const { selectedStoreId } = useStoreStore();
-    const { employees, total, isLoading } = useEmployees(filters, page);
+    const debouncedSearch = useDebounce(filters.search);
+    const { employees, total, isLoading } = useEmployees(
+        { ...filters, search: debouncedSearch },
+        page
+    );
     const { data: stats, isLoading: statsLoading } = useEmployeeStats(selectedStoreId ?? undefined);
 
     const handleFicha = (employee: Employee) => {

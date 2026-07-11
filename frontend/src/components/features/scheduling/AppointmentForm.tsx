@@ -151,6 +151,10 @@ export function AppointmentForm({ open, onClose, appointment, stores }: Appointm
     selectedDepartment === 'security_film' ||
     selectedDepartment === 'ppf'
 
+  // Tonalidade é obrigatória por película nesses departamentos (PPF usa marca)
+  const requiresTonality =
+    selectedDepartment === 'film' || selectedDepartment === 'security_film'
+
   // Fetch consultants filtered by store
   const { data: consultantsData } = useQuery({
     queryKey: ['consultants', { store_id: selectedStoreId ? Number(selectedStoreId) : undefined }],
@@ -313,6 +317,10 @@ export function AppointmentForm({ open, onClose, appointment, stores }: Appointm
     if (!pendingFilmServiceId) return
     const svc = allServices.find((s) => s.id === Number(pendingFilmServiceId))
     if (!svc) return
+    if (requiresTonality && !pendingFilmTonality) {
+      setServiceError('Selecione a tonalidade da película')
+      return
+    }
     setFilmEntries((prev) => [
       ...prev,
       {
@@ -338,6 +346,12 @@ export function AppointmentForm({ open, onClose, appointment, stores }: Appointm
     const hasServices = isFilmDept ? filmEntries.length > 0 : selectedServiceIds.length > 0
     if (!hasServices) {
       setServiceError('Adicione ao menos um serviço para continuar')
+      return
+    }
+    if (requiresTonality && filmEntries.some((e) => !e.tonality)) {
+      setServiceError(
+        'Informe a tonalidade de todas as películas (remova a película sem tonalidade e adicione novamente)'
+      )
       return
     }
     setServiceError(null)
@@ -640,8 +654,14 @@ export function AppointmentForm({ open, onClose, appointment, stores }: Appointm
                   <div className="flex gap-2 items-end">
                     {(selectedDepartment === 'film' || selectedDepartment === 'security_film') && (
                       <div className="flex-1 sm:flex-initial sm:w-28">
-                        <FieldLabel htmlFor="film_tonality_pick">Tonalidade</FieldLabel>
-                        <Select value={pendingFilmTonality} onValueChange={setPendingFilmTonality}>
+                        <FieldLabel htmlFor="film_tonality_pick" required>Tonalidade</FieldLabel>
+                        <Select
+                          value={pendingFilmTonality}
+                          onValueChange={(v) => {
+                            setPendingFilmTonality(v)
+                            setServiceError(null)
+                          }}
+                        >
                           <SelectTrigger id="film_tonality_pick">
                             <SelectValue placeholder="G05..." />
                           </SelectTrigger>
@@ -674,7 +694,7 @@ export function AppointmentForm({ open, onClose, appointment, stores }: Appointm
                       type="button"
                       size="sm"
                       onClick={addFilmEntry}
-                      disabled={!pendingFilmServiceId}
+                      disabled={!pendingFilmServiceId || (requiresTonality && !pendingFilmTonality)}
                       className="flex items-center gap-1"
                     >
                       <Plus className="h-3.5 w-3.5" />

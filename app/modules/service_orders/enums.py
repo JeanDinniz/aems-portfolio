@@ -29,6 +29,16 @@ class OSStatus(StrEnum):
         return labels[self]
 
 
+class ConferenceStatus(StrEnum):
+    """Valores do filtro multi de status da tela de Conferência."""
+
+    PENDING = "pending"  # Aguardando conferência (não verificada, não cancelada)
+    VERIFIED = "verified"  # Verificada (não cancelada)
+    CANCELLED = "cancelled"
+    WRONG = "wrong"
+    DUPLICATE = "duplicate"
+
+
 class SemaphoreColor(StrEnum):
     """Cores do semáforo para controle de tempo de O.S."""
 

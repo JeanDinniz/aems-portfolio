@@ -78,7 +78,9 @@ export function useDashboardQueue() {
     queryKey: ['dashboard', 'queue'],
     queryFn: () => dashboardService.getQueue(),
     staleTime: STALE_TIME,
-    refetchInterval: 30_000,
+    // O WebSocket (semaphore_updated) é o invalidador primário; o interval
+    // fica só como fallback para conexões WS caídas silenciosamente.
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 }

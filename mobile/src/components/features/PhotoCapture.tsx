@@ -153,6 +153,8 @@ export function PhotoCapture({
     useEffect(() => {
         const present = new Set(value.map((p) => p.id));
         for (const photo of value) {
+            // Fotos remotas (cópia de O.S.) não estão na fila: nada a assinar.
+            if (photo.remote) continue;
             // Só vale assinar fotos que já chegaram à fila (têm comprimido) ou que
             // já trazem url (rascunho restaurado). Fotos ainda comprimindo são
             // assinadas ao fim do pipeline.
@@ -296,7 +298,9 @@ export function PhotoCapture({
                 unsub();
                 subsRef.current.delete(id);
             }
-            void removeFromQueue(id);
+            // Fotos remotas (cópia de O.S.) não estão na fila offline — nada a remover.
+            const target = valueRef.current.find((p) => p.id === id);
+            if (!target?.remote) void removeFromQueue(id);
             commit(valueRef.current.filter((p) => p.id !== id));
         },
         [commit]
@@ -435,7 +439,8 @@ interface PhotoThumbProps {
 
 /** Miniatura individual com overlay de estado (comprimindo/enviando/erro/ok). */
 function PhotoThumb({ photo, onRemove, onRetry }: PhotoThumbProps) {
-    const isCompressing = !photo.compressed && !photo.error;
+    // Foto remota (cópia de O.S.) já tem `url` e nunca é comprimida localmente.
+    const isCompressing = !photo.compressed && !photo.url && !photo.error;
     const isUploading = !!photo.compressed && !photo.uploaded && !photo.error;
     const hasError = !!photo.error;
 

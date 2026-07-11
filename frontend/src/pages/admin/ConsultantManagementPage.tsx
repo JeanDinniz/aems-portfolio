@@ -4,6 +4,7 @@ import { ConsultantsTable } from '@/components/features/consultants/ConsultantsT
 import { ConsultantFilters } from '@/components/features/consultants/ConsultantFilters';
 import { CreateConsultantDialog } from '@/components/features/consultants/CreateConsultantDialog';
 import { useConsultants } from '@/hooks/useConsultants';
+import { useDebounce } from '@/hooks/useDebounce';
 import { useAuthStore } from '@/stores/auth.store';
 import apiClient from '@/services/api/client';
 import type { ConsultantFilters as Filters } from '@/types/consultant.types';
@@ -16,7 +17,11 @@ export function ConsultantManagementPage() {
 
     const hasPermission = useAuthStore((s) => s.hasPermission);
     const canEdit = hasPermission('consultants', 'edit');
-    const { consultants, total, isLoading } = useConsultants(filters, page);
+    const debouncedSearch = useDebounce(filters.search);
+    const { consultants, total, isLoading } = useConsultants(
+        { ...filters, search: debouncedSearch },
+        page
+    );
 
     const handleExport = async () => {
         setIsExporting(true);

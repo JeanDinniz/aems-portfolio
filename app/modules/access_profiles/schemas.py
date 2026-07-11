@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.schemas import PaginationMeta
+
 # Sub-módulos válidos por grupo
 MODULE_GROUP_ADM = "ADM"
 MODULE_GROUP_OPERACIONAL = "OPERACIONAL"
@@ -129,7 +131,7 @@ class AccessProfileListResponse(BaseModel):
     """Schema para listagem paginada de perfis de acesso."""
 
     items: list[AccessProfileOut]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 # ---------------------------------------------------------------------------

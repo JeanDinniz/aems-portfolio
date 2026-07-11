@@ -495,42 +495,20 @@ class TestResetPassword:
         self, client: AsyncClient, test_user: User, db_session
     ):
         """Reset password with mocked Redis should update password."""
-        import sys
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, patch
 
         mock_redis_client = AsyncMock()
         mock_redis_client.get = AsyncMock(return_value=str(test_user.id))
         mock_redis_client.delete = AsyncMock()
-        mock_redis_client.aclose = AsyncMock()
 
-        mock_aioredis = MagicMock()
-        mock_aioredis.from_url = MagicMock(return_value=mock_redis_client)
-
-        # redis.asyncio is imported as submodule
-        mock_redis_pkg = MagicMock()
-        mock_redis_pkg.asyncio = mock_aioredis
-
-        old_redis = sys.modules.get("redis")
-        old_redis_asyncio = sys.modules.get("redis.asyncio")
-        sys.modules["redis"] = mock_redis_pkg
-        sys.modules["redis.asyncio"] = mock_aioredis
-
-        try:
+        # O serviço obtém o cliente via app.core.redis.get_redis (pool compartilhado)
+        with patch("app.core.redis.get_redis", return_value=mock_redis_client):
             response = await client.post(
                 "/api/v1/auth/reset-password",
                 json={"token": "valid-token-123", "new_password": "NewPass123!@"},
             )
             assert response.status_code == 200
             assert "sucesso" in response.json()["message"].lower()
-        finally:
-            if old_redis is not None:
-                sys.modules["redis"] = old_redis
-            else:
-                sys.modules.pop("redis", None)
-            if old_redis_asyncio is not None:
-                sys.modules["redis.asyncio"] = old_redis_asyncio
-            else:
-                sys.modules.pop("redis.asyncio", None)
 
     @pytest.mark.asyncio
     async def test_reset_password_user_inactive(

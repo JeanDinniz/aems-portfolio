@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -28,6 +29,9 @@ class ServiceOrder(Base, TimestampMixin):
     """
 
     __tablename__ = "service_orders"
+    # Composto para os filtros de perfil galpão (is_galpon combinado com loja
+    # em analytics, listagens e permissões)
+    __table_args__ = (Index("ix_service_orders_store_galpon", "store_id", "is_galpon"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str | None] = mapped_column(

@@ -159,6 +159,7 @@ export function EmployeeHistoryDialog({ employee, open, onOpenChange }: Employee
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
+                                                        aria-label="Ver detalhes"
                                                         className="h-8 w-8"
                                                         onClick={() => handleViewDetail(mv)}
                                                     >

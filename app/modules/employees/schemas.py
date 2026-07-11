@@ -7,6 +7,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.schemas import PaginationMeta
+
 
 class EmployeeBase(BaseModel):
     """Base schema with common employee attributes."""
@@ -109,7 +111,7 @@ class EmployeeListResponse(BaseModel):
     """Schema for paginated employee list response."""
 
     items: list[EmployeeResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class MovementCreate(BaseModel):
@@ -144,7 +146,7 @@ class MovementListResponse(BaseModel):
     """Schema for paginated movement list response."""
 
     items: list[MovementResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class EmployeeStatsResponse(BaseModel):

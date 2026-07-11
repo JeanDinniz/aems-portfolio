@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -6,18 +6,32 @@ import { serviceOrdersService } from '@/services/api/service-orders.service';
 import { servicesService } from '@/services/api/services.service';
 import { useAuthStore } from '@/stores/auth.store';
 import { useStoreStore } from '@/stores/store.store';
-import { useConferenceFiltersStore } from '@/stores/filters.store';
+import { useConferenceFiltersStore, type ConferenceStatusValue } from '@/stores/filters.store';
+import { MultiSelectFilter } from '@/components/common/MultiSelectFilter';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useVehicleModels } from '@/hooks/useVehicleModels';
 import { useServices } from '@/hooks/useServices';
 import { useConferenceSummary } from '@/hooks/useConferenceSummary';
 import { useConferenceSummaryByStore } from '@/hooks/useConferenceSummaryByStore';
+import { useDebounce } from '@/hooks/useDebounce';
 import { employeesService } from '@/services/api/employees.service';
 import { storesService } from '@/services/api/stores.service';
 import type { ServiceOrder, Department } from '@/types/service-order.types';
 import type { Photo } from '@/types/photo.types';
-import { DEPARTMENTS_MAP } from '@/constants/service-orders';
+import { DEPARTMENTS_MAP, OS_STATUS_HISTORY_LABELS } from '@/constants/service-orders';
+import { FILM_INSTALLER_POSITION } from '@/constants/employees';
 import { toThumbUrl } from '@/utils/imageThumb';
+
+// Cores do badge de status no histórico (vocabulário backend). Fora do componente
+// para não recriar o objeto a cada item renderizado da timeline.
+const HISTORY_STATUS_COLORS: Record<string, string> = {
+    waiting: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300',
+    in_progress: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+    cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+    wrong: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+    duplicate: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+};
 import { isValidPlateOrChassi, PLATE_ERROR_MESSAGE } from '@/utils/plate';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -58,7 +72,7 @@ import {
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { toast } from '@/hooks/use-toast';
-import { CheckCircle, CheckCircle2, Pencil, Search, ClipboardCheck, ImageOff, X, RotateCcw, Download, ChevronDown, ChevronUp, ChevronsUpDown, ChevronLeft, ChevronRight, Car, Clock, AlertTriangle, XCircle, Copy } from 'lucide-react';
+import { AlertCircle, CheckCircle, CheckCircle2, Pencil, Search, ClipboardCheck, ImageOff, X, RotateCcw, Download, ChevronDown, ChevronUp, ChevronsUpDown, ChevronLeft, ChevronRight, Car, Clock, AlertTriangle, XCircle, Copy } from 'lucide-react';
 import apiClient from '@/services/api/client';
 import {
     DropdownMenu,
@@ -73,6 +87,8 @@ import {
     ServicePicker,
     FilmPicker,
     CompactPhotoUploader,
+    QuickCreateModal,
+    buildPrefillFromOrder,
     type FilmEntry,
 } from '@/components/features/service-orders/QuickCreateModal';
 import { ConferenceSummaryCards } from '@/components/features/conference/ConferenceSummaryCards';
@@ -123,65 +139,6 @@ function FlagFilterDropdown({ value, onChange }: { value: FlagFilters; onChange:
         </DropdownMenu>
     );
 }
-
-// ─── Store Multi-Select Dropdown ─────────────────────────────────────────────
-
-function StoreMultiSelect({
-    stores,
-    value,
-    onChange,
-}: {
-    stores: Array<{ id: number; name: string }>;
-    value: number[];
-    onChange: (v: number[]) => void;
-}) {
-    const [open, setOpen] = useState(false);
-
-    const label =
-        value.length === 0
-            ? 'Todas'
-            : value.length === 1
-                ? (stores.find((s) => s.id === value[0])?.name ?? 'Todas')
-                : `${value.length} lojas`;
-
-    const toggle = (id: number) =>
-        onChange(value.includes(id) ? value.filter((s) => s !== id) : [...value, id]);
-
-    return (
-        <DropdownMenu open={open} onOpenChange={setOpen}>
-            <DropdownMenuTrigger asChild>
-                <button
-                    type="button"
-                    className="flex h-9 w-40 items-center justify-between gap-2 rounded-lg border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] px-3 text-sm text-[#111111] dark:text-white cursor-pointer hover:bg-[#F5F5F5] dark:hover:bg-[#2A2A2A] focus:outline-none focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800] transition-colors"
-                >
-                    <span className="truncate">{label}</span>
-                    <ChevronDown className={`h-4 w-4 shrink-0 opacity-50 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
-                </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56 p-1 border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#1A1A1A]">
-                <DropdownMenuCheckboxItem
-                    checked={value.length === 0}
-                    onSelect={(e) => { e.preventDefault(); onChange([]); }}
-                    className="text-sm text-[#111111] dark:text-white focus:bg-[#F5F5F5] dark:focus:bg-[#2A2A2A] [&>span]:border-2 [&>span]:border-[#F5A800] [&>span]:rounded-sm"
-                >
-                    Todas
-                </DropdownMenuCheckboxItem>
-                {stores.map((store) => (
-                    <DropdownMenuCheckboxItem
-                        key={store.id}
-                        checked={value.includes(store.id)}
-                        onSelect={(e) => { e.preventDefault(); toggle(store.id); }}
-                        className="text-sm text-[#111111] dark:text-white focus:bg-[#F5F5F5] dark:focus:bg-[#2A2A2A] [&>span]:border-2 [&>span]:border-[#F5A800] [&>span]:rounded-sm"
-                    >
-                        {store.name}
-                    </DropdownMenuCheckboxItem>
-                ))}
-            </DropdownMenuContent>
-        </DropdownMenu>
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -251,9 +208,10 @@ interface EditDialogProps {
     onSaved: () => void;
     canEdit?: boolean;
     canDelete?: boolean;
+    onGenerateCopy?: (order: ServiceOrder) => void;
 }
 
-function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditDialogProps) {
+function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGenerateCopy }: EditDialogProps) {
     const [department, setDepartment] = useState<Department | undefined>();
     const [serviceDate, setServiceDate] = useState('');
     const [externalOs, setExternalOs] = useState('');
@@ -793,6 +751,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                             }}
                             installers={installers}
                             onInstallersChange={setInstallers}
+                            isGalpon={isGalpon}
                         />
                     ) : (
                         <ServicePicker
@@ -918,7 +877,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                 </div>
 
                 <div className="px-6 pb-6 pt-4 border-t border-[#E8E8E8] dark:border-[#333333] flex items-center justify-between">
-                    {/* Histórico */}
+                    {/* Histórico + Gerar cópia */}
                     <div className="flex gap-1.5">
                         <Button
                             type="button"
@@ -940,6 +899,18 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                             <Clock className="h-3.5 w-3.5" />
                             Histórico OS
                         </Button>
+                        {onGenerateCopy && (
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => onGenerateCopy(orderDetail ?? order)}
+                                className="text-xs text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-700/50 gap-1.5"
+                            >
+                                <Copy className="h-3.5 w-3.5" />
+                                Gerar cópia
+                            </Button>
+                        )}
                     </div>
                     {/* Ações */}
                     <div className="grid grid-cols-2 gap-2">
@@ -1114,7 +1085,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                                 {item.service_names.length > 0 && (
                                     <ul className="mt-1 space-y-0.5">
                                         {item.service_names.map((name, idx) => (
-                                            <li key={idx} className="text-xs text-[#666666] dark:text-zinc-400">• {name}</li>
+                                            <li key={`${name}-${idx}`} className="text-xs text-[#666666] dark:text-zinc-400">• {name}</li>
                                         ))}
                                     </ul>
                                 )}
@@ -1156,21 +1127,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                             <div className="absolute left-[7px] top-2 bottom-2 w-px bg-[#E8E8E8] dark:bg-[#333333]" />
                             <div className="space-y-4">
                                 {osHistory.items.map((item, idx) => {
-                                    const STATUS_LABELS: Record<string, string> = {
-                                        waiting: 'Aguardando',
-                                        in_progress: 'Fazendo',
-                                        completed: 'Pronto',
-                                        cancelled: 'Cancelado',
-                                        wrong: 'Lançado Errado',
-                                    };
-                                    const STATUS_COLORS: Record<string, string> = {
-                                        waiting: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300',
-                                        in_progress: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-                                        completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-                                        cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-                                        wrong: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-                                    };
-                                    const toColor = STATUS_COLORS[item.to_status] ?? 'bg-zinc-100 text-zinc-600';
+                                    const toColor = HISTORY_STATUS_COLORS[item.to_status] ?? 'bg-zinc-100 text-zinc-600';
                                     const changedAt = new Date(item.changed_at);
                                     const dateStr = changedAt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
                                     const timeStr = changedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -1182,14 +1139,14 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
                                                 <div className="flex flex-wrap items-center gap-1.5 mb-1">
                                                     {item.from_status && (
                                                         <>
-                                                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[item.from_status] ?? 'bg-zinc-100 text-zinc-600'}`}>
-                                                                {STATUS_LABELS[item.from_status] ?? item.from_status}
+                                                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${HISTORY_STATUS_COLORS[item.from_status] ?? 'bg-zinc-100 text-zinc-600'}`}>
+                                                                {OS_STATUS_HISTORY_LABELS[item.from_status] ?? item.from_status}
                                                             </span>
                                                             <span className="text-[#999999] dark:text-zinc-500 text-xs">→</span>
                                                         </>
                                                     )}
                                                     <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${toColor}`}>
-                                                        {STATUS_LABELS[item.to_status] ?? item.to_status}
+                                                        {OS_STATUS_HISTORY_LABELS[item.to_status] ?? item.to_status}
                                                     </span>
                                                 </div>
                                                 <p className="text-xs text-[#666666] dark:text-zinc-400">
@@ -1219,7 +1176,10 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete }: EditD
 export function ConferencePage() {
     const user = useAuthStore((s) => s.user);
     const hasDeletePermission = useAuthStore((s) => s.hasPermission);
-    const { selectedStoreId, availableStores } = useStoreStore();
+    // Seletores granulares: assinar a store inteira re-renderizava a página
+    // (2k+ linhas) a qualquer mudança de qualquer campo do useStoreStore
+    const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
+    const availableStores = useStoreStore((s) => s.availableStores);
     const queryClient = useQueryClient();
 
     // Filters state — persistido na sessão (sessionStorage): sobrevive à
@@ -1229,9 +1189,9 @@ export function ConferencePage() {
         .toISOString().split('T')[0];
 
     const {
-        dateFrom, dateTo, department, search, verifiedFilter, flagFilters,
+        dateFrom, dateTo, departments, search, serviceIds, statusFilters, flagFilters,
         workerId, selectedStoreIds,
-        setDateFrom, setDateTo, setDepartment, setSearch, setVerifiedFilter,
+        setDateFrom, setDateTo, setDepartments, setSearch, setServiceIds, setStatusFilters,
         setFlagFilters, setWorkerId, setSelectedStoreIds,
         reset: resetFilters,
     } = useConferenceFiltersStore();
@@ -1255,8 +1215,9 @@ export function ConferencePage() {
 
     const hasActiveFilters =
         search !== '' ||
-        department !== '' ||
-        verifiedFilter !== 'pending' ||
+        serviceIds.length > 0 ||
+        departments.length > 0 ||
+        !(statusFilters.length === 1 && statusFilters[0] === 'pending') ||
         flagFilters.courtesy ||
         flagFilters.galpon ||
         flagFilters.retorno ||
@@ -1270,18 +1231,22 @@ export function ConferencePage() {
     }, [resetFilters]);
 
     const handleSummaryCardClick = useCallback((dept: string, filterType: 'verified' | 'waiting' | 'wrong' | 'all' | 'cancelled') => {
-        setDepartment(dept);
-        setVerifiedFilter(filterType === 'waiting' ? 'pending' : filterType);
+        setDepartments(dept ? [dept] : []);
+        setStatusFilters(filterType === 'all' ? [] : [filterType === 'waiting' ? 'pending' : filterType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Visibilidade de colunas condicionais por departamento
-    const showFilmCols = !department || department === 'film' || department === 'security_film' || department === 'ppf';
-    const showTonality = !department || department === 'film' || department === 'security_film' || department === 'ppf';
+    const filmDepts = ['film', 'security_film', 'ppf'];
+    const showFilmCols = departments.length === 0 || departments.some((d) => filmDepts.includes(d));
+    const showTonality = departments.length === 0 || departments.some((d) => filmDepts.includes(d));
     const totalCols = 18 + (showFilmCols ? 2 : 0) + (showTonality ? 2 : 0);
 
     // Edit state
     const [editOrder, setEditOrder] = useState<ServiceOrder | null>(null);
     const [editOpen, setEditOpen] = useState(false);
+    // Gerar cópia: fonte da O.S. a ser copiada (montagem condicional garante defaultValues corretos)
+    const [copySource, setCopySource] = useState<ServiceOrder | null>(null);
 
     // Atalho externo ?os={id} (ex.: botão "Ver OS" do agendamento): abre o
     // modal da O.S. direto na Conferência e limpa o parâmetro da URL.
@@ -1324,20 +1289,72 @@ export function ConferencePage() {
 
     const storeId = selectedStoreId ?? user?.store_id ?? undefined;
 
+    // Buscas por texto: a query usa o valor debounced (1 request quando o
+    // usuário para de digitar, não 1 por tecla)
+    const debouncedSearch = useDebounce(search);
+
+    // Serviços: gating — só mostra opções quando loja e departamento estiverem selecionados
+    const serviceFilterReady = selectedStoreIds.length > 0 && departments.length > 0;
+
+    // Lista de serviços para exibir nomes nas colunas e preencher o filtro de serviços
+    // Declarada antes das queries principais porque expandedServiceIds é usado nelas.
+    const { data: servicesData } = useQuery({
+        queryKey: ['services', 'all'],
+        queryFn: () => servicesService.getAll(),
+        staleTime: 1000 * 60 * 10,
+        gcTime: 1000 * 60 * 5,
+    });
+    const services = useMemo(() => servicesData ?? [], [servicesData]);
+
+    // Agrupa serviços por código|nome para deduplicar cortesias gêmeas;
+    // a opção usa o 1º id do grupo — na query enviamos todos os ids do grupo.
+    const serviceGroups = useMemo(() => {
+        if (!serviceFilterReady) return [];
+        const map = new Map<string, { label: string; ids: number[] }>();
+        for (const s of services) {
+            if (!s.is_active || !departments.includes(s.department)) continue;
+            const key = `${s.code ?? ''}|${s.name}`;
+            const g = map.get(key);
+            if (g) g.ids.push(s.id);
+            else map.set(key, { label: s.code ? `${s.code} – ${s.name}` : s.name, ids: [s.id] });
+        }
+        return [...map.values()];
+    }, [services, departments, serviceFilterReady]);
+
+    const serviceOptions = useMemo(
+        () => serviceGroups.map((g) => ({ value: g.ids[0], label: g.label })),
+        [serviceGroups],
+    );
+
+    const expandedServiceIds = useMemo(() => {
+        const byRep = new Map(serviceGroups.map((g) => [g.ids[0], g.ids]));
+        return serviceIds.flatMap((id) => byRep.get(id) ?? [id]);
+    }, [serviceIds, serviceGroups]);
+
+    // Limpeza: zera serviceIds quando os filtros de gating mudam e os ids deixam de ser válidos
+    useEffect(() => {
+        if (serviceIds.length === 0) return;
+        if (!serviceFilterReady) { setServiceIds([]); return; }
+        if (services.length === 0) return; // catálogo ainda carregando (F5): não zerar
+        const valid = new Set(serviceOptions.map((o) => o.value));
+        const next = serviceIds.filter((id) => valid.has(id));
+        if (next.length !== serviceIds.length) setServiceIds(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [serviceFilterReady, departments, services]);
+
     // Reseta para página 1 sempre que qualquer filtro mudar
     useEffect(() => {
         setPage(1);
-    }, [dateFrom, dateTo, department, search, verifiedFilter, flagFilters, workerId, selectedStoreIds]);
+    }, [dateFrom, dateTo, departments, debouncedSearch, serviceIds, statusFilters, flagFilters, workerId, selectedStoreIds]);
 
-    const queryKey = ['service-orders', 'conference', selectedStoreIds, dateFrom, dateTo, department, search, verifiedFilter, flagFilters, workerId, page, sortBy, sortDir];
+    const queryKey = ['service-orders', 'conference', selectedStoreIds, dateFrom, dateTo, departments, debouncedSearch, serviceIds, statusFilters, flagFilters, workerId, page, sortBy, sortDir];
 
-    const { data, isLoading } = useQuery({
+    const { data, isLoading, isError, refetch } = useQuery({
         queryKey,
         queryFn: () => serviceOrdersService.getFiltered({
             store_ids: selectedStoreIds.length > 0 ? selectedStoreIds : undefined,
-            is_verified: verifiedFilter === 'all' || verifiedFilter === 'cancelled' || verifiedFilter === 'wrong' || verifiedFilter === 'duplicate' ? undefined : verifiedFilter === 'verified',
-            status: verifiedFilter === 'cancelled' ? 'cancelled' : verifiedFilter === 'wrong' ? 'wrong' : verifiedFilter === 'duplicate' ? 'duplicate' : undefined,
-            include_cancelled: verifiedFilter === 'all' || verifiedFilter === 'cancelled' ? true : undefined,
+            conference_statuses: statusFilters.length ? statusFilters : undefined,
+            include_cancelled: statusFilters.length === 0 ? true : undefined,
             flag: [
                 flagFilters.courtesy ? 'courtesy' : null,
                 flagFilters.galpon ? 'galpon' : null,
@@ -1345,8 +1362,9 @@ export function ConferencePage() {
             ].filter(Boolean) as string[],
             date_from: dateFrom || undefined,
             date_to: dateTo || undefined,
-            department: department || undefined,
-            plate: search || undefined,
+            departments: departments.length ? departments : undefined,
+            plate: debouncedSearch || undefined,
+            service_ids: expandedServiceIds.length ? expandedServiceIds : undefined,
             worker_id: workerId,
             sort_by: sortBy,
             sort_dir: sortDir,
@@ -1361,7 +1379,8 @@ export function ConferencePage() {
         store_ids: selectedStoreIds.length > 0 ? selectedStoreIds : undefined,
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
-        plate: search || undefined,
+        plate: debouncedSearch || undefined,
+        service_ids: expandedServiceIds.length ? expandedServiceIds : undefined,
         worker_id: workerId,
         include_cancelled: true,
         is_courtesy: flagFilters.courtesy ? true : undefined,
@@ -1371,19 +1390,14 @@ export function ConferencePage() {
 
     const { data: storeSummaryData, isLoading: storeSummaryLoading } = useConferenceSummaryByStore(summaryFilters);
 
-    // Lista de serviços para exibir nomes nas colunas
-    const { data: servicesData } = useQuery({
-        queryKey: ['services', 'all'],
-        queryFn: () => servicesService.getAll(),
-        staleTime: 1000 * 60 * 10,
-        gcTime: 1000 * 60 * 5,
-    });
-    const services = servicesData ?? [];
-
-    // Lista de funcionários para filtro de instalador
+    // Lista de instaladores para o filtro (somente cargo Instalador de Película)
     const { data: employeesData } = useQuery({
         queryKey: ['employees', 'conference-filter', storeId],
-        queryFn: () => employeesService.list({ store_id: storeId, is_active: true }, 1, 50),
+        queryFn: () => employeesService.list(
+            { store_id: storeId, is_active: true, position: FILM_INSTALLER_POSITION },
+            1,
+            100,
+        ),
     });
     const employees = employeesData?.employees ?? [];
 
@@ -1417,7 +1431,9 @@ export function ConferencePage() {
         mutationFn: (id: number) => serviceOrdersService.verify(id),
         onMutate: (id: number) =>
             optimisticConference(
-                verifiedFilter === 'pending' ? dropRow(id) : patchRow(id, { is_verified: true }),
+                statusFilters.includes('pending') && !statusFilters.includes('verified')
+                    ? dropRow(id)
+                    : patchRow(id, { is_verified: true }),
             ).then((previous) => ({ previous })),
         onError: (_e, _id, ctx) => {
             rollback(ctx?.previous);
@@ -1431,7 +1447,9 @@ export function ConferencePage() {
         mutationFn: (id: number) => serviceOrdersService.unverify(id),
         onMutate: (id: number) =>
             optimisticConference(
-                verifiedFilter === 'verified' ? dropRow(id) : patchRow(id, { is_verified: false }),
+                statusFilters.includes('verified') && !statusFilters.includes('pending')
+                    ? dropRow(id)
+                    : patchRow(id, { is_verified: false }),
             ).then((previous) => ({ previous })),
         onError: (_e, _id, ctx) => {
             rollback(ctx?.previous);
@@ -1445,7 +1463,7 @@ export function ConferencePage() {
         mutationFn: (id: number) => serviceOrdersService.cancel(id, 'OS cancelada via conferência'),
         onMutate: (id: number) =>
             optimisticConference(
-                verifiedFilter === 'all' || verifiedFilter === 'cancelled'
+                statusFilters.length === 0 || statusFilters.includes('cancelled')
                     ? patchRow(id, { status: 'cancelled' })
                     : dropRow(id),
             ).then((previous) => ({ previous })),
@@ -1488,7 +1506,9 @@ export function ConferencePage() {
             apiClient.patch(`/service-orders/${id}/status`, { new_status: 'waiting' }),
         onMutate: (id: number) =>
             optimisticConference(
-                verifiedFilter === 'wrong' ? dropRow(id) : patchRow(id, { status: 'waiting' }),
+                statusFilters.includes('wrong') && !statusFilters.includes('pending')
+                    ? dropRow(id)
+                    : patchRow(id, { status: 'waiting' }),
             ).then((previous) => ({ previous })),
         onError: (_e, _id, ctx) => {
             rollback(ctx?.previous);
@@ -1504,7 +1524,9 @@ export function ConferencePage() {
             apiClient.patch(`/service-orders/${id}/status`, { new_status: 'waiting' }),
         onMutate: (id: number) =>
             optimisticConference(
-                verifiedFilter === 'duplicate' ? dropRow(id) : patchRow(id, { status: 'waiting' }),
+                statusFilters.includes('duplicate') && !statusFilters.includes('pending')
+                    ? dropRow(id)
+                    : patchRow(id, { status: 'waiting' }),
             ).then((previous) => ({ previous })),
         onError: (_e, _id, ctx) => {
             rollback(ctx?.previous);
@@ -1544,12 +1566,9 @@ export function ConferencePage() {
             if (storeId) qs.append('store_id', String(storeId));
             if (dateFrom) qs.append('date_from', dateFrom);
             if (dateTo) qs.append('date_to', dateTo);
-            if (department) qs.append('department', department);
-            if (verifiedFilter === 'verified') qs.append('is_verified', 'true');
-            else if (verifiedFilter === 'pending') qs.append('is_verified', 'false');
-            else if (verifiedFilter === 'cancelled') qs.append('status', 'cancelled');
-            else if (verifiedFilter === 'wrong') qs.append('status', 'wrong');
-            else if (verifiedFilter === 'duplicate') qs.append('status', 'duplicate');
+            departments.forEach((d) => qs.append('departments', d));
+            statusFilters.forEach((s) => qs.append('conference_statuses', s));
+            expandedServiceIds.forEach((id) => qs.append('service_ids', String(id)));
             if (flagFilters.courtesy) qs.append('flag', 'courtesy');
             if (flagFilters.galpon) qs.append('flag', 'galpon');
             if (flagFilters.retorno) qs.append('flag', 'retorno');
@@ -1599,7 +1618,7 @@ export function ConferencePage() {
                             Conferência de OS
                         </h1>
                         <p className="text-sm text-[#666666] dark:text-zinc-400">
-                            {verifiedFilter === 'pending' ? 'OS aguardando verificação' : verifiedFilter === 'verified' ? 'OS verificadas' : verifiedFilter === 'cancelled' ? 'OS canceladas' : verifiedFilter === 'wrong' ? 'OS lançadas errado' : 'Todas as OS'}
+                            {statusFilters.length === 1 && statusFilters[0] === 'pending' ? 'OS aguardando verificação' : statusFilters.length === 1 && statusFilters[0] === 'verified' ? 'OS verificadas' : statusFilters.length === 1 && statusFilters[0] === 'cancelled' ? 'OS canceladas' : statusFilters.length === 1 && statusFilters[0] === 'wrong' ? 'OS lançadas errado' : statusFilters.length === 1 && statusFilters[0] === 'duplicate' ? 'OS duplicadas' : statusFilters.length === 0 ? 'Todas as OS' : 'OS filtradas'}
                         </p>
                     </div>
                 </div>
@@ -1633,46 +1652,61 @@ export function ConferencePage() {
                 {availableStores.length > 1 && (
                     <div className="space-y-1">
                         <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Loja</Label>
-                        <StoreMultiSelect
-                            stores={availableStores}
+                        <MultiSelectFilter<number>
+                            options={availableStores.map((s) => ({ value: s.id, label: s.name }))}
                             value={selectedStoreIds}
                             onChange={setSelectedStoreIds}
+                            allLabel="Todas"
+                            countLabel={(n) => `${n} lojas`}
+                            triggerClassName="w-40"
                         />
                     </div>
                 )}
-                {/* 3. Departamento */}
+                {/* 3. Departamento (multi-select) */}
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Departamento</Label>
-                    <Select value={department || 'all'} onValueChange={(v) => setDepartment(v === 'all' ? '' : v)}>
-                        <SelectTrigger className="w-32 h-9 rounded-lg text-sm text-[#111111] dark:text-white border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800]">
-                            <SelectValue placeholder="Todos" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="all">Todos</SelectItem>
-                            {Object.entries(DEPARTMENTS_MAP).map(([k, v]) => (
-                                <SelectItem key={k} value={k}>{v}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
+                    <MultiSelectFilter<string>
+                        options={Object.entries(DEPARTMENTS_MAP).map(([value, label]) => ({ value, label }))}
+                        value={departments}
+                        onChange={setDepartments}
+                        allLabel="Todos"
+                        countLabel={(n) => `${n} deptos`}
+                        triggerClassName="w-36"
+                    />
                 </div>
-                {/* 4. Status */}
+                {/* 4. Serviços (multi-select) */}
+                <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Serviços</Label>
+                    <MultiSelectFilter<number>
+                        options={serviceFilterReady ? serviceOptions : []}
+                        value={serviceIds}
+                        onChange={setServiceIds}
+                        allLabel="Todos"
+                        countLabel={(n) => `${n} serviços`}
+                        emptyMessage={!serviceFilterReady ? 'Selecione uma loja e um departamento' : 'Nenhum serviço encontrado'}
+                        triggerClassName="w-48"
+                        contentClassName="w-80 max-h-72 overflow-y-auto"
+                    />
+                </div>
+                {/* 5. Status (multi-select) */}
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Status</Label>
-                    <Select value={verifiedFilter} onValueChange={(v) => setVerifiedFilter(v as 'pending' | 'verified' | 'all' | 'cancelled' | 'wrong' | 'duplicate')}>
-                        <SelectTrigger className="w-36 h-9 rounded-lg text-sm text-[#111111] dark:text-white border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800]">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="pending">Aguardando</SelectItem>
-                            <SelectItem value="verified">Verificadas</SelectItem>
-                            <SelectItem value="all">Todas</SelectItem>
-                            <SelectItem value="cancelled">Canceladas</SelectItem>
-                            <SelectItem value="wrong">Lançadas Errado</SelectItem>
-                            <SelectItem value="duplicate">Duplicado</SelectItem>
-                        </SelectContent>
-                    </Select>
+                    <MultiSelectFilter<string>
+                        options={[
+                            { value: 'pending', label: 'Aguardando' },
+                            { value: 'verified', label: 'Verificadas' },
+                            { value: 'cancelled', label: 'Canceladas' },
+                            { value: 'wrong', label: 'Lançadas Errado' },
+                            { value: 'duplicate', label: 'Duplicado' },
+                        ]}
+                        value={statusFilters}
+                        onChange={(next) => setStatusFilters(next as ConferenceStatusValue[])}
+                        allLabel="Todas"
+                        countLabel={(n) => `${n} status`}
+                        triggerClassName="w-36"
+                    />
                 </div>
-                {/* 5. Instalador */}
+                {/* 6. Instalador */}
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Instalador</Label>
                     <Select
@@ -1692,12 +1726,12 @@ export function ConferencePage() {
                         </SelectContent>
                     </Select>
                 </div>
-                {/* 6. Cortesia/Retorno */}
+                {/* 7. Cortesia/Retorno */}
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Cortesia/Retorno</Label>
                     <FlagFilterDropdown value={flagFilters} onChange={setFlagFilters} />
                 </div>
-                {/* 7. Datas */}
+                {/* 8. Datas */}
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-[#666666] dark:text-zinc-500 font-semibold">Data início</Label>
                     <Input
@@ -1744,12 +1778,12 @@ export function ConferencePage() {
             {/* Count + HML-60: indicador 100% verificadas */}
             {(() => {
                 const verifiedCount = orders.filter((o) => o.is_verified).length;
-                const allVerified = orders.length > 0 && verifiedCount === orders.length && verifiedFilter !== 'cancelled';
-                const allClear = verifiedFilter === 'pending' && orders.length === 0 && !isLoading;
+                const allVerified = orders.length > 0 && verifiedCount === orders.length && !statusFilters.includes('cancelled');
+                const allClear = statusFilters.length === 1 && statusFilters[0] === 'pending' && orders.length === 0 && !isLoading;
                 return (
                     <div className="flex flex-wrap items-center gap-3">
                         <div className="text-sm text-[#666666] dark:text-zinc-400">
-                            {isLoading ? '...' : verifiedFilter === 'pending' ? `${data?.total ?? orders.length} OS aguardando verificação` : verifiedFilter === 'verified' ? `${data?.total ?? orders.length} OS verificadas` : verifiedFilter === 'cancelled' ? `${data?.total ?? orders.length} OS canceladas` : verifiedFilter === 'wrong' ? `${data?.total ?? orders.length} OS lançadas errado` : `${data?.total ?? orders.length} OS no total`}
+                            {isLoading ? '...' : statusFilters.length === 1 && statusFilters[0] === 'pending' ? `${data?.total ?? orders.length} OS aguardando verificação` : statusFilters.length === 1 && statusFilters[0] === 'verified' ? `${data?.total ?? orders.length} OS verificadas` : statusFilters.length === 1 && statusFilters[0] === 'cancelled' ? `${data?.total ?? orders.length} OS canceladas` : statusFilters.length === 1 && statusFilters[0] === 'wrong' ? `${data?.total ?? orders.length} OS lançadas errado` : statusFilters.length === 1 && statusFilters[0] === 'duplicate' ? `${data?.total ?? orders.length} OS duplicadas` : `${data?.total ?? orders.length} OS no total`}
                         </div>
                         {allVerified && (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 border border-green-300 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700/50">
@@ -1809,6 +1843,21 @@ export function ConferencePage() {
                                     ))}
                                 </TableRow>
                             ))
+                        ) : isError ? (
+                            // Tela de auditoria financeira: erro não pode parecer "nada a conferir"
+                            <TableRow className="border-t border-[#E8E8E8] dark:border-[#333333]">
+                                <TableCell colSpan={totalCols} className="text-center py-12">
+                                    <div className="space-y-3">
+                                        <p className="flex items-center justify-center gap-2 text-red-500 text-sm font-medium">
+                                            <AlertCircle className="w-4 h-4" />
+                                            Erro ao carregar as O.S. da conferência.
+                                        </p>
+                                        <Button variant="outline" size="sm" onClick={() => refetch()}>
+                                            Tentar novamente
+                                        </Button>
+                                    </div>
+                                </TableCell>
+                            </TableRow>
                         ) : orders.length === 0 ? (
                             <TableRow className="border-t border-[#E8E8E8] dark:border-[#333333]">
                                 <TableCell colSpan={totalCols} className="text-center py-12 text-[#999999] dark:text-zinc-500">
@@ -2146,7 +2195,17 @@ export function ConferencePage() {
                 }}
                 canEdit={hasDeletePermission('conference', 'edit')}
                 canDelete={hasDeletePermission('conference', 'delete')}
+                onGenerateCopy={hasDeletePermission('service_orders', 'edit') ? (o) => { setEditOpen(false); setCopySource(o); } : undefined}
             />
+
+            {/* Gerar cópia: montagem condicional garante que defaultValues do useForm sejam aplicados */}
+            {copySource && (
+                <QuickCreateModal
+                    open
+                    onClose={() => setCopySource(null)}
+                    prefill={buildPrefillFromOrder(copySource)}
+                />
+            )}
 
             {photoUrl && (
                 <PhotoDialog

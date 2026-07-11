@@ -1,11 +1,14 @@
 import { lazy, Suspense } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-query';
+import { toast } from '@/hooks/use-toast';
+import { getApiErrorMessage, getApiErrorStatus } from '@/lib/api-error';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { RoleGuard } from '@/components/auth/RoleGuard';
 import { PermissionGuard } from '@/components/auth/PermissionGuard';
 import { HomeRedirect } from '@/components/auth/HomeRedirect';
 import { UnauthorizedPage } from '@/components/common/UnauthorizedPage';
+import { RouteErrorPage } from '@/components/common/RouteErrorPage';
 import { Toaster } from '@/components/ui/toaster';
 
 // Layouts
@@ -47,10 +50,28 @@ const PageFallback = () => (
 );
 
 const queryClient = new QueryClient({
+  // Nenhuma falha de query fica silenciosa: sem este handler, telas que não
+  // tratam isError renderizavam "lista vazia" quando a API falhava (achado
+  // ALTO-4 da auditoria — perigoso no Fechamento/Conferência).
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      // Opt-out por query: useQuery({ meta: { silentError: true } })
+      if (query.meta?.silentError) return;
+      // 401 já é tratado pelo interceptor do axios (refresh/redirect p/ login)
+      if (error instanceof Error && getApiErrorStatus(error) === 401) return;
+      toast({
+        variant: 'destructive',
+        title: 'Erro ao carregar dados',
+        description: getApiErrorMessage(error as Error, 'Verifique sua conexão e tente novamente.'),
+      });
+    },
+  }),
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60 * 5, // 5 minutes
-      gcTime: 1000 * 60 * 2,
+      // gcTime precisa ser >= staleTime: com 2min o cache era coletado antes
+      // de ficar stale, forçando refetch completo ao voltar para a tela.
+      gcTime: 1000 * 60 * 10,
       retry: (failureCount, error) => {
         // Não retry em erros 4xx (client errors)
         if (error instanceof Error && 'status' in error) {
@@ -70,6 +91,7 @@ const router = createBrowserRouter([
   // Rotas públicas (Auth Layout)
   {
     element: <AuthLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { path: '/login', element: <Suspense fallback={<PageFallback />}><LoginPage /></Suspense> },
       { path: '/forgot-password', element: <Suspense fallback={<PageFallback />}><ForgotPasswordPage /></Suspense> },
@@ -80,6 +102,7 @@ const router = createBrowserRouter([
   // Rotas protegidas (autenticadas)
   {
     element: <ProtectedRoute />,
+    errorElement: <RouteErrorPage />,
     children: [
       {
         element: <MainLayout />,
@@ -200,7 +223,7 @@ const router = createBrowserRouter([
 
   // Rotas de erro
   { path: '/unauthorized', element: <UnauthorizedPage /> },
-  { path: '*', element: <Suspense fallback={<PageFallback />}><NotFoundPage /></Suspense> },
+  { path: '*', element: <Suspense fallback={<PageFallback />}><NotFoundPage /></Suspense>, errorElement: <RouteErrorPage /> },
 ]);
 
 function App() {

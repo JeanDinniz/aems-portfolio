@@ -35,7 +35,7 @@ import { serviceOrdersService } from '@/services/api/service-orders.service';
 import { DEPARTMENTS_MAP } from '@/constants/service-orders';
 import { formatDateBR, formatDateTimeBR } from '@/utils/formatDate';
 import { getApiErrorMessage } from '@/lib/api-error';
-import type { Department, ServiceOrder } from '@/types/service-order.types';
+import type { Department, OSCopyPrefill, ServiceOrder } from '@/types/service-order.types';
 import type { AppStackScreenProps } from '@/navigation/types';
 
 /**
@@ -73,10 +73,39 @@ function today(): string {
     return new Date().toISOString().split('T')[0];
 }
 
+/**
+ * Monta o prefill de "Gerar cópia da O.S." a partir de uma O.S. existente.
+ *
+ * Copia veículo, loja, consultor, flags, data, Nº O.S. e fotos (como URLs
+ * remotas). NÃO copia departamento nem serviços (`items`) — o usuário escolhe de
+ * novo na tela de criação. Objeto serializável (param de navegação).
+ */
+function buildCopyPrefill(order: ServiceOrder): OSCopyPrefill {
+    return {
+        sourceOrderId: order.id,
+        location_id: order.location_id,
+        is_galpon: order.is_galpon,
+        is_return: order.is_return,
+        is_courtesy: order.is_courtesy,
+        service_date: order.service_date ?? undefined,
+        external_os_number: order.external_os_number ?? undefined,
+        plate: order.plate,
+        vehicle_model: order.vehicle_model ?? undefined,
+        vehicle_model_id: order.vehicle_model_id ?? undefined,
+        vehicle_color: order.vehicle_color ?? undefined,
+        vehicle_year: order.vehicle_year ?? undefined,
+        consultant_id: order.consultant_id ?? undefined,
+        notes: order.notes ?? undefined,
+        photos: order.photos ?? [],
+        damage_photos: order.damage_photos ?? undefined,
+    };
+}
+
 export function ConferenceScreen({ navigation }: AppStackScreenProps<'Conference'>) {
     const toast = useToast();
     const { colors } = useTheme();
     const canEdit = useCanEdit('conference');
+    const canCreateOS = useCanEdit('service_orders');
     const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
 
     const [verified, setVerified] = useState<ConferenceVerifiedFilter>('pending');
@@ -161,6 +190,20 @@ export function ConferenceScreen({ navigation }: AppStackScreenProps<'Conference
         [resolveDuplicateMutation, toast]
     );
 
+    const handleCopy = useCallback(
+        (order: ServiceOrder) => {
+            // Navegação aninhada: AppStack → Tabs → ServiceOrders → CreateServiceOrder.
+            navigation.navigate('Tabs', {
+                screen: 'ServiceOrders',
+                params: {
+                    screen: 'CreateServiceOrder',
+                    params: { copyFrom: buildCopyPrefill(order) },
+                },
+            });
+        },
+        [navigation]
+    );
+
     const handleToggleVerify = useCallback(
         (order: ServiceOrder) => {
             const mutation = order.is_verified ? unverifyMutation : verifyMutation;
@@ -210,13 +253,15 @@ export function ConferenceScreen({ navigation }: AppStackScreenProps<'Conference
                 <ConferenceCard
                     order={item}
                     canEdit={canEdit}
+                    canCreateOS={canCreateOS}
                     busy={pendingId === item.id}
                     onToggleVerify={() => handleToggleVerify(item)}
                     onResolveDuplicate={() => handleResolveDuplicate(item)}
+                    onCopy={() => handleCopy(item)}
                 />
             </View>
         ),
-        [canEdit, pendingId, handleToggleVerify, handleResolveDuplicate]
+        [canEdit, canCreateOS, pendingId, handleToggleVerify, handleResolveDuplicate, handleCopy]
     );
 
     const keyExtractor = useCallback((item: ServiceOrder) => String(item.id), []);
@@ -625,17 +670,21 @@ function ConferenceStoreSummaryHeader({
 interface ConferenceCardProps {
     order: ServiceOrder;
     canEdit: boolean;
+    canCreateOS: boolean;
     busy: boolean;
     onToggleVerify: () => void;
     onResolveDuplicate: () => void;
+    onCopy: () => void;
 }
 
 function ConferenceCardComponent({
     order,
     canEdit,
+    canCreateOS,
     busy,
     onToggleVerify,
     onResolveDuplicate,
+    onCopy,
 }: ConferenceCardProps) {
     const isDuplicate = order.status === 'duplicate';
     const vehicle = [order.vehicle_model, order.vehicle_color].filter(Boolean).join(' · ') || '—';
@@ -784,6 +833,22 @@ function ConferenceCardComponent({
                                 </Text>
                             </>
                         )}
+                    </Pressable>
+                ) : null}
+
+                {/* Gerar cópia da O.S. — visível com permissão de service_orders,
+                    independente do status ou do acesso de conferência. */}
+                {canCreateOS ? (
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Gerar cópia da O.S."
+                        onPress={onCopy}
+                        className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-lg bg-neutral-100 px-4 py-2.5 active:opacity-80 dark:bg-dark-elevated"
+                    >
+                        <Ionicons name="copy-outline" size={18} color="#667085" />
+                        <Text className="font-sans-bold text-sm text-neutral-700 dark:text-dark-text">
+                            Gerar cópia
+                        </Text>
                     </Pressable>
                 ) : null}
             </View>

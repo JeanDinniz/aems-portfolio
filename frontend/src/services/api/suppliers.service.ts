@@ -15,8 +15,17 @@ export const suppliersService = {
         params.append('page', (filters?.page ?? 1).toString());
         params.append('limit', (filters?.limit ?? 20).toString());
 
-        const response = await apiClient.get<SuppliersListResponse>(`/suppliers?${params.toString()}`);
-        return response.data;
+        const response = await apiClient.get<{ items: Supplier[]; pagination: { total: number; page: number; limit: number } }>(
+            `/suppliers?${params.toString()}`
+        );
+        // Backend envelopa em { items, pagination:{...} }; achatamos para o
+        // shape de SuppliersListResponse (mesma transformação de users.service).
+        return {
+            items: response.data.items,
+            total: response.data.pagination.total,
+            page: response.data.pagination.page,
+            limit: response.data.pagination.limit,
+        };
     },
 
     async getById(id: number): Promise<Supplier> {

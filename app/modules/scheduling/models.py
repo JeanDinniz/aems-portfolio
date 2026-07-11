@@ -50,7 +50,7 @@ class Appointment(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled", index=True)
     service_order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("service_orders.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("service_orders.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

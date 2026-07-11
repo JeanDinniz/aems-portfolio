@@ -261,3 +261,54 @@ describe('PhotoCapture — remover', () => {
         expect(mockRemove).toHaveBeenCalledWith(id);
     });
 });
+
+describe('PhotoCapture — foto remota (cópia de O.S.)', () => {
+    // Wrapper com um valor inicial FIXO de foto remota (não passa pelo pipeline).
+    function RemoteHarness({ onPhotos }: { onPhotos: (p: Photo[]) => void }) {
+        const [photos, setPhotos] = useState<Photo[]>([
+            {
+                id: 'remote_1',
+                preview: 'https://srv/foto.jpg',
+                uploaded: true,
+                uploadProgress: 100,
+                url: 'https://srv/foto.jpg',
+                remote: true,
+            },
+        ]);
+        return (
+            <SafeAreaProvider initialMetrics={metrics}>
+                <ThemeProvider>
+                    <PhotoCapture
+                        value={photos}
+                        onChange={(next) => {
+                            setPhotos(next);
+                            onPhotos(next);
+                        }}
+                        label="Fotos da O.S."
+                    />
+                </ThemeProvider>
+            </SafeAreaProvider>
+        );
+    }
+
+    it('foto remota (url, remote) sem compressed NÃO mostra "Comprimindo" e aparece como enviada', async () => {
+        const utils = await render(<RemoteHarness onPhotos={() => {}} />);
+        // Sem overlay de compressão.
+        expect(utils.queryByText('Comprimindo')).toBeNull();
+        // Rotulada como enviada (a11yLabel do thumb).
+        expect(utils.getByLabelText('Foto enviada')).toBeTruthy();
+        // Não assina a fila (foto remota não está enfileirada).
+        expect(mockEnqueue).not.toHaveBeenCalled();
+    });
+
+    it('remover foto remota não chama remove() da fila e some do array', async () => {
+        let current: Photo[] = [];
+        const utils = await render(<RemoteHarness onPhotos={(p) => (current = p)} />);
+
+        await act(async () => {
+            await fireEvent.press(utils.getByLabelText('Remover foto'));
+        });
+        expect(current).toHaveLength(0);
+        expect(mockRemove).not.toHaveBeenCalled();
+    });
+});

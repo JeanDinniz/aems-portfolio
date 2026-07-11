@@ -59,9 +59,9 @@ async def notification_other_user(
     """Create a notification belonging to a different user (owner)."""
     n = Notification(
         user_id=test_owner.id,
-        type=NotificationType.APPROVAL_NEEDED.value,
-        title="Aprovação necessária",
-        body="Solicitação de compra precisa de aprovação.",
+        type=NotificationType.INVENTORY_ALERT.value,
+        title="Alerta de estoque",
+        body="Bobina de película abaixo do limite.",
         is_read=False,
         created_at=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
     )
@@ -378,12 +378,12 @@ class TestCreateNotificationService:
         notif = await create_notification(
             db=db_session,
             user_id=test_user.id,
-            type=NotificationType.INCIDENT_REPORTED,
-            title="Incidente",
-            body="Um incidente foi reportado.",
+            type=NotificationType.INVENTORY_ALERT,
+            title="Alerta de estoque",
+            body="Bobina abaixo do limite.",
         )
         assert notif.id is not None
-        assert notif.type == "incident_reported"
+        assert notif.type == "inventory_alert"
         assert notif.is_read is False
 
     @pytest.mark.asyncio

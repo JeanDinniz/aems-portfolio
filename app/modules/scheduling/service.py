@@ -40,6 +40,26 @@ _OS_NAO_FINALIZAVEL = {
     OSStatus.DUPLICATE,
 }
 
+# Departamentos em que a tonalidade é obrigatória por película (PPF usa marca).
+TONALITY_REQUIRED_DEPARTMENTS = {"film", "security_film"}
+
+
+def _validate_film_tonalities(department: str | None, film_entries) -> None:
+    """
+    Garante que toda película informada tenha tonalidade quando o departamento exige.
+
+    Aceita entradas como FilmEntryItem ou dict (film_entries já serializado).
+
+    Raises:
+        ValidationError: Se alguma película estiver sem tonalidade.
+    """
+    if department not in TONALITY_REQUIRED_DEPARTMENTS or not film_entries:
+        return
+    for entry in film_entries:
+        tonality = entry.get("tonality") if isinstance(entry, dict) else entry.tonality
+        if not (tonality and str(tonality).strip()):
+            raise ValidationError("Informe a tonalidade de todas as películas do agendamento")
+
 
 def compute_display_status(appt: Appointment, os_status: str | None) -> str:
     """
@@ -397,6 +417,8 @@ async def create_appointment(
     """
     from app.modules.stores.models import Store
 
+    _validate_film_tonalities(data.department, data.film_entries)
+
     # Verifica que a loja existe
     store_result = await db.execute(select(Store).where(Store.id == data.store_id))
     store = store_result.scalar_one_or_none()
@@ -516,6 +538,13 @@ async def update_appointment(
             update_data["consultant_name"] = consultant.name if consultant is not None else None
         else:
             update_data["consultant_name"] = None
+
+    # Tonalidade obrigatória por película quando as entradas são alteradas
+    # (não bloqueia edições de outros campos em agendamentos legados sem tonalidade)
+    if update_data.get("film_entries") is not None:
+        _validate_film_tonalities(
+            update_data.get("department") or appt.department, update_data["film_entries"]
+        )
 
     # Serialize film_entries list[FilmEntryItem] → list[dict] for JSON storage
     if "film_entries" in update_data and update_data["film_entries"] is not None:

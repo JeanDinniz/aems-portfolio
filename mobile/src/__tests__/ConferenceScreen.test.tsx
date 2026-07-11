@@ -39,9 +39,11 @@ jest.mock('@/hooks/useServiceOrders', () => ({
 }));
 
 // ─── Permissão / loja / toast / tema / helpers ───────────────────────────────
-let mockCanEdit = true;
+// Permissão por submódulo: `conference` controla a ação de conferir; `service_orders`
+// controla o botão "Gerar cópia". Default: ambos true.
+let mockCanEditBySub: Record<string, boolean> = {};
 jest.mock('@/hooks/useMyPermissions', () => ({
-    useCanEdit: () => mockCanEdit,
+    useCanEdit: (sub: string) => mockCanEditBySub[sub] ?? true,
 }));
 jest.mock('@/stores/store.store', () => ({
     useStoreStore: (selector: (s: { selectedStoreId: number | null }) => unknown) =>
@@ -130,7 +132,7 @@ async function renderScreen() {
 
 beforeEach(() => {
     jest.clearAllMocks();
-    mockCanEdit = true;
+    mockCanEditBySub = {};
     mockItems = [];
 });
 
@@ -170,7 +172,7 @@ describe('ConferenceScreen', () => {
     });
 
     it('sem permissão de conferência, não mostra a ação de marcar', async () => {
-        mockCanEdit = false;
+        mockCanEditBySub = { conference: false };
         mockItems = [makeOrder({ id: 10 })];
         const { queryByLabelText } = await renderScreen();
 
@@ -192,5 +194,59 @@ describe('ConferenceScreen', () => {
             fireEvent.press(courtesy);
         });
         expect(getByLabelText('Somente cortesia').props.accessibilityState.checked).toBe(true);
+    });
+});
+
+describe('ConferenceScreen — Gerar cópia da O.S.', () => {
+    it('mostra o botão "Gerar cópia" com permissão de service_orders', async () => {
+        mockCanEditBySub = { service_orders: true };
+        mockItems = [makeOrder({ id: 10 })];
+        const { getByLabelText } = await renderScreen();
+
+        expect(getByLabelText('Gerar cópia da O.S.')).toBeTruthy();
+    });
+
+    it('oculta o botão "Gerar cópia" sem service_orders (mesmo com conference edit)', async () => {
+        mockCanEditBySub = { service_orders: false, conference: true };
+        mockItems = [makeOrder({ id: 10 })];
+        const { queryByLabelText, getByLabelText } = await renderScreen();
+
+        expect(queryByLabelText('Gerar cópia da O.S.')).toBeNull();
+        // A ação de conferência continua visível (conference edit true).
+        expect(getByLabelText('Marcar conferida')).toBeTruthy();
+    });
+
+    it('press navega para CreateServiceOrder com copyFrom (placa/flags/fotos) e SEM department/items', async () => {
+        mockCanEditBySub = { service_orders: true };
+        mockItems = [
+            makeOrder({
+                id: 10,
+                plate: 'ABC1D23',
+                department: 'film',
+                is_galpon: true,
+                is_courtesy: true,
+                photos: ['https://srv/a.jpg', 'https://srv/b.jpg'],
+            }),
+        ];
+        const { getByLabelText, navigation } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Gerar cópia da O.S.'));
+        });
+
+        expect(navigation.navigate).toHaveBeenCalledTimes(1);
+        const [routeName, params] = navigation.navigate.mock.calls[0];
+        expect(routeName).toBe('Tabs');
+        expect(params.screen).toBe('ServiceOrders');
+        expect(params.params.screen).toBe('CreateServiceOrder');
+        const copyFrom = params.params.params.copyFrom;
+        expect(copyFrom.sourceOrderId).toBe(10);
+        expect(copyFrom.plate).toBe('ABC1D23');
+        expect(copyFrom.is_galpon).toBe(true);
+        expect(copyFrom.is_courtesy).toBe(true);
+        expect(copyFrom.photos).toEqual(['https://srv/a.jpg', 'https://srv/b.jpg']);
+        // Não carrega departamento nem serviços.
+        expect(copyFrom).not.toHaveProperty('department');
+        expect(copyFrom).not.toHaveProperty('items');
     });
 });

@@ -157,7 +157,7 @@ export function UsersTable({ users, isLoading, page, pageSize, total, onPageChan
                                     <TableCell className="text-right">
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
-                                                <Button variant="ghost" size="icon" className="text-[#F5A800]">
+                                                <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
                                                     <MoreHorizontal className="h-4 w-4" />
                                                 </Button>
                                             </DropdownMenuTrigger>

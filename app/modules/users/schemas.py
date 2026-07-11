@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.permissions import UserRole
+from app.core.schemas import PaginationMeta
 from app.core.validators import validate_password_strength
 
 
@@ -104,7 +105,7 @@ class UserListResponse(BaseModel):
     """Schema for paginated user list response."""
 
     items: list[UserResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class PasswordReset(BaseModel):

@@ -113,6 +113,7 @@ export function EmployeesTable({
                                                     variant="ghost"
                                                     size="icon"
                                                     title="Ficha"
+                                                    aria-label={`Ficha de ${emp.name}`}
                                                     onClick={() => onFicha(emp)}
                                                     className="h-8 w-8 text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white"
                                                 >
@@ -123,6 +124,7 @@ export function EmployeesTable({
                                                         variant="ghost"
                                                         size="icon"
                                                         title="Movimentacoes"
+                                                        aria-label={`Movimentações de ${emp.name}`}
                                                         onClick={() => onMovimentacao(emp)}
                                                         className="h-8 w-8 text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white"
                                                     >
@@ -133,6 +135,7 @@ export function EmployeesTable({
                                                     variant="ghost"
                                                     size="icon"
                                                     title="Historico"
+                                                    aria-label={`Histórico de ${emp.name}`}
                                                     onClick={() => onHistorico(emp)}
                                                     className="h-8 w-8 text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white"
                                                 >
@@ -143,6 +146,7 @@ export function EmployeesTable({
                                                         variant="ghost"
                                                         size="icon"
                                                         title="Excluir"
+                                                        aria-label={`Excluir ${emp.name}`}
                                                         onClick={() => setEmployeeToDelete(emp)}
                                                         className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
                                                     >

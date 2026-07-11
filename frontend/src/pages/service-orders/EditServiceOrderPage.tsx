@@ -174,6 +174,7 @@ export default function EditServiceOrderPage() {
                 <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Voltar"
                     onClick={() => navigate(`/service-orders/${id}`)}
                     className="text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-700/50"
                 >

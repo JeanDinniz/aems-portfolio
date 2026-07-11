@@ -2,6 +2,7 @@ import type { NavigatorScreenParams } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { OSCopyPrefill } from '@/types/service-order.types';
 
 /**
  * Tipagem das rotas. O RootNavigator alterna entre AuthStack (deslogado) e
@@ -22,7 +23,8 @@ export type AuthStackParamList = {
 export type ServiceOrdersStackParamList = {
     ServiceOrdersList: undefined;
     ServiceOrderDetail: { id: number };
-    CreateServiceOrder: undefined;
+    /** `copyFrom` pré-preenche a criação a partir de uma O.S. (Gerar cópia). */
+    CreateServiceOrder: { copyFrom?: OSCopyPrefill } | undefined;
     EditServiceOrder: { id: number };
     FinalizeOS: { id: number };
 };

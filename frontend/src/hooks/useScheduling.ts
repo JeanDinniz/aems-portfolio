@@ -18,8 +18,10 @@ export function useAppointments(
   return useQuery({
     queryKey: ['scheduling', filters, page, limit],
     queryFn: () => schedulingService.list(filters, page, limit),
-    staleTime: 0,
-    gcTime: 1000 * 60 * 2,
+    // O WebSocket (appointment_created/updated/cancelled) invalida em tempo real;
+    // 30s evita refetch da lista inteira a cada troca de foco/navegação.
+    staleTime: 1000 * 30,
+    gcTime: 1000 * 60 * 10,
   })
 }
 
@@ -28,7 +30,6 @@ export function useTodaySummary(storeId?: number | null) {
     queryKey: ['scheduling-summary', storeId],
     queryFn: () => schedulingService.getTodaySummary(storeId),
     staleTime: 1000 * 60 * 5,
-    gcTime: 1000 * 60 * 2,
   })
 }
 
@@ -113,7 +114,6 @@ export function useAppointmentHistory(id: number | null) {
     queryFn: () => schedulingService.getHistory(id!),
     enabled: !!id,
     staleTime: 1000 * 60 * 5,
-    gcTime: 1000 * 60 * 2,
     retry: false,
   })
 }

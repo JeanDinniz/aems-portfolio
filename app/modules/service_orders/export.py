@@ -109,9 +109,12 @@ def _update_table_ref(ws, last_data_row: int, last_col_letter: str, start_row: i
 # ── Conferência ──────────────────────────────────────────────────────────────
 
 
-def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
+class ConferenceExcelWriter:
     """
-    Relatório Conferência — 27 colunas (A–AA).
+    Escritor incremental do Excel de Conferência — 27 colunas (A–AA).
+
+    Permite alimentar as O.S. em lotes (add_orders) para não precisar manter
+    todas em memória de uma vez; finish() fecha o arquivo e retorna os bytes.
 
     A: Data da O.S  B: Loja         C: Local        D: DPTO
     E: Placa/Chassi F: O.S          G: Cortesia?    H: Retorno?
@@ -122,52 +125,89 @@ def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
     X: Data Cadastro Y: Responsável Cadastro
     Z: Data Alteração AA: Responsável Alteração
     """
-    wb = openpyxl.load_workbook(CONFERENCE_TEMPLATE_PATH)
-    _reset_view(wb)
-    ws = wb.active
 
-    start_row = 2
-    row_idx = start_row
+    def __init__(self) -> None:
+        self.wb = openpyxl.load_workbook(CONFERENCE_TEMPLATE_PATH)
+        _reset_view(self.wb)
+        self.ws = self.wb.active
+        self.start_row = 2
+        self.row_idx = self.start_row
 
-    for order in orders:
-        store_nm = order.store.name if order.store else ""
-        local = "Galpão" if order.is_galpon else ""
-        service_date = order.service_date or (order.entry_time.date() if order.entry_time else None)
-        date_str = _format_date(service_date)
-        dept_label = DEPT_LABELS.get(order.department or "", order.department or "")
-        dept_key = (order.department or "").lower()
+    def add_orders(self, orders: list[ServiceOrder]) -> None:
+        ws = self.ws
+        row_idx = self.row_idx
 
-        if order.external_os_number:
-            os_number = order.external_os_number
-        elif dept_key in _DEPTS_NO_EXT_OS:
-            os_number = ""
-        else:
-            os_number = order.order_number or f"#{order.id}"
+        for order in orders:
+            store_nm = order.store.name if order.store else ""
+            local = "Galpão" if order.is_galpon else ""
+            service_date = order.service_date or (
+                order.entry_time.date() if order.entry_time else None
+            )
+            date_str = _format_date(service_date)
+            dept_label = DEPT_LABELS.get(order.department or "", order.department or "")
+            dept_key = (order.department or "").lower()
 
-        plate = order.vehicle_plate or ""
-        is_courtesy = "Sim" if order.is_courtesy else "Não"
-        is_return = "Sim" if order.is_return else "Não"
-        consultant_name = (
-            order.consultant.name if order.consultant else (order.consultant_name or "")
-        )
-        vehicle_full = f"{order.vehicle_brand or ''} {order.vehicle_model or ''}".strip()
-        color = order.vehicle_color or ""
-        notes = _clean_notes(order.notes or "")
-        invoice = order.invoice_number or ""
-        is_verified_mark = "✓" if order.is_verified else ""
-        status_conf = _TERMINAL_STATUS_LABELS.get(
-            order.status, "Verificado" if order.is_verified else "Pendente"
-        )
-        worker_names = ", ".join(w.employee.name for w in (order.workers or []) if w.employee)
-        created_at_str = _format_date(order.created_at)
-        updated_at_str = _format_date(order.updated_at)
-        created_by_name = order.created_by.full_name if order.created_by else ""
+            if order.external_os_number:
+                os_number = order.external_os_number
+            elif dept_key in _DEPTS_NO_EXT_OS:
+                os_number = ""
+            else:
+                os_number = order.order_number or f"#{order.id}"
 
-        items = order.items or []
-        if items:
-            for item in items:
-                svc = item.service
-                item_value = float(item.unit_price or 0) * int(item.quantity or 1)
+            plate = order.vehicle_plate or ""
+            is_courtesy = "Sim" if order.is_courtesy else "Não"
+            is_return = "Sim" if order.is_return else "Não"
+            consultant_name = (
+                order.consultant.name if order.consultant else (order.consultant_name or "")
+            )
+            vehicle_full = f"{order.vehicle_brand or ''} {order.vehicle_model or ''}".strip()
+            color = order.vehicle_color or ""
+            notes = _clean_notes(order.notes or "")
+            invoice = order.invoice_number or ""
+            is_verified_mark = "✓" if order.is_verified else ""
+            status_conf = _TERMINAL_STATUS_LABELS.get(
+                order.status, "Verificado" if order.is_verified else "Pendente"
+            )
+            worker_names = ", ".join(w.employee.name for w in (order.workers or []) if w.employee)
+            created_at_str = _format_date(order.created_at)
+            updated_at_str = _format_date(order.updated_at)
+            created_by_name = order.created_by.full_name if order.created_by else ""
+
+            items = order.items or []
+            if items:
+                for item in items:
+                    svc = item.service
+                    item_value = float(item.unit_price or 0) * int(item.quantity or 1)
+                    _write_conference_row(
+                        ws,
+                        row_idx,
+                        date_str,
+                        store_nm,
+                        local,
+                        dept_label,
+                        plate,
+                        os_number,
+                        is_courtesy,
+                        is_return,
+                        consultant_name,
+                        vehicle_full,
+                        color,
+                        notes,
+                        invoice,
+                        (svc.code or "") if svc else "",
+                        (svc.name or "") if svc else "",
+                        item.tonality or "",
+                        item.roll_code or "",
+                        worker_names,
+                        item_value,
+                        is_verified_mark,
+                        status_conf,
+                        created_at_str,
+                        created_by_name,
+                        updated_at_str,
+                    )
+                    row_idx += 1
+            else:
                 _write_conference_row(
                     ws,
                     row_idx,
@@ -184,12 +224,12 @@ def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
                     color,
                     notes,
                     invoice,
-                    (svc.code or "") if svc else "",
-                    (svc.name or "") if svc else "",
-                    item.tonality or "",
-                    item.roll_code or "",
+                    "",
+                    "",
+                    "",
+                    "",
                     worker_names,
-                    item_value,
+                    0.0,
                     is_verified_mark,
                     status_conf,
                     created_at_str,
@@ -197,49 +237,31 @@ def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
                     updated_at_str,
                 )
                 row_idx += 1
-        else:
-            _write_conference_row(
-                ws,
-                row_idx,
-                date_str,
-                store_nm,
-                local,
-                dept_label,
-                plate,
-                os_number,
-                is_courtesy,
-                is_return,
-                consultant_name,
-                vehicle_full,
-                color,
-                notes,
-                invoice,
-                "",
-                "",
-                "",
-                "",
-                worker_names,
-                0.0,
-                is_verified_mark,
-                status_conf,
-                created_at_str,
-                created_by_name,
-                updated_at_str,
-            )
-            row_idx += 1
 
-    last_data_row = row_idx - 1
-    if last_data_row >= start_row:
-        _update_table_ref(ws, last_data_row, "AA")
-        subtotal_row = last_data_row + 1
-        sc = ws.cell(row=subtotal_row, column=19)  # S: Valor
-        sc.value = f"=SUBTOTAL(9,S{start_row}:S{last_data_row})"
-        sc.number_format = "#,##0.00"
+        self.row_idx = row_idx
 
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.read()
+    def finish(self) -> bytes:
+        ws = self.ws
+        start_row = self.start_row
+        last_data_row = self.row_idx - 1
+        if last_data_row >= start_row:
+            _update_table_ref(ws, last_data_row, "AA")
+            subtotal_row = last_data_row + 1
+            sc = ws.cell(row=subtotal_row, column=19)  # S: Valor
+            sc.value = f"=SUBTOTAL(9,S{start_row}:S{last_data_row})"
+            sc.number_format = "#,##0.00"
+
+        buf = BytesIO()
+        self.wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+
+
+def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
+    """Gera o Excel de conferência de uma vez (atalho sobre ConferenceExcelWriter)."""
+    writer = ConferenceExcelWriter()
+    writer.add_orders(orders)
+    return writer.finish()
 
 
 def _write_conference_row(

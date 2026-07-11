@@ -29,4 +29,6 @@ export interface Photo {
     uploadProgress: number; // 0-100
     url?: string; // URL no servidor (após upload)
     error?: string; // Erro de upload
+    /** Foto já hospedada no servidor (cópia de O.S.) — não passa pela fila de upload. */
+    remote?: boolean;
 }

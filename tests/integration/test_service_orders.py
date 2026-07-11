@@ -14,7 +14,7 @@ from app.modules.auth.models import User
 from app.modules.brands.models import Brand
 from app.modules.consultants.models import Consultant
 from app.modules.dealerships.models import Dealership
-from app.modules.service_orders.models import ServiceOrder
+from app.modules.service_orders.models import ServiceOrder, ServiceOrderItem
 from app.modules.services.models import Service
 from app.modules.stores.models import Store
 
@@ -1125,6 +1125,218 @@ class TestServiceOrdersListFilters:
         data = response.json()
         plates = [item["vehicle_plate"] for item in data["items"]]
         assert unique_plate in plates
+
+    @pytest.mark.asyncio
+    async def test_list_filter_by_service_ids(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_user: User,
+        test_dealership: "Dealership",
+        test_brand: Brand,
+        db_session: AsyncSession,
+    ):
+        """service_ids filtra O.S. que tenham ao menos um item nesses serviços."""
+        svc_match = Service(
+            name="Polimento Técnico Premium",
+            code="PLM9",
+            department="workshop",
+            base_price=200.0,
+            is_active=True,
+            brand_id=test_brand.id,
+        )
+        svc_other = Service(
+            name="Higienização Interna",
+            code="HIG1",
+            department="workshop",
+            base_price=100.0,
+            is_active=True,
+            brand_id=test_brand.id,
+        )
+        db_session.add_all([svc_match, svc_other])
+        await db_session.flush()
+
+        def make_order(plate: str) -> ServiceOrder:
+            return ServiceOrder(
+                store_id=test_store.id,
+                dealership_id=test_dealership.id,
+                vehicle_plate=plate,
+                department="workshop",
+                status="waiting",
+                entry_time=datetime.now(UTC),
+                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                requires_invoice=True,
+                created_by_id=test_user.id,
+            )
+
+        so_match = make_order("SSR1A23")
+        so_other = make_order("SSR2B34")
+        db_session.add_all([so_match, so_other])
+        await db_session.flush()
+        db_session.add_all(
+            [
+                ServiceOrderItem(
+                    service_order_id=so_match.id,
+                    service_id=svc_match.id,
+                    quantity=1,
+                    unit_price=200.0,
+                ),
+                ServiceOrderItem(
+                    service_order_id=so_other.id,
+                    service_id=svc_other.id,
+                    quantity=1,
+                    unit_price=100.0,
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        # (a) apenas o serviço da primeira O.S.
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"service_ids": [svc_match.id]},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "SSR1A23" in plates
+        assert "SSR2B34" not in plates
+
+        # (b) os dois serviços → ambas as O.S.
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"service_ids": [svc_match.id, svc_other.id]},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "SSR1A23" in plates
+        assert "SSR2B34" in plates
+
+        # (c) id inexistente → nenhuma das duas
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"service_ids": [999999]},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "SSR1A23" not in plates
+        assert "SSR2B34" not in plates
+
+    @pytest.mark.asyncio
+    async def test_list_filter_by_conference_statuses(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_user: User,
+        test_dealership: "Dealership",
+        db_session: AsyncSession,
+    ):
+        """conference_statuses aplica OR das condições do filtro da Conferência."""
+
+        def make_order(plate: str, status: str, is_verified: bool) -> ServiceOrder:
+            return ServiceOrder(
+                store_id=test_store.id,
+                dealership_id=test_dealership.id,
+                vehicle_plate=plate,
+                department="workshop",
+                status=status,
+                is_verified=is_verified,
+                entry_time=datetime.now(UTC),
+                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                requires_invoice=True,
+                created_by_id=test_user.id,
+            )
+
+        orders = {
+            "waiting": make_order("CST1A11", "waiting", False),
+            "verified": make_order("CST2B22", "completed", True),
+            "cancelled": make_order("CST3C33", "cancelled", False),
+            "wrong": make_order("CST4D44", "wrong", False),
+            "duplicate": make_order("CST5E55", "duplicate", False),
+        }
+        db_session.add_all(orders.values())
+        await db_session.commit()
+        all_plates = {so.vehicle_plate for so in orders.values()}
+
+        async def fetch_plates(params: dict) -> set[str]:
+            response = await authenticated_client.get("/api/v1/service-orders", params=params)
+            assert response.status_code == 200
+            plates = {item["vehicle_plate"] for item in response.json()["items"]}
+            return plates & all_plates
+
+        # pending inclui wrong/duplicate não verificadas (semântica atual preservada)
+        assert await fetch_plates({"conference_statuses": ["pending"]}) == {
+            "CST1A11",
+            "CST4D44",
+            "CST5E55",
+        }
+        assert await fetch_plates({"conference_statuses": ["verified"]}) == {"CST2B22"}
+        # cancelled dentro do OR fura o default include_cancelled=False
+        assert await fetch_plates({"conference_statuses": ["cancelled"]}) == {"CST3C33"}
+        assert await fetch_plates({"conference_statuses": ["verified", "cancelled"]}) == {
+            "CST2B22",
+            "CST3C33",
+        }
+        # sem o filtro multi + include_cancelled=true → todas ("Todas" da tela)
+        assert await fetch_plates({"include_cancelled": True}) == all_plates
+
+    @pytest.mark.asyncio
+    async def test_list_filter_by_departments_multi(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_user: User,
+        test_dealership: "Dealership",
+        db_session: AsyncSession,
+    ):
+        """departments (multi) filtra por lista; department (single) segue funcionando."""
+
+        def make_order(plate: str, department: str) -> ServiceOrder:
+            return ServiceOrder(
+                store_id=test_store.id,
+                dealership_id=test_dealership.id,
+                vehicle_plate=plate,
+                department=department,
+                status="waiting",
+                entry_time=datetime.now(UTC),
+                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                requires_invoice=True,
+                created_by_id=test_user.id,
+            )
+
+        so_film = make_order("DPT1F11", "film")
+        so_workshop = make_order("DPT2W22", "workshop")
+        db_session.add_all([so_film, so_workshop])
+        await db_session.commit()
+
+        # multi: os dois departamentos
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"departments": ["film", "workshop"]},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "DPT1F11" in plates
+        assert "DPT2W22" in plates
+
+        # multi: só film
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"departments": ["film"]},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "DPT1F11" in plates
+        assert "DPT2W22" not in plates
+
+        # regressão: department single continua funcionando (mobile/ServiceOrdersPage)
+        response = await authenticated_client.get(
+            "/api/v1/service-orders",
+            params={"department": "workshop"},
+        )
+        assert response.status_code == 200
+        plates = [item["vehicle_plate"] for item in response.json()["items"]]
+        assert "DPT2W22" in plates
+        assert "DPT1F11" not in plates
 
     @pytest.mark.asyncio
     async def test_list_owner_sees_all_stores(

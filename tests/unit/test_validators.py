@@ -13,6 +13,7 @@ Covers:
 import pytest
 
 from app.core.validators import (
+    normalize_tonality,
     sanitize_text,
     validate_password_strength,
     validate_photo_list,
@@ -30,10 +31,10 @@ class TestValidatePasswordStrengthValid:
     @pytest.mark.parametrize(
         "password",
         [
-            "Abcdef1!",          # exactly 8 chars, all rules satisfied
-            "MyP@ssw0rd",        # typical strong password
-            "Tr0ub4dor&3",       # 12 chars with special character
-            "Abc123!@#XYZ",      # multiple special chars
+            "Abcdef1!",  # exactly 8 chars, all rules satisfied
+            "MyP@ssw0rd",  # typical strong password
+            "Tr0ub4dor&3",  # 12 chars with special character
+            "Abc123!@#XYZ",  # multiple special chars
             "A" * 5 + "a1!xxxxx",  # uppercase, lowercase, digit, special, long
         ],
     )
@@ -48,8 +49,8 @@ class TestValidatePasswordStrengthTooShort:
     @pytest.mark.parametrize(
         "password",
         [
-            "",         # empty string
-            "A1!a",     # 4 chars
+            "",  # empty string
+            "A1!a",  # 4 chars
             "Ab1!xyz",  # 7 chars — one below boundary
         ],
     )
@@ -150,9 +151,9 @@ class TestSanitizeTextValid:
             "Carro Toyota Corolla prata",
             "Observações: veículo com riscos na porta dianteira direita",
             "Preço: R$ 150,00 - Desconto 10%",
-            "5 < 10 e 10 > 5",          # angle brackets in math context
-            "a@b.com",                   # email-like text
-            "",                          # empty string is allowed
+            "5 < 10 e 10 > 5",  # angle brackets in math context
+            "a@b.com",  # email-like text
+            "",  # empty string is allowed
             "<strong>negrito</strong>",  # plain HTML tags without event handlers
             "url: http://example.com",
         ],
@@ -169,11 +170,11 @@ class TestSanitizeTextXSSRejected:
         "text",
         [
             "<script>alert(1)</script>",
-            "<SCRIPT>evil()</SCRIPT>",              # uppercase
-            "  <script  >evil()</script>",          # spaces around tag name
+            "<SCRIPT>evil()</SCRIPT>",  # uppercase
+            "  <script  >evil()</script>",  # spaces around tag name
             "javascript:alert(document.cookie)",
-            "JAVASCRIPT:void(0)",                   # uppercase scheme
-            '<img onerror="evil()">',               # inline event handler
+            "JAVASCRIPT:void(0)",  # uppercase scheme
+            '<img onerror="evil()">',  # inline event handler
             '<img onload="evil()">',
             '<button onclick="evil()">click</button>',
             "<iframe src='http://evil.com'>",
@@ -221,8 +222,8 @@ class TestValidatePhotoUrlInvalidScheme:
             "ftp://files.example.com/photo.jpg",
             "file:///etc/passwd",
             "vbscript:msgbox(1)",
-            "/static/uploads/photo.jpg",        # relative URL (no scheme)
-            "",                                  # empty string (no scheme)
+            "/static/uploads/photo.jpg",  # relative URL (no scheme)
+            "",  # empty string (no scheme)
         ],
     )
     def test_invalid_scheme_raises_value_error(self, url: str) -> None:
@@ -288,3 +289,30 @@ class TestValidatePhotoList:
         offending = ["ftp://files.example.com/photo.jpg"]
         with pytest.raises(ValueError):
             validate_photo_list(valid_urls + offending)
+
+
+# ===========================================================================
+# normalize_tonality
+# ===========================================================================
+
+
+class TestNormalizeTonality:
+    """Normalização de tonalidade: trim, upper no padrão G##, vazio vira None."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("G05", "G05"),  # já canônico
+            ("g05", "G05"),  # minúscula → upper
+            (" G05 ", "G05"),  # espaços nas bordas
+            ("g35", "G35"),
+            ("G5", "G5"),  # padrão G# válido, sem padding
+            ("Incolor", "Incolor"),  # não-G## preserva case
+            (" incolor ", "incolor"),
+            (None, None),
+            ("", None),  # vazio vira None
+            ("   ", None),  # só espaços vira None
+        ],
+    )
+    def test_normalization(self, raw: str | None, expected: str | None) -> None:
+        assert normalize_tonality(raw) == expected

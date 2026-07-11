@@ -116,7 +116,7 @@ export function AuditPage() {
                         </p>
                     </div>
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => refetch()} title="Atualizar">
+                <Button variant="ghost" size="icon" onClick={() => refetch()} title="Atualizar" aria-label="Atualizar">
                     <RefreshCw className="h-4 w-4" />
                 </Button>
             </div>

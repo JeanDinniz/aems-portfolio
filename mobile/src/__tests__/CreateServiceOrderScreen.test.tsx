@@ -1,5 +1,6 @@
 import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
+import { Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { CreateServiceOrderScreen } from '@/screens/service-orders/CreateServiceOrderScreen';
@@ -201,25 +202,43 @@ jest.mock('@/components/features/ServiceItemPicker', () => {
 
 jest.mock('@/components/features/PhotoCapture', () => {
     const React = require('react');
-    const { Pressable, Text } = require('react-native');
+    const { Pressable, Text, View } = require('react-native');
     return {
         __esModule: true,
         PhotoCapture: ({
             label,
+            value,
             onChange,
         }: {
             label?: string;
+            value?: { id: string; url?: string; uploaded?: boolean }[];
             onChange: (v: unknown) => void;
         }) =>
             // Só o capturador da "Foto da O.S." injeta; o de avaria fica inerte.
+            // Além disso, renderiza o `value` atual (uma linha por foto) para que
+            // os testes de cópia possam asserir as fotos remotas já enviadas.
             label === 'Foto da O.S.'
                 ? React.createElement(
-                      Pressable,
-                      {
-                          accessibilityLabel: 'inject-photos',
-                          onPress: () => onChange(mockPhotosToInject),
-                      },
-                      React.createElement(Text, null, 'inject-photos')
+                      View,
+                      null,
+                      React.createElement(
+                          Pressable,
+                          {
+                              accessibilityLabel: 'inject-photos',
+                              onPress: () => onChange(mockPhotosToInject),
+                          },
+                          React.createElement(Text, null, 'inject-photos')
+                      ),
+                      ...(value ?? []).map((p) =>
+                          React.createElement(
+                              Text,
+                              {
+                                  key: p.id,
+                                  accessibilityLabel: `os-photo-${p.uploaded ? 'sent' : 'pending'}`,
+                              },
+                              p.url ?? p.id
+                          )
+                      )
                   )
                 : null,
     };
@@ -239,13 +258,19 @@ function Providers({ children }: { children: ReactNode }) {
     );
 }
 
-async function renderScreen() {
+async function renderScreen(routeParams?: Record<string, unknown>) {
     const navigation = { navigate: jest.fn(), goBack: jest.fn() };
     const utils = await render(
         <Providers>
             <CreateServiceOrderScreen
                 navigation={navigation as never}
-                route={{ key: 'CreateServiceOrder', name: 'CreateServiceOrder' } as never}
+                route={
+                    {
+                        key: 'CreateServiceOrder',
+                        name: 'CreateServiceOrder',
+                        params: routeParams,
+                    } as never
+                }
             />
         </Providers>
     );
@@ -532,6 +557,167 @@ describe('CreateServiceOrderScreen — caminho feliz', () => {
     });
 });
 
+describe('CreateServiceOrderScreen — Salvar e Outro Depto.', () => {
+    it('mantém o carro e limpa o departamento; fotos permanecem como enviadas', async () => {
+        mockMutateAsync.mockResolvedValueOnce({ id: 3 });
+        const utils = await renderScreen();
+        const { getByText, getByPlaceholderText, navigation } = utils;
+
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('ABC1D23'), 'ABC1D23');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: 12345'), 'OS-1234');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: Branco'), 'Branco');
+        });
+        await selectTipo(utils);
+        await selectConsultant(utils);
+        await selectModel(utils);
+        mockServicesToInject = [{ service_id: 42, quantity: 1 }];
+        mockPhotosToInject = [makePhoto({ url: 'https://srv/foto.jpg' })];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-photos'));
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Salvar e Outro Depto.'));
+        });
+
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+        });
+        // Não navega para trás (continua na tela).
+        expect(navigation.goBack).not.toHaveBeenCalled();
+        // Dados do carro permanecem (placa e cor).
+        await waitFor(() => {
+            expect((getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'ABC1D23'
+            );
+        });
+        expect((getByPlaceholderText('Ex: Branco').props as { value: string }).value).toBe('Branco');
+        // Nenhum chip de departamento ativo (department limpo).
+        const filmChip = utils.getByLabelText('Película');
+        expect(filmChip.props.accessibilityState?.selected ?? false).toBe(false);
+        // A foto permanece renderizada como enviada (virou remota).
+        expect(utils.getAllByLabelText('os-photo-sent')).toHaveLength(1);
+        // Toast de "outro departamento".
+        expect(mockToastSuccess).toHaveBeenCalledWith(
+            expect.stringMatching(/departamento/i)
+        );
+    });
+
+    it('poda os ids da fila do 1º submit (pruneUploaded com os ids consumidos)', async () => {
+        mockMutateAsync.mockResolvedValueOnce({ id: 3 });
+        const utils = await renderScreen();
+        const { getByText, getByPlaceholderText } = utils;
+
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('ABC1D23'), 'ABC1D23');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: 12345'), 'OS-1234');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: Branco'), 'Branco');
+        });
+        await selectTipo(utils);
+        await selectConsultant(utils);
+        await selectModel(utils);
+        mockServicesToInject = [{ service_id: 42, quantity: 1 }];
+        mockPhotosToInject = [
+            makePhoto({ id: 'queue_1', url: 'https://srv/foto.jpg' }),
+        ];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-photos'));
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Salvar e Outro Depto.'));
+        });
+
+        await waitFor(() => {
+            expect(mockPruneUploaded).toHaveBeenCalledWith(['queue_1']);
+        });
+    });
+
+    it('2º submit envia photos com as MESMAS URLs do 1º (sem re-upload)', async () => {
+        mockMutateAsync.mockResolvedValue({ id: 3 });
+        const utils = await renderScreen();
+        const { getByText, getByPlaceholderText } = utils;
+
+        // 1º lançamento (Película).
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('ABC1D23'), 'ABC1D23');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: 12345'), 'OS-1234');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: Branco'), 'Branco');
+        });
+        await selectTipo(utils);
+        await selectConsultant(utils);
+        await selectModel(utils);
+        mockServicesToInject = [{ service_id: 42, quantity: 1 }];
+        mockPhotosToInject = [makePhoto({ id: 'queue_1', url: 'https://srv/foto.jpg' })];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-photos'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Salvar e Outro Depto.'));
+        });
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+        });
+
+        // 2º lançamento: escolhe outro depto (Oficina exige Nº O.S. também) e serviço.
+        // Como as fotos viraram remotas, NÃO re-injetamos fotos.
+        await act(async () => {
+            fireEvent.press(getByText('Oficina'));
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: 12345'), 'OS-5678');
+        });
+        mockServicesToInject = [{ service_id: 99, quantity: 1 }];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Salvar e Outro Depto.'));
+        });
+
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(2);
+        });
+        const secondPayload = mockMutateAsync.mock.calls[1][0];
+        // Mesmas URLs do 1º submit.
+        expect(secondPayload.photos).toEqual(['https://srv/foto.jpg']);
+        expect(secondPayload.plate).toBe('ABC1D23');
+        expect(secondPayload.department).toBe('workshop');
+        expect(secondPayload.items).toEqual([{ service_id: 99, quantity: 1 }]);
+    });
+});
+
 describe('CreateServiceOrderScreen — regras condicionais', () => {
     it('Nº O.S. Concessionária obrigatório fora de VN/VD/VU (film) bloqueia submit', async () => {
         const utils = await renderScreen();
@@ -667,6 +853,168 @@ describe('CreateServiceOrderScreen — restauração de rascunho', () => {
         await waitFor(() => {
             expect(getByText('Descartar rascunho')).toBeTruthy();
         });
+    });
+});
+
+describe('CreateServiceOrderScreen — cópia de O.S. (prefill)', () => {
+    const copyFrom = {
+        sourceOrderId: 99,
+        location_id: 1,
+        is_galpon: false,
+        is_return: false,
+        is_courtesy: false,
+        service_date: '2026-06-10',
+        external_os_number: 'OS-COPIA',
+        plate: 'COPY123',
+        vehicle_model: 'Corolla',
+        vehicle_model_id: 555,
+        vehicle_color: 'Prata',
+        consultant_id: 77,
+        notes: 'copiar isto',
+        photos: ['https://srv/copy1.jpg', 'https://srv/copy2.jpg'],
+        damage_photos: [],
+    };
+
+    it('pré-preenche placa/Nº O.S./cor; SEM departamento; fotos remotas renderizadas como enviadas', async () => {
+        const utils = await renderScreen({ copyFrom });
+        const { getByPlaceholderText, getAllByLabelText } = utils;
+
+        // Campos preenchidos a partir da cópia.
+        await waitFor(() => {
+            expect((getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'COPY123'
+            );
+        });
+        expect((getByPlaceholderText('Ex: 12345').props as { value: string }).value).toBe(
+            'OS-COPIA'
+        );
+        expect((getByPlaceholderText('Ex: Branco').props as { value: string }).value).toBe('Prata');
+
+        // Nenhum chip de departamento ativo (department vazio).
+        const filmChip = utils.getByLabelText('Película');
+        expect(filmChip.props.accessibilityState?.selected ?? false).toBe(false);
+
+        // Fotos remotas renderizadas como enviadas.
+        const sent = getAllByLabelText('os-photo-sent');
+        expect(sent).toHaveLength(2);
+    });
+
+    it('submit envia photos com as URLs remotas da cópia', async () => {
+        mockMutateAsync.mockResolvedValueOnce({ id: 1 });
+        const utils = await renderScreen({ copyFrom });
+        const { getByText } = utils;
+
+        // A cópia já preencheu placa/cor/consultor/tipo/Nº O.S.; falta o depto+serviço.
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        mockServicesToInject = [{ service_id: 42, quantity: 1 }];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Salvar'));
+        });
+
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+        });
+        const payload = mockMutateAsync.mock.calls[0][0];
+        expect(payload.photos).toEqual(['https://srv/copy1.jpg', 'https://srv/copy2.jpg']);
+        expect(payload.plate).toBe('COPY123');
+        expect(payload.department).toBe('film');
+    });
+
+    it('conflito de rascunho: rascunho com conteúdo dispara Alert.alert', async () => {
+        const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+        mockLoadOSDraft.mockResolvedValue({
+            osDraftId: 'osdraft_x',
+            form: { plate: 'RASC123', items: [], notes: '' },
+            osPhotoIds: [],
+            damagePhotoIds: [],
+            savedAt: 1,
+        });
+
+        await renderScreen({ copyFrom });
+
+        await waitFor(() => {
+            expect(alertSpy).toHaveBeenCalledWith(
+                'Rascunho em andamento',
+                expect.any(String),
+                expect.arrayContaining([
+                    expect.objectContaining({ text: 'Manter rascunho' }),
+                    expect.objectContaining({ text: 'Usar dados da cópia' }),
+                ])
+            );
+        });
+        alertSpy.mockRestore();
+    });
+
+    it('conflito: escolher "Usar dados da cópia" chama clearOSDraft + removeFromQueue', async () => {
+        let usarCopiaOnPress: (() => void) | undefined;
+        const alertSpy = jest
+            .spyOn(Alert, 'alert')
+            .mockImplementation((_t, _m, buttons) => {
+                usarCopiaOnPress = (
+                    buttons as { text: string; onPress?: () => void }[]
+                ).find((b) => b.text === 'Usar dados da cópia')?.onPress;
+            });
+        mockLoadOSDraft.mockResolvedValue({
+            osDraftId: 'osdraft_x',
+            form: { plate: 'RASC123', items: [], notes: '' },
+            osPhotoIds: ['photo_a', 'photo_b'],
+            damagePhotoIds: [],
+            savedAt: 1,
+        });
+
+        await renderScreen({ copyFrom });
+
+        await waitFor(() => expect(usarCopiaOnPress).toBeDefined());
+        await act(async () => {
+            usarCopiaOnPress?.();
+        });
+
+        expect(mockClearOSDraft).toHaveBeenCalled();
+        expect(mockRemoveFromQueue).toHaveBeenCalledWith('photo_a');
+        expect(mockRemoveFromQueue).toHaveBeenCalledWith('photo_b');
+        alertSpy.mockRestore();
+    });
+});
+
+describe('CreateServiceOrderScreen — restauração de rascunho com fotos remotas', () => {
+    it('restaura fotos remotas a partir de osRemotePhotoUrls', async () => {
+        mockLoadOSDraft.mockResolvedValue({
+            osDraftId: 'osdraft_remote',
+            form: {
+                location_id: 1,
+                courtesy_return_set: true,
+                department: 'film',
+                plate: 'REM1A23',
+                vehicle_model: 'Corolla',
+                vehicle_model_id: 555,
+                vehicle_color: 'Preto',
+                consultant_id: 77,
+                items: [{ service_id: 42, quantity: 1 }],
+                notes: '',
+            },
+            osPhotoIds: [],
+            damagePhotoIds: [],
+            osRemotePhotoUrls: ['https://srv/rem1.jpg'],
+            damageRemotePhotoUrls: [],
+            savedAt: 1,
+        });
+
+        const utils = await renderScreen();
+
+        await waitFor(() => {
+            expect((utils.getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'REM1A23'
+            );
+        });
+        // A foto remota do rascunho foi reconstruída (renderizada como enviada).
+        expect(utils.getAllByLabelText('os-photo-sent')).toHaveLength(1);
+        expect(mockMutateAsync).not.toHaveBeenCalled();
     });
 });
 

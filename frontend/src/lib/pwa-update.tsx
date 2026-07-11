@@ -1,5 +1,6 @@
 import { registerSW } from 'virtual:pwa-register'
 import { toast } from '@/hooks/use-toast'
+import { hasPendingWork, onPendingWorkChange } from '@/lib/pendingWork'
 
 const CHECK_INTERVAL_MS = 15_000
 const RELOAD_DELAY_MS = 3_000
@@ -43,6 +44,34 @@ export function setupPWAUpdate() {
             })
         },
         onNeedRefresh() {
+            // Se há um formulário com dados não salvos (ex.: O.S. em digitação
+            // com fotos), NÃO recarregar automaticamente — o reload descartaria
+            // o trabalho. Avisa e deixa o usuário atualizar quando quiser; assim
+            // que o formulário for salvo/fechado, recarrega sozinho.
+            if (hasPendingWork()) {
+                toast({
+                    title: 'Nova versão disponível',
+                    description:
+                        'Salve o que está fazendo. A atualização será aplicada ao concluir, ou toque em Atualizar agora.',
+                    duration: 1000 * 60 * 30,
+                    action: (
+                        <button
+                            onClick={() => updateSW(true)}
+                            className="rounded-md bg-[#F5A800] px-3 py-1.5 text-sm font-semibold text-black"
+                        >
+                            Atualizar agora
+                        </button>
+                    ),
+                })
+                const unsubscribe = onPendingWorkChange(() => {
+                    if (!hasPendingWork()) {
+                        unsubscribe()
+                        updateSW(true)
+                    }
+                })
+                return
+            }
+
             toast({
                 title: 'Nova versão disponível',
                 description: 'O sistema será atualizado em instantes...',

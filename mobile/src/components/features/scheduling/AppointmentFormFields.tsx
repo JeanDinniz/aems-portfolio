@@ -227,6 +227,8 @@ export function AppointmentFormFields({
     const deliveryTime = watch('delivery_time');
 
     const isFilmDept = FILM_DEPTS.includes(department);
+    // Tonalidade é obrigatória por película nesses departamentos (PPF usa marca).
+    const requiresTonality = department === 'film' || department === 'security_film';
 
     // Loja resolvida + marca (derivada 1:1 da loja — filtra modelo/serviços).
     const currentStore = useMemo(
@@ -403,6 +405,10 @@ export function AppointmentFormFields({
         if (!pendingFilmServiceId) return;
         const svc = services.find((s) => s.id === pendingFilmServiceId);
         if (!svc) return;
+        if (requiresTonality && !pendingFilmTonality) {
+            setServiceError('Selecione a tonalidade da película.');
+            return;
+        }
         setFilmEntries((prev) => [
             ...prev,
             {
@@ -434,6 +440,12 @@ export function AppointmentFormFields({
         const hasServices = isFilmDept ? filmEntries.length > 0 : serviceIds.length > 0;
         if (!hasServices) {
             setServiceError('Adicione ao menos 1 serviço para continuar.');
+            return;
+        }
+        if (requiresTonality && filmEntries.some((e) => !e.tonality)) {
+            setServiceError(
+                'Informe a tonalidade de todas as películas (remova a película sem tonalidade e adicione novamente).'
+            );
             return;
         }
         setServiceError(null);
@@ -779,7 +791,7 @@ export function AppointmentFormFields({
                             {(department === 'film' || department === 'security_film') &&
                             pendingFilmServiceId ? (
                                 <>
-                                    <FieldLabel>Tonalidade</FieldLabel>
+                                    <FieldLabel>Tonalidade *</FieldLabel>
                                     <PickerField
                                         placeholder="Selecionar tonalidade..."
                                         value={pendingFilmTonality ?? undefined}
@@ -808,7 +820,11 @@ export function AppointmentFormFields({
                                 title="Adicionar película"
                                 variant="secondary"
                                 icon="add"
-                                disabled={isBusy || !pendingFilmServiceId}
+                                disabled={
+                                    isBusy ||
+                                    !pendingFilmServiceId ||
+                                    (requiresTonality && !pendingFilmTonality)
+                                }
                                 onPress={addFilmEntry}
                             />
                         </>
@@ -1007,7 +1023,10 @@ export function AppointmentFormFields({
                         title="Selecionar tonalidade"
                         options={tonalityOptions}
                         value={pendingFilmTonality}
-                        onChange={(v) => setPendingFilmTonality(v)}
+                        onChange={(v) => {
+                            setPendingFilmTonality(v);
+                            setServiceError(null);
+                        }}
                     />
                     {department === 'ppf' ? (
                         <Select<number>

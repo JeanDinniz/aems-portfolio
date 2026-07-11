@@ -141,7 +141,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aems_redis
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    # noeviction: sob pressão de memória, escritas FALHAM com erro visível em vez
+    # de despejar silenciosamente chaves de sessão/blacklist (allkeys-lru quebrava
+    # revogação de token e sessão única sem nenhum sinal — ALTO-1 da auditoria).
+    # Também é a política recomendada pelo Celery para Redis como broker.
+    # maxmemory 100mb < limite de 128M do container: o processo + buffers AOF
+    # vêm por cima dos dados; igualar os dois arriscava OOM-kill do container.
+    command: redis-server --appendonly yes --maxmemory 100mb --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     # No external ports exposed — access only via internal Docker network
@@ -161,6 +167,96 @@ services:
       options:
         max-size: "5m"
         max-file: "3"
+
+  # Backup diário do PostgreSQL — pg_dump comprimido com retenção
+  # 7 diários + 4 semanais em ./backups (bind mount: sobrevive a docker volume rm).
+  # Restore: ver OPERACOES_BACKUP.md na raiz do repositório.
+  db_backup:
+    image: postgres:15-alpine
+    container_name: aems_db_backup
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -o pipefail 2>/dev/null || true
+        export PGPASSWORD="$$POSTGRES_PASSWORD"
+        run_backup() {
+          ts=$$(date +%F)
+          dest="/backups/postgres/daily/aems_$$ts.sql.gz"
+          mkdir -p /backups/postgres/daily /backups/postgres/weekly
+          if [ -f "$$dest" ]; then return 0; fi
+          echo "[db_backup] gerando $$dest"
+          if pg_dump -h postgres -U "$$POSTGRES_USER" "$$POSTGRES_DB" | gzip > "$$dest.tmp" && [ -s "$$dest.tmp" ]; then
+            mv "$$dest.tmp" "$$dest"
+            if [ "$$(date +%u)" = "7" ]; then cp "$$dest" /backups/postgres/weekly/; fi
+            ls -1t /backups/postgres/daily/*.sql.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+            ls -1t /backups/postgres/weekly/*.sql.gz 2>/dev/null | tail -n +5 | xargs -r rm -f
+            echo "[db_backup] concluído: $$dest"
+          else
+            rm -f "$$dest.tmp"
+            echo "[db_backup] ERRO: pg_dump falhou"
+          fi
+        }
+        run_backup
+        while true; do
+          h=$$(date +%H | sed 's/^0//'); h=$${h:-0}
+          m=$$(date +%M | sed 's/^0//'); m=$${m:-0}
+          now=$$((h * 60 + m))
+          if [ $$now -lt 180 ]; then wait=$$((180 - now)); else wait=$$((1440 - now + 180)); fi
+          sleep $$((wait * 60))
+          run_backup
+        done
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # Espelho diário das fotos do MinIO para ./backups/minio (incremental —
+  # fotos têm nome UUID e são imutáveis, o mirror só baixa o que é novo)
+  minio_backup:
+    image: minio/mc
+    container_name: aems_minio_backup
+    env_file: .env.production
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until mc alias set src http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          echo "[minio_backup] aguardando minio..."; sleep 10
+        done
+        bucket="$${S3_BUCKET:-aems-files}"
+        while true; do
+          echo "[minio_backup] espelhando bucket $$bucket"
+          mc mirror --overwrite "src/$$bucket" /backups/minio || echo "[minio_backup] ERRO no mirror"
+          sleep 86400
+        done
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   # MinIO — S3-compatible object storage for photo uploads
   minio:

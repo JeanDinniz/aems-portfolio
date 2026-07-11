@@ -439,7 +439,7 @@ export function FilmTypesPage() {
                                     <td className="px-4 py-3">
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8">
+                                                <Button variant="ghost" size="icon" aria-label="Ações" className="h-8 w-8">
                                                     <MoreHorizontal className="h-4 w-4" />
                                                 </Button>
                                             </DropdownMenuTrigger>
@@ -728,6 +728,7 @@ export function FilmTypesPage() {
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
+                                                aria-label="Remover serviço"
                                                 className="h-7 w-7 text-destructive hover:text-destructive"
                                                 onClick={() => removeServiceMutation.mutate({ filmTypeId: activeType.id, serviceId: s.service_id })}
                                                 disabled={removeServiceMutation.isPending}

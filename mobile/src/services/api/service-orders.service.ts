@@ -481,8 +481,8 @@ export const serviceOrdersService = {
         department?: string;
         is_courtesy?: boolean;
         is_return?: boolean;
-        service_name_contains?: string;
-        service_name_not_contains?: string;
+        service_name_contains?: string | string[];
+        service_name_not_contains?: string | string[];
         status?: string;
         loja?: string;
     }): Promise<void> => {

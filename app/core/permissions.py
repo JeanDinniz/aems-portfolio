@@ -429,24 +429,44 @@ def require_resource_access(user: "User", store_id: int, resource_name: str = "R
         raise NotFoundError(resource=resource_name)
 
 
+def _active_profiles(user: "User") -> list:
+    """Perfis de acesso ativos do usuário (vazio se relacionamento não carregado)."""
+    return [p for p in getattr(user, "access_profiles", []) if getattr(p, "is_active", False)]
+
+
+def profiles_all_have_flag(profiles, flag: str) -> bool:
+    """
+    True se a coleção não é vazia e TODOS os perfis têm o atributo `flag` True.
+
+    Semântica ADITIVA: uma restrição (galpão/ocultar galpão) só se aplica quando
+    TODOS os perfis ativos a carregam. Usuário misto (perfis de loja + perfil
+    galpão) é usuário normal e vê a união dos escopos dos seus perfis.
+    """
+    profiles = list(profiles)
+    return bool(profiles) and all(getattr(p, flag, False) for p in profiles)
+
+
 def is_galpon_profile_user(user: "User") -> bool:
-    """True se o usuário tem ao menos um perfil ativo com is_galpon_profile=True. Owner nunca é galpão."""
+    """
+    True somente se o usuário tem >=1 perfil ativo e TODOS têm is_galpon_profile=True.
+
+    Usuário misto (loja + galpão) NÃO é galpão: vê O.S. normais e de galpão das
+    suas lojas. Owner nunca é galpão.
+    """
     if user.role == UserRole.OWNER.value:
         return False
-    for profile in getattr(user, "access_profiles", []):
-        if getattr(profile, "is_active", False) and getattr(profile, "is_galpon_profile", False):
-            return True
-    return False
+    return profiles_all_have_flag(_active_profiles(user), "is_galpon_profile")
 
 
 def hide_galpon_user(user: "User") -> bool:
-    """True se o usuário tem ao menos um perfil ativo com hide_galpon_option=True. Owner nunca é afetado."""
+    """
+    True somente se o usuário tem >=1 perfil ativo e TODOS têm hide_galpon_option=True.
+
+    Usuário misto não tem o galpão ocultado. Owner nunca é afetado.
+    """
     if user.role == UserRole.OWNER.value:
         return False
-    for profile in getattr(user, "access_profiles", []):
-        if getattr(profile, "is_active", False) and getattr(profile, "hide_galpon_option", False):
-            return True
-    return False
+    return profiles_all_have_flag(_active_profiles(user), "hide_galpon_option")
 
 
 # Global instance for easy access

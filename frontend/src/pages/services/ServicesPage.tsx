@@ -1,6 +1,7 @@
 import { useState, useMemo, type Dispatch, type SetStateAction } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Loader2, PackageSearch, MoreHorizontal, Edit, Trash2, Search, Download } from 'lucide-react';
+import { Plus, PackageSearch, MoreHorizontal, Edit, Trash2, Search, Download, Loader2 } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 import * as XLSX from 'xlsx';
 import { Navigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -664,8 +665,12 @@ export default function ServicesPage() {
             {brands.length > 0 && (
                 <div>
                     {isLoading ? (
-                        <div className="flex items-center justify-center h-40">
-                            <Loader2 className="h-6 w-6 animate-spin text-[#999999] dark:text-zinc-400" />
+                        <div className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl divide-y divide-[#E8E8E8] dark:divide-[#333333]">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                                <div key={i} className="px-4 py-3">
+                                    <Skeleton className="h-5 w-full bg-gray-200 dark:bg-zinc-800 animate-pulse rounded" />
+                                </div>
+                            ))}
                         </div>
                     ) : !brandServices.length ? (
                         <div className="flex flex-col items-center justify-center h-40 gap-2">
@@ -720,7 +725,7 @@ export default function ServicesPage() {
                                         <div className="flex items-center justify-end shrink-0">
                                             <DropdownMenu>
                                                 <DropdownMenuTrigger asChild>
-                                                    <Button variant="ghost" size="icon" className="text-[#F5A800]">
+                                                    <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
                                                         <MoreHorizontal className="h-4 w-4" />
                                                     </Button>
                                                 </DropdownMenuTrigger>

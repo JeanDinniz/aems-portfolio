@@ -24,7 +24,7 @@ from app.modules.auth.models import User
 from app.modules.consultants.service import get_consultant
 from app.modules.dealerships.models import Dealership
 from app.modules.scheduling.models import Appointment
-from app.modules.service_orders.enums import OSStatus
+from app.modules.service_orders.enums import ConferenceStatus, OSStatus
 from app.modules.service_orders.models import (
     ServiceOrder,
     ServiceOrderItem,
@@ -53,6 +53,39 @@ async def get_service_order_by_id(db: AsyncSession, service_order_id: int) -> Se
 
 # Status que NÃO contam como duplicata (canceladas/lançadas erradas são ignoradas).
 _DUPLICATE_IGNORED_STATUSES = (OSStatus.CANCELLED.value, OSStatus.WRONG.value)
+
+
+def service_ids_condition(service_ids: list[int]):
+    """O.S. que tenha ao menos um item com service_id na lista."""
+    return ServiceOrder.items.any(ServiceOrderItem.service_id.in_(service_ids))
+
+
+def conference_status_condition(statuses: list[ConferenceStatus]):
+    """
+    OR das condições do filtro multi de status da Conferência.
+
+    Reproduz a semântica do antigo filtro single: 'pending' inclui wrong/duplicate
+    não verificadas; 'pending'/'verified' excluem canceladas.
+    """
+    conds = []
+    for s in statuses:
+        if s == ConferenceStatus.PENDING:
+            conds.append(
+                and_(
+                    ServiceOrder.is_verified.is_(False),
+                    ServiceOrder.status != OSStatus.CANCELLED.value,
+                )
+            )
+        elif s == ConferenceStatus.VERIFIED:
+            conds.append(
+                and_(
+                    ServiceOrder.is_verified.is_(True),
+                    ServiceOrder.status != OSStatus.CANCELLED.value,
+                )
+            )
+        else:  # cancelled / wrong / duplicate
+            conds.append(ServiceOrder.status == s.value)
+    return or_(*conds) if conds else None
 
 
 async def has_duplicate_launch(
@@ -280,9 +313,12 @@ async def list_service_orders(
     store_ids: list[int] | None = None,
     status: list[OSStatus] | None = None,
     department: ServiceDepartment | None = None,
+    departments: list[ServiceDepartment] | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     plate: str | None = None,
+    service_ids: list[int] | None = None,
+    conference_statuses: list[ConferenceStatus] | None = None,
     is_verified: bool | None = None,
     worker_id: int | None = None,
     include_cancelled: bool = False,
@@ -301,10 +337,13 @@ async def list_service_orders(
         user: Usuário que está listando
         store_id: Filtro por loja
         status: Filtro por status
-        department: Filtro por departamento
+        department: Filtro por departamento (single)
+        departments: Filtro por múltiplos departamentos (tem precedência sobre department)
         date_from: Data inicial
         date_to: Data final
         plate: Filtro por placa
+        service_ids: O.S. com ao menos um item nesses serviços
+        conference_statuses: Filtro multi de status da conferência (OR das condições)
         is_verified: Filtro por verificação (conferência)
         flags: Filtro OR por flags: 'courtesy', 'galpon', 'retorno'
         page: Página atual
@@ -336,13 +375,21 @@ async def list_service_orders(
     elif store_id is not None:
         query = query.where(ServiceOrder.store_id == store_id)
 
-    if status:
+    if conference_statuses:
+        # OR das condições multi da conferência; decide sozinho o que entra
+        # (inclusive canceladas), por isso pula o default de exclusão abaixo.
+        cond = conference_status_condition(conference_statuses)
+        if cond is not None:
+            query = query.where(cond)
+    elif status:
         query = query.where(ServiceOrder.status.in_([s.value for s in status]))
     elif not include_cancelled:
         # Excluir canceladas por padrão (soft delete)
         query = query.where(ServiceOrder.status != OSStatus.CANCELLED.value)
 
-    if department is not None:
+    if departments:
+        query = query.where(ServiceOrder.department.in_([d.value for d in departments]))
+    elif department is not None:
         query = query.where(ServiceOrder.department == department.value)
 
     if date_from is not None:
@@ -381,6 +428,9 @@ async def list_service_orders(
             )
         )
 
+    if service_ids:
+        query = query.where(service_ids_condition(service_ids))
+
     if is_verified is not None:
         query = query.where(ServiceOrder.is_verified == is_verified)
 
@@ -409,6 +459,7 @@ async def get_conference_summary(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     plate: str | None = None,
+    service_ids: list[int] | None = None,
     worker_id: int | None = None,
     include_cancelled: bool = False,
     is_courtesy: bool | None = None,
@@ -520,6 +571,9 @@ async def get_conference_summary(
             )
         )
 
+    if service_ids:
+        query = query.where(service_ids_condition(service_ids))
+
     if worker_id is not None:
         query = query.where(
             exists().where(
@@ -563,6 +617,7 @@ async def get_conference_summary_by_store(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     plate: str | None = None,
+    service_ids: list[int] | None = None,
     worker_id: int | None = None,
     include_cancelled: bool = False,
     is_courtesy: bool | None = None,
@@ -658,6 +713,9 @@ async def get_conference_summary_by_store(
             )
         )
 
+    if service_ids:
+        query = query.where(service_ids_condition(service_ids))
+
     if worker_id is not None:
         query = query.where(
             exists().where(
@@ -683,7 +741,7 @@ async def get_conference_summary_by_store(
             {
                 "store_id": row.store_id,
                 "store_name": row.store_name,
-                "total": total,
+                "total": non_cancelled,
                 "verified": verified,
                 "waiting": int(row.waiting or 0),
                 "wrong": int(row.wrong or 0),

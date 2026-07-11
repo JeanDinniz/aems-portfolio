@@ -57,6 +57,9 @@ async def _queue_broadcast_loop() -> None:
 
     while True:
         await asyncio.sleep(30)
+        # Sem clientes conectados não há quem receber — evita serializar/emitir à toa
+        if manager.get_connection_count() == 0:
+            continue
         await manager.broadcast_to_all("semaphore_updated", {})
 
 
@@ -73,6 +76,9 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     broadcast_task.cancel()
+    from app.core.redis import close_redis
+
+    await close_redis()
     logger.info(f"Shutting down {settings.APP_NAME}...")
 
 
@@ -162,18 +168,30 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     except Exception:
         checks["database"] = "error"
 
-    # Verificar Redis
+    # Verificar Redis (ping + pressão de memória)
+    # Com maxmemory-policy=noeviction, encher a memória bloqueia escritas
+    # (sessões novas, fila Celery) — reportar "degraded" a partir de 90% dá
+    # sinal ANTES da falha, visível para uptime monitors que consultam /health.
     try:
-        import redis.asyncio as aioredis
+        from app.core.redis import get_redis
 
-        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client = get_redis()
         await redis_client.ping()  # type: ignore[misc]
-        await redis_client.aclose()
-        checks["redis"] = "ok"
+        info = await redis_client.info("memory")
+        used = int(info.get("used_memory", 0))
+        maxmem = int(info.get("maxmemory", 0))
+        if maxmem > 0:
+            pct = round(used / maxmem * 100, 1)
+            checks["redis_memory"] = f"{pct}%"
+            checks["redis"] = "ok" if pct < 90 else "memory_pressure"
+        else:
+            checks["redis"] = "ok"
     except Exception:
         checks["redis"] = "error"
 
-    overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
+    # redis_memory é informativo (percentual), não entra no veredito direto
+    status_values = [v for k, v in checks.items() if k != "redis_memory"]
+    overall = "healthy" if all(v == "ok" for v in status_values) else "degraded"
     return {"status": overall, "checks": checks}
 
 

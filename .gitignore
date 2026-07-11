@@ -86,7 +86,11 @@ celerybeat.pid
 
 # Environments
 .env
+.env.production
 .venv
+
+# Backups gerados no VPS (pg_dump diário + espelho do MinIO + pre-deploy)
+backups/
 env/
 venv/
 ENV/

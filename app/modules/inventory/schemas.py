@@ -4,9 +4,12 @@ Inventory schemas - Pydantic models for film type and roll management.
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.schemas import PaginationMeta
+from app.core.validators import normalize_tonality
 
 # ---------------------------------------------------------------------------
 # Film Type
@@ -24,6 +27,11 @@ class FilmTypeCreate(BaseModel):
         default_factory=list, description="Tonalidades disponíveis para este tipo"
     )
 
+    @field_validator("available_tonalities")
+    @classmethod
+    def normalize_tonalities(cls, v: list[str]) -> list[str]:
+        return [t for t in (normalize_tonality(item) for item in v) if t is not None]
+
 
 class FilmTypeUpdate(BaseModel):
     """Schema para atualizar um tipo de película (todos os campos opcionais)."""
@@ -34,6 +42,13 @@ class FilmTypeUpdate(BaseModel):
     red_threshold_meters: float | None = Field(None, gt=0)
     is_active: bool | None = None
     available_tonalities: list[str] | None = None
+
+    @field_validator("available_tonalities")
+    @classmethod
+    def normalize_tonalities(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return [t for t in (normalize_tonality(item) for item in v) if t is not None]
 
 
 class FilmTypeServiceResponse(BaseModel):
@@ -68,7 +83,7 @@ class FilmTypeListResponse(BaseModel):
     """Schema para resposta paginada de tipos de película."""
 
     items: list[FilmTypeResponse]
-    pagination: dict[str, Any]
+    pagination: PaginationMeta
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +117,11 @@ class FilmRollCreate(BaseModel):
     receipt_date: date = Field(..., description="Data de recebimento")
     supplier_id: int | None = None
 
+    @field_validator("tonality")
+    @classmethod
+    def normalize_tonality_value(cls, v: str | None) -> str | None:
+        return normalize_tonality(v)
+
 
 class FilmRollResponse(BaseModel):
     """Schema para resposta de bobina de película."""
@@ -134,7 +154,7 @@ class FilmRollListResponse(BaseModel):
     """Schema para resposta paginada de bobinas."""
 
     items: list[FilmRollResponse]
-    pagination: dict[str, Any]
+    pagination: PaginationMeta
 
 
 # ---------------------------------------------------------------------------

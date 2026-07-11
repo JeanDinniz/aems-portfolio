@@ -53,6 +53,13 @@ export interface OSDraft {
     osPhotoIds: string[];
     /** Ids das fotos de avaria na `uploadQueue`. */
     damagePhotoIds: string[];
+    /**
+     * URLs de fotos remotas da O.S. (cópia de O.S.) — já hospedadas no servidor,
+     * fora da fila de upload. Reconstruídas direto da URL ao restaurar o rascunho.
+     */
+    osRemotePhotoUrls?: string[];
+    /** URLs de fotos de avaria remotas (cópia de O.S.). */
+    damageRemotePhotoUrls?: string[];
     /** Epoch ms do último autosave. */
     savedAt: number;
 }

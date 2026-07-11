@@ -339,6 +339,38 @@ describe('CreateAppointmentScreen — validações', () => {
         });
         expect(mockCreateMutate).not.toHaveBeenCalled();
     });
+
+    it('depto película não adiciona película sem tonalidade e bloqueia submit', async () => {
+        const utils = await renderCreate();
+        const { getByText } = utils;
+
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Normal'));
+        });
+        await fillVehicle(utils, 'ABC1D23');
+        await pickOption(utils, 'Corolla');
+        await pickOption(utils, 'João Consultor');
+
+        // Seleciona o serviço de película mas NÃO a tonalidade.
+        await pickOption(utils, 'PD — Película Dianteira');
+        await act(async () => {
+            fireEvent.press(getByText('Adicionar película'));
+        });
+        await setTime(utils);
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar agendamento'));
+        });
+
+        // A película não foi adicionada → cai na validação de ≥1 serviço.
+        await waitFor(() => {
+            expect(getByText(/ao menos 1 serviço/i)).toBeTruthy();
+        });
+        expect(mockCreateMutate).not.toHaveBeenCalled();
+    });
 });
 
 describe('CreateAppointmentScreen — caminho feliz + film_entries', () => {

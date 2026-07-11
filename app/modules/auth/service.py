@@ -214,15 +214,14 @@ async def authenticate(
     try:
         import json
 
-        import redis.asyncio as aioredis
+        from app.core.redis import get_redis
 
-        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis = get_redis()
         await _redis.setex(
             f"user_active_session:{user.id}",
             settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
             json.dumps({"access_jti": access_jti, "refresh_jti": refresh_jti}),
         )
-        await _redis.aclose()
     except Exception as _e:
         import logging
 
@@ -287,12 +286,11 @@ async def refresh_access_token(
         try:
             import json
 
-            import redis.asyncio as aioredis
+            from app.core.redis import get_redis
 
-            redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            redis_client = get_redis()
             is_revoked = await redis_client.get(f"token_blacklist:{jti}")
             active_raw = await redis_client.get(f"user_active_session:{user_id}")
-            await redis_client.aclose()
 
             if is_revoked:
                 raise AuthenticationError(detail="Token revogado")
@@ -322,15 +320,14 @@ async def refresh_access_token(
     try:
         import json
 
-        import redis.asyncio as aioredis
+        from app.core.redis import get_redis
 
-        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis = get_redis()
         await _redis.setex(
             f"user_active_session:{user_id}",
             settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
             json.dumps({"access_jti": new_access_jti, "refresh_jti": new_refresh_jti}),
         )
-        await _redis.aclose()
     except Exception as _e:
         import logging
 
@@ -356,11 +353,12 @@ async def logout(
     Revoga o access token JWT no Redis, opcionalmente revoga o refresh token,
     e registra o logout do usuário.
     """
-    import redis.asyncio as aioredis
     from jose import JWTError
 
+    from app.core.redis import get_redis
+
     try:
-        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client = get_redis()
 
         # Revogar access token
         try:
@@ -397,8 +395,6 @@ async def logout(
 
         # Remover sessão ativa — libera o usuário para novo login limpo
         await redis_client.delete(f"user_active_session:{user.id}")
-
-        await redis_client.aclose()
     except Exception:
         pass  # Redis indisponível: não bloquear o logout
 
@@ -563,12 +559,11 @@ async def forgot_password(db: AsyncSession, email: str) -> dict:
     token = uuid.uuid4().hex
 
     try:
-        import redis.asyncio as aioredis
+        from app.core.redis import get_redis
 
-        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client = get_redis()
         redis_key = f"password_reset:{token}"
         await redis_client.setex(redis_key, 3600, str(user.id))
-        await redis_client.aclose()
     except Exception as e:
         raise ServiceUnavailableError(
             detail="Servico de recuperacao de senha temporariamente indisponivel"
@@ -600,20 +595,18 @@ async def reset_password_with_token(db: AsyncSession, token: str, new_password: 
 
     # Tentar buscar token no Redis
     try:
-        import redis.asyncio as aioredis
+        from app.core.redis import get_redis
 
-        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client = get_redis()
         redis_key = f"password_reset:{token}"
         user_id_str = await redis_client.get(redis_key)
 
         if not user_id_str:
-            await redis_client.aclose()
             raise AuthenticationError(detail="Token invalido ou expirado")
 
         user_id = int(user_id_str)
         # Invalidar token imediatamente
         await redis_client.delete(redis_key)
-        await redis_client.aclose()
     except AuthenticationError:
         raise
     except Exception as err:

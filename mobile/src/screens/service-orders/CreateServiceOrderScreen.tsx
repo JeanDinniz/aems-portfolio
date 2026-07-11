@@ -34,7 +34,11 @@ import {
     type OSDraftForm,
 } from '@/services/draft/osDraftStorage';
 import { DEPARTMENTS } from '@/constants/service-orders';
-import type { CreateServiceOrderData, Department } from '@/types/service-order.types';
+import type {
+    CreateServiceOrderData,
+    Department,
+    OSCopyPrefill,
+} from '@/types/service-order.types';
 import type { Photo } from '@/types/photo.types';
 import type { ServiceOrdersStackScreenProps } from '@/navigation/types';
 
@@ -85,6 +89,8 @@ const schema = z
             ),
         vehicle_model: z.string().min(1, 'Modelo obrigatório'),
         vehicle_model_id: z.number().optional(),
+        // Campo oculto (não renderizado): só é preenchido pela cópia de O.S.
+        vehicle_year: z.number().optional(),
         vehicle_color: z.string().min(1, 'Cor obrigatória'),
         consultant_id: z.number().optional(),
         items: z
@@ -161,6 +167,25 @@ function restorePhotos(ids: string[]): Photo[] {
         .map(queueItemToPhoto);
 }
 
+let remoteSeq = 0;
+/**
+ * Constrói uma `Photo` "remota" a partir de uma URL já hospedada no servidor
+ * (cópia de O.S.). Não passa pela fila de upload: já vem `uploaded`/`url`, então
+ * satisfaz o gate de submit e entra direto no payload. Id estável e único (o
+ * prefixo `remote_` a distingue dos ids da fila).
+ */
+function remoteUrlToPhoto(url: string): Photo {
+    remoteSeq += 1;
+    return {
+        id: `remote_${remoteSeq}`,
+        preview: url,
+        uploaded: true,
+        uploadProgress: 100,
+        url,
+        remote: true,
+    };
+}
+
 const AUTOSAVE_DEBOUNCE_MS = 400;
 
 /** "AAAA-MM-DD" → "DD/MM/AAAA" para exibição. */
@@ -185,7 +210,9 @@ function dateToISO(date: Date): string {
 
 export function CreateServiceOrderScreen({
     navigation,
+    route,
 }: ServiceOrdersStackScreenProps<'CreateServiceOrder'>) {
+    const copyFrom = route.params?.copyFrom;
     const toast = useToast();
     const createServiceOrder = useCreateServiceOrder();
     const { stores } = useStores();
@@ -232,6 +259,7 @@ export function CreateServiceOrderScreen({
             plate: '',
             vehicle_model: '',
             vehicle_model_id: undefined,
+            vehicle_year: undefined,
             vehicle_color: '',
             consultant_id: undefined,
             items: [],
@@ -341,6 +369,7 @@ export function CreateServiceOrderScreen({
                 plate: '',
                 vehicle_model: '',
                 vehicle_model_id: undefined,
+                vehicle_year: undefined,
                 vehicle_color: '',
                 consultant_id: undefined,
                 items: [],
@@ -354,30 +383,172 @@ export function CreateServiceOrderScreen({
         [reset, isGalponProfile, isGalpon]
     );
 
+    // ─── Reset "Salvar e Outro Depto." (mesmo carro, outro departamento) ───────
+    // Mantém TODOS os dados do veículo (placa, modelo, cor, consultor, tipo, data,
+    // observações) e limpa só o que muda por departamento (departamento, Nº O.S.
+    // Concessionária e serviços). As fotos viram REMOTAS (URLs já hospedadas) para
+    // sobreviverem ao `pruneUploaded` — o próximo submit reenvia as mesmas URLs
+    // sem re-upload.
+    const keepVehicleReset = useCallback(
+        (data: CreateOSForm) => {
+            reset({
+                // mantidos (mesmo carro)
+                location_id: data.location_id,
+                is_courtesy: data.is_courtesy,
+                is_return: data.is_return,
+                courtesy_return_set: true,
+                is_galpon: isGalponProfile ? true : data.is_galpon,
+                service_date: data.service_date, // mantém a data digitada
+                plate: data.plate,
+                vehicle_model: data.vehicle_model,
+                vehicle_model_id: data.vehicle_model_id,
+                vehicle_year: data.vehicle_year,
+                vehicle_color: data.vehicle_color,
+                consultant_id: data.consultant_id,
+                notes: data.notes,
+                // limpos (mudam por departamento)
+                department: undefined as unknown as Department,
+                external_os_number: '',
+                items: [],
+            });
+            // Converte as fotos enviadas em remotas (URL https) para não sumirem
+            // com o prune. O gate de submit garante url nas fotos da O.S.
+            setPhotos((prev) =>
+                prev
+                    .filter((p) => p.remote || p.url)
+                    .map((p) => (p.remote ? p : remoteUrlToPhoto(p.url!)))
+            );
+            setDamagePhotos((prev) =>
+                prev
+                    .filter((p) => p.remote || p.url)
+                    .map((p) => (p.remote ? p : remoteUrlToPhoto(p.url!)))
+            );
+            // Novo rascunho → o autosave persistirá o estado atual (com as fotos
+            // remotas via osRemotePhotoUrls) sem colidir com a O.S. recém-criada.
+            const nextDraftId = makeDraftId();
+            setOsDraftId(nextDraftId);
+            osDraftIdRef.current = nextDraftId;
+        },
+        [reset, isGalponProfile]
+    );
+
+    // ─── Aplica o prefill de "Gerar cópia da O.S." ────────────────────────────
+    // Copia tudo da O.S. original EXCETO departamento e serviços (o usuário
+    // escolhe de novo). As fotos entram como remotas (URLs já hospedadas — sem
+    // re-upload). `courtesy_return_set: true` para satisfazer a validação.
+    const applyPrefill = useCallback(
+        (src: OSCopyPrefill) => {
+            reset({
+                ...getValues(),
+                location_id: src.location_id ?? getValues('location_id'),
+                is_courtesy: src.is_courtesy,
+                is_return: src.is_return,
+                courtesy_return_set: true,
+                is_galpon: isGalponProfile ? true : src.is_galpon,
+                department: undefined as unknown as Department,
+                service_date: src.service_date ?? todayISO(),
+                external_os_number: src.external_os_number ?? '',
+                plate: src.plate,
+                vehicle_model: src.vehicle_model ?? '',
+                vehicle_model_id: src.vehicle_model_id ?? undefined,
+                vehicle_year: src.vehicle_year ?? undefined,
+                vehicle_color: src.vehicle_color ?? '',
+                consultant_id: src.consultant_id ?? undefined,
+                items: [],
+                notes: src.notes ?? '',
+            });
+            setPhotos(src.photos.slice(0, 10).map(remoteUrlToPhoto));
+            setDamagePhotos((src.damage_photos ?? []).slice(0, 10).map(remoteUrlToPhoto));
+        },
+        [reset, getValues, isGalponProfile]
+    );
+
     // ─── Restauração do rascunho no mount ─────────────────────────────────────
     // Repõe campos + fotos a partir do que estava persistido (form em appStorage,
     // fotos na fila offline). Roda uma única vez; libera o autosave ao terminar.
     useEffect(() => {
         let active = true;
         (async () => {
+            // Reconstrói as fotos de um rascunho: URLs remotas primeiro (fora da
+            // fila), depois as fotos da fila offline (por id).
+            const rebuildPhotos = (remoteUrls: string[] | undefined, ids: string[]): Photo[] => [
+                ...(remoteUrls ?? []).map(remoteUrlToPhoto),
+                ...restorePhotos(ids),
+            ];
+
             const draft = await loadOSDraft();
             if (!active) return;
-            if (draft) {
+
+            const draftHasContent =
+                !!draft &&
+                (!!draft.form?.plate?.trim() ||
+                    (draft.form?.items?.length ?? 0) > 0 ||
+                    !!draft.form?.notes?.trim() ||
+                    draft.osPhotoIds.length > 0 ||
+                    draft.damagePhotoIds.length > 0 ||
+                    (draft.osRemotePhotoUrls?.length ?? 0) > 0 ||
+                    (draft.damageRemotePhotoUrls?.length ?? 0) > 0);
+
+            // Restaura o rascunho persistido (fluxo padrão de "Lançar O.S").
+            const restoreDraft = async (d: NonNullable<typeof draft>) => {
                 // Reusa o MESMO osDraftId (as fotos da fila estão vinculadas a ele).
-                setOsDraftId(draft.osDraftId);
-                osDraftIdRef.current = draft.osDraftId;
+                setOsDraftId(d.osDraftId);
+                osDraftIdRef.current = d.osDraftId;
                 // Repõe os campos (merge com defaults — form pode estar parcial).
-                reset({ ...getValues(), ...(draft.form as Partial<CreateOSForm>) });
+                reset({ ...getValues(), ...(d.form as Partial<CreateOSForm>) });
                 // No boot a frio o mapa da fila está vazio até hidratar do disco —
                 // garante o load antes de ler os itens (senão a foto "some").
                 await ensureHydrated();
                 if (!active) return;
-                // Reconstrói as fotos a partir da fila (ids podados são ignorados).
-                const restoredOs = restorePhotos(draft.osPhotoIds);
-                const restoredDamage = restorePhotos(draft.damagePhotoIds);
+                const restoredOs = rebuildPhotos(d.osRemotePhotoUrls, d.osPhotoIds);
+                const restoredDamage = rebuildPhotos(d.damageRemotePhotoUrls, d.damagePhotoIds);
                 if (restoredOs.length > 0) setPhotos(restoredOs);
                 if (restoredDamage.length > 0) setDamagePhotos(restoredDamage);
+            };
+
+            if (copyFrom) {
+                // Chegamos por "Gerar cópia". Se há um rascunho em andamento com
+                // conteúdo, o usuário decide entre mantê-lo ou usar a cópia.
+                if (draftHasContent && draft) {
+                    Alert.alert(
+                        'Rascunho em andamento',
+                        'Você tem um rascunho de O.S. não salvo. Deseja mantê-lo ou substituí-lo pelos dados da cópia?',
+                        [
+                            {
+                                text: 'Manter rascunho',
+                                onPress: () => {
+                                    void (async () => {
+                                        await restoreDraft(draft);
+                                        restoredRef.current = true;
+                                    })();
+                                },
+                            },
+                            {
+                                text: 'Usar dados da cópia',
+                                style: 'destructive',
+                                onPress: () => {
+                                    // Descarta as fotos do rascunho da fila e o rascunho.
+                                    for (const id of [...draft.osPhotoIds, ...draft.damagePhotoIds]) {
+                                        void removeFromQueue(id);
+                                    }
+                                    void clearOSDraft();
+                                    applyPrefill(copyFrom);
+                                    restoredRef.current = true;
+                                },
+                            },
+                        ]
+                    );
+                    // A decisão do Alert libera o autosave; sai sem marcar restored.
+                    return;
+                }
+                // Sem rascunho com conteúdo: aplica a cópia direto.
+                void clearOSDraft();
+                applyPrefill(copyFrom);
+                restoredRef.current = true;
+                return;
             }
+
+            if (draft) await restoreDraft(draft);
             // Só agora liberamos o autosave (evita gravar o form vazio do mount).
             restoredRef.current = true;
         })();
@@ -401,21 +572,32 @@ export function CreateServiceOrderScreen({
     const persistDraft = useCallback(() => {
         if (!restoredRef.current) return;
         const form = getValues();
-        const osPhotoIds = photosRef.current.map((p) => p.id);
-        const damagePhotoIds = damagePhotosRef.current.map((p) => p.id);
+        // Fotos remotas (cópia de O.S.) persistem como URLs; as demais como ids da fila.
+        const osPhotoIds = photosRef.current.filter((p) => !p.remote).map((p) => p.id);
+        const damagePhotoIds = damagePhotosRef.current.filter((p) => !p.remote).map((p) => p.id);
+        const osRemotePhotoUrls = photosRef.current
+            .filter((p) => p.remote && !!p.url)
+            .map((p) => p.url as string);
+        const damageRemotePhotoUrls = damagePhotosRef.current
+            .filter((p) => p.remote && !!p.url)
+            .map((p) => p.url as string);
         // Marca se há conteúdo (placa/serviços/fotos/observações) para o botão "Descartar".
         const filled =
             !!form.plate?.trim() ||
             (form.items?.length ?? 0) > 0 ||
             !!form.notes?.trim() ||
             osPhotoIds.length > 0 ||
-            damagePhotoIds.length > 0;
+            damagePhotoIds.length > 0 ||
+            osRemotePhotoUrls.length > 0 ||
+            damageRemotePhotoUrls.length > 0;
         setHasContent(filled);
         void saveOSDraft({
             osDraftId: osDraftIdRef.current,
             form: form as OSDraftForm,
             osPhotoIds,
             damagePhotoIds,
+            osRemotePhotoUrls,
+            damageRemotePhotoUrls,
             savedAt: Date.now(),
         });
     }, [getValues]);
@@ -474,6 +656,7 @@ export function CreateServiceOrderScreen({
                             plate: '',
                             vehicle_model: '',
                             vehicle_model_id: undefined,
+                            vehicle_year: undefined,
                             vehicle_color: '',
                             consultant_id: undefined,
                             items: [],
@@ -503,6 +686,7 @@ export function CreateServiceOrderScreen({
                     : undefined,
                 vehicle_model: data.vehicle_model,
                 vehicle_model_id: data.vehicle_model_id || undefined,
+                vehicle_year: data.vehicle_year || undefined,
                 vehicle_color: data.vehicle_color || undefined,
                 department: data.department,
                 location_id: data.location_id,
@@ -515,6 +699,8 @@ export function CreateServiceOrderScreen({
                     quantity: it.quantity,
                 })),
                 notes: data.notes?.trim() || undefined,
+                // Fotos remotas (cópia de O.S.) já vêm como URL — em dev o
+                // resolveMediaUrl pode ter reescrito o host (no-op em produção https).
                 photos: photoUrls,
                 // damage_photos: a API aceita; mantemos opcional.
                 ...(damageUrls.length > 0 ? { damage_photos: damageUrls } : {}),
@@ -528,7 +714,7 @@ export function CreateServiceOrderScreen({
     );
 
     const submit = useCallback(
-        async (data: CreateOSForm, next: boolean) => {
+        async (data: CreateOSForm, mode: 'close' | 'next' | 'otherDept') => {
             Keyboard.dismiss();
 
             // Gate de fotos: precisa de ≥1 Foto da OS e TODAS com url.
@@ -555,11 +741,16 @@ export function CreateServiceOrderScreen({
                 // Poda os itens já enviados da fila (libera arquivos locais).
                 void pruneUploaded(consumedIds);
 
-                if (next) {
+                if (mode === 'next') {
                     toast.success('O.S. lançada! Próxima O.S...');
                     // partialReset gera novo osDraftId e zera campos/fotos; o
                     // autosave persistirá o novo estado parcial (sem ids antigos).
                     partialReset(data.department, data.location_id);
+                } else if (mode === 'otherDept') {
+                    // Mesmo carro, outro departamento: mantém veículo e converte as
+                    // fotos em remotas ANTES do prune apagar os arquivos locais.
+                    toast.success('O.S. lançada! Escolha o próximo departamento.');
+                    keepVehicleReset(data);
                 } else {
                     // O.S. criada → o rascunho cumpriu seu papel: apaga.
                     void clearOSDraft();
@@ -573,11 +764,21 @@ export function CreateServiceOrderScreen({
                 );
             }
         },
-        [photos, damagePhotos, createServiceOrder, buildPayload, partialReset, navigation, toast]
+        [
+            photos,
+            damagePhotos,
+            createServiceOrder,
+            buildPayload,
+            partialReset,
+            keepVehicleReset,
+            navigation,
+            toast,
+        ]
     );
 
-    const onSave = handleSubmit((data) => submit(data, false));
-    const onSaveAndNext = handleSubmit((data) => submit(data, true));
+    const onSave = handleSubmit((data) => submit(data, 'close'));
+    const onSaveAndNext = handleSubmit((data) => submit(data, 'next'));
+    const onSaveAndOtherDept = handleSubmit((data) => submit(data, 'otherDept'));
 
     const isBusy = isSubmitting || createServiceOrder.isPending;
     const uploadingPhotos = osPhotosUploading || damageUploading;
@@ -979,6 +1180,14 @@ export function CreateServiceOrderScreen({
                         loading={isBusy}
                         disabled={isBusy || uploadingPhotos}
                         onPress={onSaveAndNext}
+                    />
+                    <Button
+                        title={uploadingPhotos ? 'Enviando fotos...' : 'Salvar e Outro Depto.'}
+                        variant="secondary"
+                        icon="copy-outline"
+                        loading={isBusy}
+                        disabled={isBusy || uploadingPhotos}
+                        onPress={onSaveAndOtherDept}
                     />
                     {hasContent ? (
                         <Button

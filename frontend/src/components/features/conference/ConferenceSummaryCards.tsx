@@ -43,6 +43,7 @@ function SummaryCard({
     wrong,
     cancelled,
     total,
+    storeVariant = false,
     onVerifiedClick,
     onWaitingClick,
     onWrongClick,
@@ -58,12 +59,26 @@ function SummaryCard({
     wrong: number;
     cancelled: number;
     total: number;
+    storeVariant?: boolean;
     onVerifiedClick?: () => void;
     onWaitingClick?: () => void;
     onWrongClick?: () => void;
     onCancelledClick?: () => void;
     onTotalClick?: () => void;
 }) {
+    const cancelledButton = cancelled > 0 && (
+        <button
+            type="button"
+            onClick={onCancelledClick}
+            className={`flex items-center gap-1.5 text-left ${onCancelledClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
+        >
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 shrink-0" />
+            <span className="text-xs text-[#666666] dark:text-zinc-400 truncate">
+                <span className="font-semibold text-zinc-500 dark:text-zinc-400">{cancelled}</span> cancelada{cancelled !== 1 ? 's' : ''}
+            </span>
+        </button>
+    );
+
     return (
         <div className="flex-1 min-w-[200px] max-w-[260px] shrink-0 bg-[#FAFAFA] dark:bg-[#1E1E1E] border border-[#E8E8E8] dark:border-[#333333] rounded-xl p-4 flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2">
@@ -109,7 +124,7 @@ function SummaryCard({
                     <button
                         type="button"
                         onClick={onWrongClick}
-                        className={`flex items-center gap-1.5 text-left ${onWrongClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
+                        className={`flex items-center gap-1.5 text-left ${storeVariant ? 'col-span-2' : ''} ${onWrongClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
                     >
                         <span className="h-1.5 w-1.5 rounded-full bg-red-500 shrink-0" />
                         <span className="text-xs text-[#666666] dark:text-zinc-400 truncate">
@@ -117,28 +132,18 @@ function SummaryCard({
                         </span>
                     </button>
                 )}
-                {cancelled > 0 && (
-                    <button
-                        type="button"
-                        onClick={onCancelledClick}
-                        className={`flex items-center gap-1.5 text-left ${onCancelledClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
-                    >
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 shrink-0" />
-                        <span className="text-xs text-[#666666] dark:text-zinc-400 truncate">
-                            <span className="font-semibold text-zinc-500 dark:text-zinc-400">{cancelled}</span> cancelada{cancelled !== 1 ? 's' : ''}
-                        </span>
-                    </button>
-                )}
+                {!storeVariant && cancelledButton}
                 <button
                     type="button"
                     onClick={onTotalClick}
-                    className={`flex items-center gap-1.5 text-left col-span-2 ${onTotalClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
+                    className={`flex items-center gap-1.5 text-left ${storeVariant && cancelled > 0 ? '' : 'col-span-2'} ${onTotalClick ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
                 >
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#D1D1D1] dark:bg-zinc-600 shrink-0" />
+                    <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${storeVariant ? 'bg-blue-500' : 'bg-[#D1D1D1] dark:bg-zinc-600'}`} />
                     <span className="text-xs text-[#666666] dark:text-zinc-400 truncate">
-                        <span className="font-semibold text-[#111111] dark:text-white">{total}</span> total
+                        <span className={`font-semibold ${storeVariant ? 'text-blue-600 dark:text-blue-400' : 'text-[#111111] dark:text-white'}`}>{total}</span> total
                     </span>
                 </button>
+                {storeVariant && cancelledButton}
             </div>
         </div>
     );
@@ -333,6 +338,7 @@ export function ConferenceSummaryCards({
                                             wrong={item.wrong}
                                             cancelled={item.cancelled}
                                             total={item.total}
+                                            storeVariant
                                         />
                                     );
                                 })}
@@ -368,7 +374,7 @@ export function ConferenceSummaryCards({
                                                 <span className="text-[#D1D1D1] dark:text-zinc-600">●</span>
                                                 <span className="font-semibold text-amber-500 dark:text-amber-400">{item.waiting}</span>
                                                 <span className="text-[#D1D1D1] dark:text-zinc-600">●</span>
-                                                <span className="font-semibold text-[#111111] dark:text-white">{item.total}</span>
+                                                <span className="font-semibold text-blue-600 dark:text-blue-400">{item.total}</span>
                                                 <span className="text-[#999999] dark:text-zinc-500">{pct}%</span>
                                             </span>
                                         </button>

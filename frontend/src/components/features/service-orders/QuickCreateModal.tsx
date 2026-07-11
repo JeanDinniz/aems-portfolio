@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useQuery } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
@@ -36,13 +36,14 @@ import { useServices } from '@/hooks/useServices';
 import { useFilmInstallers } from '@/hooks/useEmployees';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useCreateServiceOrder } from '@/hooks/useServiceOrders';
-import type { Department } from '@/types/service-order.types';
+import type { Department, ServiceOrder } from '@/types/service-order.types';
 import { CourtesyReturnSelect } from './CourtesyReturnSelect';
 import { ServiceCodeCombobox } from './ServiceCodeCombobox';
 import type { Photo } from '@/types/photo.types';
 import { CameraCapture } from '@/components/common/CameraCapture';
 import { compressImage } from '@/utils/imageCompression';
 import { validateImageFile } from '@/utils/fileValidation';
+import { markDirty, markClean } from '@/lib/pendingWork';
 import { generateId } from '@/utils/generateId';
 import { isValidPlateOrChassi, PLATE_ERROR_MESSAGE } from '@/utils/plate';
 import { DismissibleNotice } from '@/components/common/DismissibleNotice';
@@ -60,6 +61,7 @@ import {
     ChevronsUpDown,
     ChevronDown,
     ChevronRight,
+    Repeat,
     Search,
 } from 'lucide-react';
 
@@ -153,7 +155,87 @@ const schema = z.object({
     }
 });
 
-type QuickCreateFormData = z.infer<typeof schema>;
+export type QuickCreateFormData = z.infer<typeof schema>;
+
+// ─── Prefill types ─────────────────────────────────────────────────────────────
+/**
+ * Dados para pré-preencher o QuickCreateModal na montagem.
+ * O chamador DEVE montar o modal condicionalmente ({source && <QuickCreateModal />})
+ * para que os defaultValues do useForm sejam aplicados corretamente —
+ * o hook não reaplica defaults após a montagem.
+ */
+export interface QuickCreatePrefill {
+    values: Partial<QuickCreateFormData>;
+    photos?: Photo[];
+    damagePhotos?: Photo[];
+    passthrough?: {
+        vehicle_year?: number;
+        vehicle_brand?: string;
+        dealership_id?: number;
+    };
+}
+
+// ─── Prefill builder ──────────────────────────────────────────────────────────
+/**
+ * Constrói um QuickCreatePrefill a partir de uma O.S. existente.
+ * Departamento e serviços são omitidos intencionalmente — o usuário seleciona ao criar a cópia.
+ * As fotos são reutilizadas como URLs já enviadas (sem re-upload).
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildPrefillFromOrder(order: ServiceOrder): QuickCreatePrefill {
+    const today = new Date().toISOString().split('T')[0];
+
+    // Mesma lógica de strip de notas do EditDialog (ConferencePage ~linha 317)
+    const rawNotes = order.notes ?? '';
+    const strippedNotes = rawNotes
+        .replace(/\s*\|\s*\[CORTESIA\]|\[CORTESIA\]\s*\|\s*/g, '')
+        .replace(/\s*\|\s*\[RETORNO\]|\[RETORNO\]\s*\|\s*/g, '')
+        .trim();
+
+    const values: Partial<QuickCreateFormData> = {
+        plate: order.plate,
+        vehicle_model: order.vehicle_model ?? '',
+        vehicle_model_id: order.vehicle_model_id ?? undefined,
+        vehicle_color: order.vehicle_color ?? '',
+        consultant_id: order.consultant_id ?? undefined,
+        external_os_number: order.external_os_number ?? '',
+        is_galpon: order.is_galpon,
+        is_return: order.is_return,
+        is_courtesy: order.is_courtesy,
+        // Zod exige courtesy_return_set === true para passar na validação
+        courtesy_return_set: true,
+        service_date: order.service_date ?? today,
+        notes: strippedNotes,
+        form_store_id: order.location_id,
+    };
+
+    const photos: Photo[] = (order.photos ?? []).map((url) => ({
+        id: generateId(),
+        preview: url,
+        url,
+        uploaded: true,
+        uploadProgress: 100,
+    }));
+
+    const damagePhotos: Photo[] = (order.damage_photos ?? []).map((url) => ({
+        id: generateId(),
+        preview: url,
+        url,
+        uploaded: true,
+        uploadProgress: 100,
+    }));
+
+    return {
+        values,
+        photos,
+        damagePhotos,
+        passthrough: {
+            vehicle_year: order.vehicle_year ?? undefined,
+            vehicle_brand: order.vehicle_brand,
+            dealership_id: order.dealership_id,
+        },
+    };
+}
 
 // ─── Department config ────────────────────────────────────────────────────────
 interface DeptOption {
@@ -1037,9 +1119,11 @@ export function CompactPhotoUploader({ photos, onChange, label = 'Foto da OS' }:
 interface QuickCreateModalProps {
     open: boolean;
     onClose: () => void;
+    /** Dados para pré-preencher o formulário. Aplicado apenas na montagem — use montagem condicional. */
+    prefill?: QuickCreatePrefill;
 }
 
-export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
+export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalProps) {
     const user = useAuthStore((s) => s.user);
     const effectivePermissions = useAuthStore((s) => s.effectivePermissions);
     const isGalponProfile = effectivePermissions?.is_galpon_profile === true;
@@ -1047,8 +1131,8 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
     const { availableStores, selectedStoreId } = useStoreStore();
     const createServiceOrder = useCreateServiceOrder();
 
-    const [photos, setPhotos] = useState<Photo[]>([]);
-    const [damagePhotos, setDamagePhotos] = useState<Photo[]>([]);
+    const [photos, setPhotos] = useState<Photo[]>(prefill?.photos ?? []);
+    const [damagePhotos, setDamagePhotos] = useState<Photo[]>(prefill?.damagePhotos ?? []);
     const plateInputRef = useRef<HTMLInputElement>(null);
     const formRef = useRef<HTMLFormElement>(null);
 
@@ -1095,8 +1179,10 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
         reset,
         formState: { errors, isSubmitting },
     } = useForm<QuickCreateFormData>({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        resolver: zodResolver(schema) as any,
+        // @hookform/resolvers v5 + zod v4 têm incompatibilidade no genérico Resolver;
+        // o cast via unknown para o tipo correto preserva a checagem de tipos do form
+        // (mesmo padrão de EditServiceOrderPage).
+        resolver: zodResolver(schema) as unknown as Resolver<QuickCreateFormData>,
         defaultValues: {
             department: undefined,
             plate: '',
@@ -1115,6 +1201,7 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
             film_entries: [],
             installers: [],
             form_store_id: undefined,
+            ...(prefill?.values ?? {}),
         },
     });
 
@@ -1128,6 +1215,19 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
     const watchedPlate       = watch('plate');
     const watchedServiceDate = watch('service_date');
     const watchedFilmEntries = watch('film_entries');
+
+    // Sinaliza "trabalho não salvo" para o auto-update do PWA não recarregar a
+    // página no meio de uma O.S. em digitação (fotos são blobs, não sobrevivem
+    // ao reload). Considera sujo quando placa, foto ou serviço já foram tocados.
+    useEffect(() => {
+        const dirty =
+            (watchedPlate?.trim().length ?? 0) > 0 ||
+            photos.length > 0 ||
+            (selectedSvcs?.length ?? 0) > 0;
+        if (dirty) markDirty('quick-create-os');
+        else markClean('quick-create-os');
+        return () => markClean('quick-create-os');
+    }, [watchedPlate, photos, selectedSvcs]);
 
     // Reúne todos os service_ids selecionados (película ou catálogo)
     const isFilmDeptWatch = department === 'film' || department === 'security_film' || department === 'ppf';
@@ -1257,6 +1357,43 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
         [reset, isGalponProfile, photos, damagePhotos]
     );
 
+    // Keep-vehicle reset: preserves plate/car/consultant/store/notes for "Salvar e Outro Depto."
+    // Photos are intentionally NOT touched — uploadPhotos() filters !p.url, so already-uploaded
+    // photos are reused via their existing URL on the next submit without re-uploading.
+    const keepVehicleReset = useCallback(
+        (data: QuickCreateFormData) => {
+            reset({
+                plate: data.plate,
+                vehicle_model: data.vehicle_model,
+                vehicle_model_id: data.vehicle_model_id,
+                vehicle_color: data.vehicle_color,
+                consultant_id: data.consultant_id,
+                notes: data.notes,
+                form_store_id: data.form_store_id,
+                is_return: data.is_return,
+                is_courtesy: data.is_courtesy,
+                service_date: data.service_date,
+                is_galpon: isGalponProfile ? true : data.is_galpon,
+                courtesy_return_set: true,
+                department: undefined,
+                external_os_number: '',
+                selected_services: [],
+                service_prices: {},
+                film_entries: [],
+                installers: [],
+            });
+            setPriceErrors({});
+            setTimeout(
+                () =>
+                    formRef.current
+                        ?.querySelector('[data-field="department"]')
+                        ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+                50
+            );
+        },
+        [reset, isGalponProfile]
+    );
+
     const validatePrices = useCallback((): boolean => {
         const servicePrices = getValues('service_prices') ?? {};
         const selectedServices = getValues('selected_services') ?? [];
@@ -1306,10 +1443,12 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
                 vehicle_model: data.vehicle_model,
                 vehicle_model_id: data.vehicle_model_id || undefined,
                 vehicle_color: data.vehicle_color || undefined,
+                vehicle_year: prefill?.passthrough?.vehicle_year,
+                vehicle_brand: prefill?.passthrough?.vehicle_brand,
                 department: data.department,
                 location_id: resolvedStoreId,
                 store_id: resolvedStoreId,
-                dealership_id: resolvedStore?.dealership_id || undefined,
+                dealership_id: resolvedStore?.dealership_id ?? prefill?.passthrough?.dealership_id ?? undefined,
                 consultant_id: data.consultant_id || undefined,
                 external_os_number: (data.department !== 'vn' && data.department !== 'vd' && data.department !== 'vu')
                     ? data.external_os_number || undefined
@@ -1325,7 +1464,7 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
                 service_date: data.service_date,
             };
         },
-        [storeId, availableStores]
+        [storeId, availableStores, prefill]
     );
 
     const uploadPhotos = useCallback(async (): Promise<string[]> => {
@@ -1387,6 +1526,22 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
             await createServiceOrder.mutateAsync(buildPayload(data, uploadedUrls, damageUrls));
             toast({ title: 'OS lançada! Próxima OS...' });
             partialReset(savedDept, savedFormStore);
+        } catch (err) {
+            toast({ variant: 'destructive', title: 'Erro ao lançar OS', description: getApiErrorMessage(err as Error, 'Verifique os dados e tente novamente.') });
+        }
+    }, scrollToFirstError);
+
+    const onSaveAndOtherDept = handleSubmit(async (rawData) => {
+        const data = rawData as QuickCreateFormData;
+        if (!validatePrices()) {
+            formRef.current?.querySelector('[data-field="selected_services"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+        try {
+            const [uploadedUrls, damageUrls] = await Promise.all([uploadPhotos(), uploadDamagePhotos()]);
+            await createServiceOrder.mutateAsync(buildPayload(data, uploadedUrls, damageUrls));
+            toast({ title: 'O.S. lançada!', description: 'Escolha o próximo departamento.' });
+            keepVehicleReset(data);
         } catch (err) {
             toast({ variant: 'destructive', title: 'Erro ao lançar OS', description: getApiErrorMessage(err as Error, 'Verifique os dados e tente novamente.') });
         }
@@ -1756,13 +1911,25 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
                 </form>
 
                 {/* Footer actions */}
-                <div className="flex items-center justify-end gap-2 px-6 py-4 border-t bg-gray-50/80 dark:bg-zinc-900/50">
+                <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-2 px-6 py-4 border-t bg-gray-50/80 dark:bg-zinc-900/50">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={onSaveAndOtherDept}
+                        disabled={isBusy}
+                        className="w-full sm:w-auto border-[#F5A800] text-[#E89200] hover:bg-[#F5A800]/10 gap-1.5"
+                        title="Salva esta O.S. e mantém os dados do carro para lançar em outro departamento"
+                    >
+                        <Repeat className="h-4 w-4" />
+                        {isBusy ? 'Salvando...' : 'Salvar e Outro Depto.'}
+                    </Button>
                     <Button
                         type="button"
                         variant="outline"
                         onClick={onSave}
                         disabled={isBusy}
-                        className="border-[#F5A800] text-[#E89200] hover:bg-[#F5A800]/10"
+                        className="w-full sm:w-auto border-[#F5A800] text-[#E89200] hover:bg-[#F5A800]/10"
+                        title="Salva a O.S. e fecha"
                     >
                         {isBusy ? 'Salvando...' : 'Salvar'}
                     </Button>
@@ -1770,7 +1937,8 @@ export function QuickCreateModal({ open, onClose }: QuickCreateModalProps) {
                         type="button"
                         onClick={onSaveAndNext}
                         disabled={isBusy}
-                        className="bg-[#F5A800] hover:bg-[#E89200] text-[#111111] font-semibold gap-1.5"
+                        className="w-full sm:w-auto bg-[#F5A800] hover:bg-[#E89200] text-[#111111] font-semibold gap-1.5"
+                        title="Salva e limpa o formulário para o próximo carro (mesmo departamento)"
                     >
                         {isBusy ? 'Salvando...' : (
                             <>

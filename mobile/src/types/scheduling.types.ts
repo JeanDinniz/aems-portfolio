@@ -57,7 +57,14 @@ export interface AppointmentFilters {
 
 export interface AppointmentListResponse {
   items: Appointment[]
-  pagination: { total: number; page: number; limit: number; pages: number }
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    total_pages: number
+    has_next: boolean
+    has_prev: boolean
+  }
 }
 
 export interface TodaySummary {

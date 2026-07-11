@@ -6,6 +6,7 @@ export interface ConferenceSummaryFilters {
     date_from?: string;
     date_to?: string;
     plate?: string;
+    service_ids?: number[];
     worker_id?: number;
     include_cancelled?: boolean;
     is_courtesy?: boolean;

@@ -7,7 +7,9 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.schemas import PaginationMeta
 from app.core.validators import (
+    normalize_tonality,
     sanitize_text,
     validate_photo_list,
     validate_vehicle_plate,
@@ -48,6 +50,11 @@ class ServiceOrderItemCreate(BaseModel):
         decimal_places=2,
         description="Preço unitário (obrigatório para serviços com valor variável)",
     )
+
+    @field_validator("tonality")
+    @classmethod
+    def normalize_tonality_value(cls, v: str | None) -> str | None:
+        return normalize_tonality(v)
 
 
 class ServiceOrderItemResponse(BaseModel):
@@ -347,7 +354,7 @@ class ServiceOrderListResponse(BaseModel):
     """Schema para lista paginada de O.S."""
 
     items: list[ServiceOrderResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class StatusHistoryResponse(BaseModel):

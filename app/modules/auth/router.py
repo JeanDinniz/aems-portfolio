@@ -2,7 +2,7 @@
 Auth router - API endpoints for authentication.
 """
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,10 +43,33 @@ settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def _set_media_cookie(response: Response, login_result) -> None:
+    """
+    Emite o cookie httpOnly de acesso a mídia (fotos em /uploads).
+
+    O Nginx valida este cookie via auth_request antes de servir cada imagem —
+    fecha o acesso público às fotos (ALTO-2 da auditoria) sem mudar nenhuma
+    URL: <img> envia cookie automaticamente no mesmo domínio.
+    """
+    from app.core.security import create_media_token, decode_token
+
+    user_id = int(decode_token(login_result.access_token)["sub"])
+    response.set_cookie(
+        key="aems_media",
+        value=create_media_token(user_id),
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path="/uploads",
+        httponly=True,
+        secure=not settings.DEBUG,
+        samesite="lax",
+    )
+
+
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 async def login(
     request: Request,
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
@@ -61,19 +84,22 @@ async def login(
     - username: email do usuário
     - password: senha
     """
-    return await service.authenticate(
+    result = await service.authenticate(
         db=db,
         email=form_data.username,
         password=form_data.password,
         ip_address=get_client_ip(request),
         user_agent=get_user_agent(request),
     )
+    _set_media_cookie(response, result)
+    return result
 
 
 @router.post("/refresh", response_model=LoginResponse)
 @limiter.limit(settings.RATE_LIMIT_REFRESH)
 async def refresh_token(
     request: Request,
+    response: Response,
     data: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -83,12 +109,15 @@ async def refresh_token(
     Enviar no body:
     - refresh_token: token de refresh obtido no login
     """
-    return await service.refresh_access_token(db=db, refresh_token=data.refresh_token)
+    result = await service.refresh_access_token(db=db, refresh_token=data.refresh_token)
+    _set_media_cookie(response, result)
+    return result
 
 
 @router.post("/logout")
 async def logout(
     request: Request,
+    response: Response,
     request_data: LogoutRequest = LogoutRequest(),
     token: str = Depends(oauth2_scheme),
     current_user=Depends(get_current_user),
@@ -101,7 +130,7 @@ async def logout(
     Body opcional:
     - refresh_token: se fornecido, o refresh token também é adicionado à blacklist.
     """
-    return await service.logout(
+    result = await service.logout(
         db=db,
         user=current_user,
         token=token,
@@ -109,6 +138,8 @@ async def logout(
         ip_address=get_client_ip(request),
         user_agent=get_user_agent(request),
     )
+    response.delete_cookie(key="aems_media", path="/uploads")
+    return result
 
 
 @router.post("/change-password")

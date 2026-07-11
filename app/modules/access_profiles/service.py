@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.core.audit import log_audit
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.pagination import paginate
+from app.core.permissions import profiles_all_have_flag
 from app.modules.access_profiles.models import (
     AccessProfile,
     AccessProfileModulePermission,
@@ -413,7 +414,10 @@ async def get_user_effective_permissions(
 
     Para os campos de loja:
     - store_ids: union de todos os store_ids dos perfis ativos
-    - is_galpon_profile: True se qualquer perfil ativo tiver is_galpon_profile=True
+    - is_galpon_profile / hide_galpon_option: semântica ADITIVA — True somente se
+      TODOS os perfis ativos tiverem a flag (mesma regra de
+      app.core.permissions.is_galpon_profile_user/hide_galpon_user). Usuário
+      misto (loja + galpão) é tratado como usuário normal.
 
     Args:
         db: Sessão do banco de dados
@@ -460,21 +464,11 @@ async def get_user_effective_permissions(
     # Acumular permissões por sub_module com OR lógico
     perm_map: dict[str, dict] = {}
     store_ids_set: set[int] = set()
-    is_galpon_profile = False
-    hide_galpon_option = False
 
     for profile in active_profiles:
         # Lojas
         for store in profile.stores:
             store_ids_set.add(store.id)
-
-        # True se qualquer perfil ativo for do tipo galpão
-        if profile.is_galpon_profile:
-            is_galpon_profile = True
-
-        # True se qualquer perfil ativo ocultar o checkbox galpão
-        if profile.hide_galpon_option:
-            hide_galpon_option = True
 
         # Permissões por módulo
         for perm in profile.permissions:
@@ -501,6 +495,11 @@ async def get_user_effective_permissions(
         )
         for data in perm_map.values()
     ]
+
+    # Flags de galpão com a MESMA semântica aditiva do enforcement central
+    # (app.core.permissions): restrição só vale se TODOS os perfis a carregam.
+    is_galpon_profile = profiles_all_have_flag(active_profiles, "is_galpon_profile")
+    hide_galpon_option = profiles_all_have_flag(active_profiles, "hide_galpon_option")
 
     return UserEffectivePermissions(
         user_id=user_id,

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { suppliersService } from '@/services/api/suppliersService';
+import { suppliersService } from '@/services/api/suppliers.service';
 import { useToast } from '@/hooks/use-toast';
 import { getApiErrorMessage } from '@/lib/api-error';
 import type { SupplierCreate, SupplierFilters, SupplierUpdate } from '@/types/supplier';
@@ -10,7 +10,6 @@ export function useSuppliers(params?: SupplierFilters) {
         queryKey: ['suppliers', params],
         queryFn: () => suppliersService.list({ is_active: true, limit: 100, ...params }),
         staleTime: 1000 * 60 * 5,
-        gcTime: 1000 * 60 * 2,
     });
 }
 
@@ -20,7 +19,6 @@ export function useSuppliersAdmin(params?: SupplierFilters) {
         queryKey: ['suppliers-admin', params],
         queryFn: () => suppliersService.list(params),
         staleTime: 1000 * 60 * 5,
-        gcTime: 1000 * 60 * 2,
     });
 }
 

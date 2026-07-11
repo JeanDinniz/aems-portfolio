@@ -71,6 +71,32 @@ export interface ServiceOrder {
     updated_by_name?: string | null;
 }
 
+/**
+ * Prefill para "Gerar cópia da O.S." (Conferência → Criar O.S.).
+ *
+ * Objeto serializável (só primitivos/arrays) — trafega como param de navegação.
+ * Copia tudo da O.S. original EXCETO departamento e serviços (o usuário escolhe
+ * de novo). As fotos são URLs remotas já hospedadas no servidor (sem re-upload).
+ */
+export interface OSCopyPrefill {
+    sourceOrderId: number;
+    location_id?: number;
+    is_galpon: boolean;
+    is_return: boolean;
+    is_courtesy: boolean;
+    service_date?: string; // AAAA-MM-DD
+    external_os_number?: string;
+    plate: string;
+    vehicle_model?: string;
+    vehicle_model_id?: number;
+    vehicle_color?: string;
+    vehicle_year?: number;
+    consultant_id?: number;
+    notes?: string;
+    photos: string[];
+    damage_photos?: string[];
+}
+
 export interface CreateServiceOrderData {
     plate: string;
     vehicle_plate?: string;

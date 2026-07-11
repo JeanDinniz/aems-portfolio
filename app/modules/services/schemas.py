@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.schemas import PaginationMeta
 from app.modules.brands.schemas import BrandResponse
 from app.modules.services.enums import ServiceCategory, ServiceDepartment
 
@@ -74,4 +75,4 @@ class ServiceListResponse(BaseModel):
     """Schema for paginated service list response."""
 
     items: list[ServiceResponse]
-    pagination: dict
+    pagination: PaginationMeta

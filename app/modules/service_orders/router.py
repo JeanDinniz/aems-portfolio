@@ -21,7 +21,7 @@ from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse, get_pagination_params
 from app.modules.service_orders import export, service
-from app.modules.service_orders.enums import OSStatus
+from app.modules.service_orders.enums import ConferenceStatus, OSStatus
 from app.modules.service_orders.schemas import (
     DuplicateCheckResponse,
     FinalizeOrderRequest,
@@ -43,34 +43,38 @@ router = APIRouter(prefix="/service-orders", tags=["Service Orders"])
 
 
 def _build_item_filter(
-    service_name_contains: str | None,
-    service_name_not_contains: str | None,
+    service_name_contains: list[str],
+    service_name_not_contains: list[str],
 ) -> "Callable[[Any], bool] | None":
     """
     Retorna um predicado por item para filtros de nome de serviço, ou None quando
     ambos os parâmetros são ausentes.
 
-    Regras:
-    - service_name_contains: item passa se item.service existe e needle está no nome
-      (case-insensitive). Item sem service NÃO passa.
-    - service_name_not_contains: item passa se item.service é None OU needle NÃO
+    Regras (any-match — cada parâmetro é uma lista de padrões parciais):
+    - service_name_contains: item passa se item.service existe e ALGUM needle está
+      no nome (case-insensitive). Item sem service NÃO passa.
+    - service_name_not_contains: item passa se item.service é None OU NENHUM needle
       está no nome. Item sem service passa (pertence ao grupo "outros serviços").
     - Se ambos forem fornecidos, service_name_contains tem precedência.
     - Se nenhum for fornecido, retorna None (sem filtro).
     """
     if service_name_contains:
-        needle = service_name_contains.lower()
+        needles = [n.lower() for n in service_name_contains]
 
         def _contains_filter(item: "Any") -> bool:
-            return bool(item.service and needle in (item.service.name or "").lower())
+            name = (item.service.name or "").lower() if item.service else None
+            return name is not None and any(n in name for n in needles)
 
         return _contains_filter
 
     if service_name_not_contains:
-        needle = service_name_not_contains.lower()
+        needles = [n.lower() for n in service_name_not_contains]
 
         def _not_contains_filter(item: "Any") -> bool:
-            return not item.service or needle not in (item.service.name or "").lower()
+            if not item.service:
+                return True
+            name = (item.service.name or "").lower()
+            return not any(n in name for n in needles)
 
         return _not_contains_filter
 
@@ -79,11 +83,12 @@ def _build_item_filter(
 
 def _prefilter_orders_by_service_name(
     orders: list,
-    service_name_contains: str | None,
-    service_name_not_contains: str | None,
+    service_name_contains: list[str],
+    service_name_not_contains: list[str],
 ) -> list:
     """
-    Pré-filtro de O.S. inteiras para os filtros de nome de serviço (por item):
+    Pré-filtro de O.S. inteiras para os filtros de nome de serviço (por item,
+    any-match — cada parâmetro é uma lista de padrões parciais):
 
     - contains: omite O.S. sem nenhum item que case (nada dela apareceria).
     - not_contains: omite O.S. que tinha itens e TODOS casaram (sairia como
@@ -91,30 +96,18 @@ def _prefilter_orders_by_service_name(
       O.S. originalmente sem itens é mantida (pertence ao grupo Serviços).
     - contains tem precedência quando ambos são fornecidos.
     """
+    item_filter = _build_item_filter(service_name_contains, service_name_not_contains)
+    if item_filter is None:
+        return orders
+
     if service_name_contains:
-        needle = service_name_contains.lower()
-        return [
-            o
-            for o in orders
-            if any(
-                item.service and needle in (item.service.name or "").lower()
-                for item in (o.items or [])
-            )
-        ]
+        return [o for o in orders if any(item_filter(item) for item in (o.items or []))]
 
-    if service_name_not_contains:
-        needle = service_name_not_contains.lower()
-        return [
-            o
-            for o in orders
-            if not (o.items or [])
-            or any(
-                not item.service or needle not in (item.service.name or "").lower()
-                for item in (o.items or [])
-            )
-        ]
-
-    return orders
+    return [
+        o
+        for o in orders
+        if not (o.items or []) or any(item_filter(item) for item in (o.items or []))
+    ]
 
 
 @router.get("", response_model=ServiceOrderListResponse)
@@ -128,11 +121,20 @@ async def list_service_orders(
         default=None, alias="status", description="Filtrar por status"
     ),
     department: ServiceDepartment | None = Query(None, description="Filtrar por departamento"),
+    departments: list[ServiceDepartment] = Query(
+        default=[], description="Filtrar por múltiplos departamentos"
+    ),
     date_from: datetime | None = Query(
         None, description="Data inicial (service_date ou entry_time)"
     ),
     date_to: datetime | None = Query(None, description="Data final (service_date ou entry_time)"),
     plate: str | None = Query(None, description="Filtrar por placa"),
+    service_ids: list[int] = Query(
+        default=[], description="O.S. com ao menos um item nesses serviços"
+    ),
+    conference_statuses: list[ConferenceStatus] = Query(
+        default=[], description="Filtro multi de status da conferência (OR das condições)"
+    ),
     is_verified: bool | None = Query(default=None, description="Filtrar por verificação"),
     flag: list[str] = Query(
         default=[], description="Filtrar por flags OR: courtesy, galpon, retorno"
@@ -159,9 +161,12 @@ async def list_service_orders(
         store_ids=store_ids or None,
         status=status_filter,
         department=department,
+        departments=departments or None,
         date_from=date_from,
         date_to=date_to,
         plate=plate,
+        service_ids=service_ids or None,
+        conference_statuses=conference_statuses or None,
         is_verified=is_verified,
         worker_id=worker_id,
         include_cancelled=include_cancelled,
@@ -226,19 +231,19 @@ async def export_fechamento(
     is_return: bool | None = Query(
         None, description="Filtrar por retorno (True=só retornos, False=excluir retornos)"
     ),
-    service_name_contains: str | None = Query(
-        None,
+    service_name_contains: list[str] = Query(
+        default=[],
         description=(
-            "Filtrar por nome de serviço (parcial, por item). "
-            "O.S. sem nenhum item que case é omitida. "
+            "Filtrar por nome de serviço (parcial, por item; repetível — item casa "
+            "se contém ALGUM dos padrões). O.S. sem nenhum item que case é omitida. "
             "Mutuamente exclusivo com service_name_not_contains; este tem precedência."
         ),
     ),
-    service_name_not_contains: str | None = Query(
-        None,
+    service_name_not_contains: list[str] = Query(
+        default=[],
         description=(
-            "Excluir itens cujo nome de serviço contenha este texto (por item). "
-            "O.S. workshop sem itens é mantida (grupo Serviços). "
+            "Excluir itens cujo nome de serviço contenha ALGUM destes textos "
+            "(por item; repetível). O.S. workshop sem itens é mantida (grupo Serviços). "
             "Ignorado quando service_name_contains também for fornecido."
         ),
     ),
@@ -468,14 +473,23 @@ async def export_conferencia(
     ),
     date_to: datetime | None = Query(None, description="Data final (service_date ou entry_time)"),
     department: ServiceDepartment | None = Query(None, description="Filtrar por departamento"),
+    departments: list[ServiceDepartment] = Query(
+        default=[], description="Filtrar por múltiplos departamentos"
+    ),
     is_verified: bool | None = Query(None, description="Filtrar por status de verificação"),
     status_filter: str | None = Query(
         None, alias="status", description="Filtrar por status (ex: cancelled)"
+    ),
+    conference_statuses: list[ConferenceStatus] = Query(
+        default=[], description="Filtro multi de status da conferência (OR das condições)"
     ),
     flag: list[str] = Query(
         default=[], description="Filtrar por flags OR: courtesy, galpon, retorno"
     ),
     plate: str | None = Query(None, description="Filtrar por placa/OS"),
+    service_ids: list[int] = Query(
+        default=[], description="O.S. com ao menos um item nesses serviços"
+    ),
     worker_id: int | None = Query(None, description="Filtrar por instalador (employee_id)"),
 ):
     """
@@ -490,13 +504,7 @@ async def export_conferencia(
     from app.modules.service_orders.models import ServiceOrder as SOModel
     from app.modules.service_orders.models import ServiceOrderItem, ServiceOrderWorker
 
-    query = sa_select(SOModel).options(
-        selectinload(SOModel.items).selectinload(ServiceOrderItem.service),
-        selectinload(SOModel.consultant),
-        selectinload(SOModel.store),
-        selectinload(SOModel.workers).selectinload(ServiceOrderWorker.employee),
-        selectinload(SOModel.created_by),
-    )
+    query = sa_select(SOModel)
 
     query = apply_store_filter(query, current_user, SOModel.store_id)
 
@@ -504,7 +512,11 @@ async def export_conferencia(
         query = query.where(SOModel.store_id == store_id)
 
     # Filtro de status — espelha a listagem da tela de conferência
-    if status_filter == OSStatus.CANCELLED.value:
+    if conference_statuses:
+        cond = service.conference_status_condition(conference_statuses)
+        if cond is not None:
+            query = query.where(cond)
+    elif status_filter == OSStatus.CANCELLED.value:
         query = query.where(SOModel.status == OSStatus.CANCELLED.value)
     elif status_filter == OSStatus.WRONG.value:
         query = query.where(SOModel.status == OSStatus.WRONG.value)
@@ -518,7 +530,9 @@ async def export_conferencia(
         query = query.where(SOModel.is_verified == is_verified)
         query = query.where(SOModel.status != OSStatus.CANCELLED.value)
 
-    if department is not None:
+    if departments:
+        query = query.where(SOModel.department.in_([d.value for d in departments]))
+    elif department is not None:
         query = query.where(SOModel.department == department.value)
 
     # Filtro de data: usa service_date quando preenchida, senão entry_time como fallback
@@ -553,6 +567,9 @@ async def export_conferencia(
             )
         )
 
+    if service_ids:
+        query = query.where(service.service_ids_condition(service_ids))
+
     if worker_id is not None:
         from sqlalchemy import exists
 
@@ -581,10 +598,36 @@ async def export_conferencia(
     query = query.order_by(SOModel.service_date.asc().nulls_last(), SOModel.entry_time.asc())
 
     query = query.limit(5000)
-    result = await db.execute(query)
-    orders = list(result.scalars().all())
 
-    content = export.generate_conference_excel(orders)
+    # Carga em lotes: primeiro só os IDs (já na ordem final do relatório), depois
+    # os objetos completos com eager load em chunks — evita manter 5000 O.S. com
+    # todas as relações em memória de uma vez (worker único com limite de 256 MB).
+    id_result = await db.execute(query.with_only_columns(SOModel.id))
+    ordered_ids = list(id_result.scalars().all())
+
+    writer = export.ConferenceExcelWriter()
+    batch_size = 500
+    for i in range(0, len(ordered_ids), batch_size):
+        chunk = ordered_ids[i : i + batch_size]
+        batch_q = (
+            sa_select(SOModel)
+            .options(
+                selectinload(SOModel.items).selectinload(ServiceOrderItem.service),
+                selectinload(SOModel.consultant),
+                selectinload(SOModel.store),
+                selectinload(SOModel.workers).selectinload(ServiceOrderWorker.employee),
+                selectinload(SOModel.created_by),
+            )
+            .where(SOModel.id.in_(chunk))
+        )
+        batch_result = await db.execute(batch_q)
+        position = {oid: idx for idx, oid in enumerate(chunk)}
+        batch_orders = sorted(batch_result.scalars().all(), key=lambda o: position[o.id])
+        writer.add_orders(batch_orders)
+        # Libera os objetos do identity map da sessão entre lotes
+        db.expunge_all()
+
+    content = writer.finish()
 
     date_from_str = date_from.strftime("%Y%m%d") if date_from else "inicio"
     date_to_str = date_to.strftime("%Y%m%d") if date_to else "fim"
@@ -607,6 +650,9 @@ async def get_conference_summary(
     ),
     date_to: datetime | None = Query(None, description="Data final (service_date ou entry_time)"),
     plate: str | None = Query(None, description="Filtrar por placa/OS"),
+    service_ids: list[int] = Query(
+        default=[], description="O.S. com ao menos um item nesses serviços"
+    ),
     worker_id: int | None = Query(None, description="Filtrar por instalador (employee_id)"),
     include_cancelled: bool = Query(False, description="Incluir OS canceladas na contagem"),
     is_courtesy: bool | None = Query(None, description="Filtrar por cortesia"),
@@ -626,6 +672,7 @@ async def get_conference_summary(
         date_from=date_from,
         date_to=date_to,
         plate=plate,
+        service_ids=service_ids or None,
         worker_id=worker_id,
         include_cancelled=include_cancelled,
         is_courtesy=is_courtesy,
@@ -642,6 +689,9 @@ async def get_conference_summary_by_store(
     ),
     date_to: datetime | None = Query(None, description="Data final (service_date ou entry_time)"),
     plate: str | None = Query(None, description="Filtrar por placa/OS"),
+    service_ids: list[int] = Query(
+        default=[], description="O.S. com ao menos um item nesses serviços"
+    ),
     worker_id: int | None = Query(None, description="Filtrar por instalador (employee_id)"),
     include_cancelled: bool = Query(False, description="Incluir OS canceladas na contagem"),
     is_courtesy: bool | None = Query(None, description="Filtrar por cortesia"),
@@ -661,6 +711,7 @@ async def get_conference_summary_by_store(
         date_from=date_from,
         date_to=date_to,
         plate=plate,
+        service_ids=service_ids or None,
         worker_id=worker_id,
         include_cancelled=include_cancelled,
         is_courtesy=is_courtesy,

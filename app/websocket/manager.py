@@ -58,6 +58,8 @@ class ConnectionManager:
 
     async def broadcast_to_all(self, event: str, data: dict[str, Any]) -> None:
         """Envia evento para todas as conexões ativas (store_id=None na mensagem)."""
+        if not self.active_connections:
+            return
         message = json.dumps(self._format_message(event, data, None))
         dead: list[tuple[int | str, WebSocket]] = []
 

@@ -30,3 +30,15 @@ export const STATUS_LABELS: Record<ServiceOrderStatus, string> = {
     wrong:      'Lançado Errado',
     duplicate:  'Duplicado',
 };
+
+// Labels indexados pelo vocabulário do BACKEND (in_progress/completed) — usados
+// onde o dado vem cru do backend sem passar pela tradução do service, como o
+// histórico de status (StatusHistory.to_status).
+export const OS_STATUS_HISTORY_LABELS: Record<string, string> = {
+    waiting:     'Aguardando',
+    in_progress: 'Fazendo',
+    completed:   'Pronto',
+    cancelled:   'Cancelada',
+    wrong:       'Lançado Errado',
+    duplicate:   'Duplicado',
+};

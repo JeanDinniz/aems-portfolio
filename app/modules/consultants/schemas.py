@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.core.schemas import PaginationMeta
+
 
 class ConsultantBase(BaseModel):
     """Base schema with common consultant attributes."""
@@ -64,4 +66,4 @@ class ConsultantListResponse(BaseModel):
     """Schema for paginated consultant list response."""
 
     items: list[ConsultantResponse]
-    pagination: dict
+    pagination: PaginationMeta

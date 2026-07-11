@@ -49,7 +49,6 @@ export function useWebSocket(): void {
 
     wsService.on('os_created', invalidateOrders);
     wsService.on('os_updated', onOsUpdated);
-    wsService.on('os_status_changed', invalidateOrders);
     wsService.on('os_finalized', invalidateOrders);
     wsService.on('os_cancelled', invalidateOrders);
     wsService.on('os_verified', onOsVerified);
@@ -61,7 +60,6 @@ export function useWebSocket(): void {
     return () => {
       wsService.off('os_created', invalidateOrders);
       wsService.off('os_updated', onOsUpdated);
-      wsService.off('os_status_changed', invalidateOrders);
       wsService.off('os_finalized', invalidateOrders);
       wsService.off('os_cancelled', invalidateOrders);
       wsService.off('os_verified', onOsVerified);

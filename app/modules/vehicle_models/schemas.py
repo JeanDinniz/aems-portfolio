@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.schemas import PaginationMeta
 from app.modules.brands.schemas import BrandResponse
 
 
@@ -43,4 +44,4 @@ class VehicleModelListResponse(BaseModel):
     """Schema de resposta para lista paginada de modelos de veículo."""
 
     items: list[VehicleModelResponse]
-    pagination: dict
+    pagination: PaginationMeta

@@ -12,12 +12,12 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps
 
 from app.config import get_settings
-from app.core.security import get_current_user
+from app.core.security import decode_token, get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,7 @@ async def _save_locally(file_content: bytes, filename: str) -> str:
 
 @router.post("/photo", summary="Upload de foto")
 async def upload_photo(
+    request: Request,
     file: UploadFile,
     current_user=Depends(get_current_user),
 ) -> JSONResponse:
@@ -244,15 +245,30 @@ async def upload_photo(
             ),
         )
 
-    # Read file content
-    content = await file.read()
-
-    # Validate file size
-    if len(content) > MAX_FILE_SIZE_BYTES:
+    # Rejeição rápida pelo Content-Length ANTES de ler qualquer byte
+    # (o header cobre o multipart inteiro, então é um teto conservador)
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > MAX_FILE_SIZE_BYTES * 2
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Arquivo muito grande. Tamanho maximo: {MAX_FILE_SIZE_MB} MB",
         )
+
+    # Leitura em chunks com teto: nunca materializa mais que o limite em RAM
+    # (Content-Length pode mentir ou faltar; worker único com 256 MB — ALTO da auditoria)
+    chunks = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        chunks.extend(chunk)
+        if len(chunks) > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Arquivo muito grande. Tamanho maximo: {MAX_FILE_SIZE_MB} MB",
+            )
+    content = bytes(chunks)
 
     if len(content) == 0:
         raise HTTPException(
@@ -296,3 +312,46 @@ async def upload_photo(
     return JSONResponse(
         content={"url": url, "thumb_url": thumb_url}, status_code=status.HTTP_200_OK
     )
+
+
+@router.get("/media-auth", include_in_schema=False, summary="Autorização de mídia (Nginx)")
+async def media_auth(request: Request) -> Response:
+    """
+    Endpoint interno consultado pelo Nginx (auth_request) antes de servir
+    qualquer arquivo de /uploads/ — fecha o acesso público às fotos (ALTO-2
+    da auditoria).
+
+    Aceita:
+    - Cookie httpOnly `aems_media` (web — emitido no login/refresh), ou
+    - Header Authorization: Bearer <access_token> (app mobile).
+
+    Validação SÓ criptográfica (assinatura + expiração, sem banco/Redis):
+    cada imagem da tela gera um subrequest — não pode custar uma query cada.
+    """
+    token = request.cookies.get("aems_media")
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Autenticação necessária para acessar mídia",
+        )
+
+    try:
+        payload = decode_token(token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de mídia inválido ou expirado",
+        ) from exc
+
+    if payload.get("type") not in ("media", "access"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tipo de token não autorizado para mídia",
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

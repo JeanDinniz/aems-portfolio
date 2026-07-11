@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useServiceOrders, useUpdateServiceOrderStatus } from '@/hooks/useServiceOrders';
 import { useStores } from '@/hooks/useStores';
+import { useDebounce } from '@/hooks/useDebounce';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -123,15 +124,17 @@ export default function ServiceOrdersPage() {
     const { stores, isMultiStore } = useStores();
     const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
 
+    const debouncedSearch = useDebounce(search);
+
     const { data, isLoading, isError } = useServiceOrders(
         {
             store_id: selectedStoreId ?? undefined,
-            search: search || undefined,
+            search: debouncedSearch || undefined,
             department: departmentFilter !== 'all' ? departmentFilter : undefined,
             status: statusFilter.length > 0 ? statusFilter : undefined,
             // Quando há busca, ignora filtro de data para buscar em qualquer período
-            date_from: search ? undefined : startDate,
-            date_to: search ? undefined : endDate,
+            date_from: debouncedSearch ? undefined : startDate,
+            date_to: debouncedSearch ? undefined : endDate,
         },
         page * pageSize,
         pageSize

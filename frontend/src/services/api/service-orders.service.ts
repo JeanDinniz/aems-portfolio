@@ -282,6 +282,7 @@ export const serviceOrdersService = {
         date_from?: string;
         date_to?: string;
         plate?: string;
+        service_ids?: number[];
         worker_id?: number;
         include_cancelled?: boolean;
         is_courtesy?: boolean;
@@ -320,6 +321,7 @@ export const serviceOrdersService = {
         date_from?: string;
         date_to?: string;
         plate?: string;
+        service_ids?: number[];
         worker_id?: number;
         include_cancelled?: boolean;
         is_courtesy?: boolean;
@@ -396,9 +398,12 @@ export const serviceOrdersService = {
         flag?: string[];
         status?: string;
         department?: string;
+        departments?: string[];
         date_from?: string;
         date_to?: string;
         plate?: string;
+        service_ids?: number[];
+        conference_statuses?: string[];
         worker_id?: number;
         include_cancelled?: boolean;
         sort_by?: string;

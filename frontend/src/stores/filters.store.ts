@@ -21,8 +21,8 @@ function lastOfMonthStr(): string {
 
 // ─── Conferência ─────────────────────────────────────────────────────────────
 
-export type ConferenceVerifiedFilter =
-    | 'pending' | 'verified' | 'all' | 'cancelled' | 'wrong' | 'duplicate';
+export type ConferenceStatusValue =
+    | 'pending' | 'verified' | 'cancelled' | 'wrong' | 'duplicate';
 
 export interface ConferenceFlagFilters {
     courtesy: boolean;
@@ -33,17 +33,19 @@ export interface ConferenceFlagFilters {
 interface ConferenceFiltersState {
     dateFrom: string;
     dateTo: string;
-    department: string;
+    departments: string[];
     search: string;
-    verifiedFilter: ConferenceVerifiedFilter;
+    serviceIds: number[];
+    statusFilters: ConferenceStatusValue[];
     flagFilters: ConferenceFlagFilters;
     workerId: number | undefined;
     selectedStoreIds: number[];
     setDateFrom: (v: string) => void;
     setDateTo: (v: string) => void;
-    setDepartment: (v: string) => void;
+    setDepartments: (v: string[]) => void;
     setSearch: (v: string) => void;
-    setVerifiedFilter: (v: ConferenceVerifiedFilter) => void;
+    setServiceIds: (v: number[]) => void;
+    setStatusFilters: (v: ConferenceStatusValue[]) => void;
     setFlagFilters: (v: ConferenceFlagFilters | ((prev: ConferenceFlagFilters) => ConferenceFlagFilters)) => void;
     setWorkerId: (v: number | undefined) => void;
     setSelectedStoreIds: (v: number[] | ((prev: number[]) => number[])) => void;
@@ -54,9 +56,10 @@ function conferenceDefaults() {
     return {
         dateFrom: firstOfMonthStr(),
         dateTo: todayStr(),
-        department: '',
+        departments: [] as string[],
         search: '',
-        verifiedFilter: 'pending' as ConferenceVerifiedFilter,
+        serviceIds: [] as number[],
+        statusFilters: ['pending'] as ConferenceStatusValue[],
         flagFilters: { courtesy: false, galpon: false, retorno: false },
         workerId: undefined as number | undefined,
         selectedStoreIds: [] as number[],
@@ -69,9 +72,10 @@ export const useConferenceFiltersStore = create<ConferenceFiltersState>()(
             ...conferenceDefaults(),
             setDateFrom: (v) => set({ dateFrom: v }),
             setDateTo: (v) => set({ dateTo: v }),
-            setDepartment: (v) => set({ department: v }),
+            setDepartments: (v) => set({ departments: v }),
             setSearch: (v) => set({ search: v }),
-            setVerifiedFilter: (v) => set({ verifiedFilter: v }),
+            setServiceIds: (v) => set({ serviceIds: v }),
+            setStatusFilters: (v) => set({ statusFilters: v }),
             setFlagFilters: (v) =>
                 set((s) => ({ flagFilters: typeof v === 'function' ? v(s.flagFilters) : v })),
             setWorkerId: (v) => set({ workerId: v }),
@@ -81,17 +85,41 @@ export const useConferenceFiltersStore = create<ConferenceFiltersState>()(
         }),
         {
             name: 'aems-conference-filters',
+            version: 1,
             storage: createJSONStorage(() => sessionStorage),
             partialize: (s) => ({
                 dateFrom: s.dateFrom,
                 dateTo: s.dateTo,
-                department: s.department,
+                departments: s.departments,
                 search: s.search,
-                verifiedFilter: s.verifiedFilter,
+                serviceIds: s.serviceIds,
+                statusFilters: s.statusFilters,
                 flagFilters: s.flagFilters,
                 workerId: s.workerId,
                 selectedStoreIds: s.selectedStoreIds,
             }),
+            migrate: (persisted: unknown, version: number) => {
+                if (version === 0) {
+                    const old = persisted as Record<string, unknown>;
+                    const dep = typeof old.department === 'string' && old.department ? [old.department] : [];
+                    let statusFilters: ConferenceStatusValue[] = ['pending'];
+                    if (old.verifiedFilter === 'all') {
+                        statusFilters = []; // vazio = "Todas" (mesmo significado do antigo 'all')
+                    } else if (typeof old.verifiedFilter === 'string' && old.verifiedFilter !== '') {
+                        statusFilters = [old.verifiedFilter as ConferenceStatusValue];
+                    }
+                    return {
+                        ...old,
+                        departments: dep,
+                        serviceIds: [],
+                        statusFilters,
+                        department: undefined,
+                        serviceSearch: undefined,
+                        verifiedFilter: undefined,
+                    };
+                }
+                return persisted as ConferenceFiltersState;
+            },
         },
     ),
 );

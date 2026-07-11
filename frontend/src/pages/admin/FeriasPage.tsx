@@ -14,6 +14,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { useVacations } from '@/hooks/useEmployees';
 import { useStores } from '@/hooks/useStores';
+import { useDebounce } from '@/hooks/useDebounce';
 import { EMPLOYEE_POSITIONS } from '@/constants/employees';
 import type { VacationMovement } from '@/types/employee.types';
 
@@ -88,11 +89,11 @@ function AnnualView({ vacations, year, onYearChange }: AnnualViewProps) {
         <div className="space-y-4">
             {/* Year navigation */}
             <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" onClick={() => onYearChange(year - 1)}>
+                <Button variant="outline" size="icon" aria-label="Ano anterior" onClick={() => onYearChange(year - 1)}>
                     <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <span className="text-lg font-semibold w-16 text-center">{year}</span>
-                <Button variant="outline" size="icon" onClick={() => onYearChange(year + 1)}>
+                <Button variant="outline" size="icon" aria-label="Próximo ano" onClick={() => onYearChange(year + 1)}>
                     <ChevronRight className="h-4 w-4" />
                 </Button>
             </div>
@@ -215,9 +216,10 @@ export default function FeriasPage() {
     const [position, setPosition] = useState<string | undefined>();
 
     const { stores } = useStores();
+    const debouncedSearch = useDebounce(search);
     const { data: vacations = [], isLoading } = useVacations({
         store_id: storeId,
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         position: position || undefined,
     });
 

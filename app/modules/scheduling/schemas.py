@@ -4,6 +4,8 @@ from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.schemas import PaginationMeta
+from app.core.validators import normalize_tonality
 from app.core.validators import validate_vehicle_plate as _validate_vehicle_plate
 from app.modules.services.enums import ServiceDepartment
 
@@ -17,6 +19,11 @@ class FilmEntryItem(BaseModel):
     tonality: str | None = Field(None, max_length=20)
     film_roll_id: int | None = None
     film_type_id: int | None = None
+
+    @field_validator("tonality")
+    @classmethod
+    def normalize_tonality_value(cls, v: str | None) -> str | None:
+        return normalize_tonality(v)
 
 
 class AppointmentCreate(BaseModel):
@@ -39,6 +46,11 @@ class AppointmentCreate(BaseModel):
     is_return: bool = False
     film_type_id: int | None = None
     film_tonality: str | None = Field(None, max_length=20)
+
+    @field_validator("film_tonality")
+    @classmethod
+    def normalize_film_tonality(cls, v: str | None) -> str | None:
+        return normalize_tonality(v)
 
     @field_validator("department")
     @classmethod
@@ -75,6 +87,11 @@ class AppointmentUpdate(BaseModel):
     is_return: bool | None = None
     film_type_id: int | None = None
     film_tonality: str | None = Field(None, max_length=20)
+
+    @field_validator("film_tonality")
+    @classmethod
+    def normalize_film_tonality(cls, v: str | None) -> str | None:
+        return normalize_tonality(v)
 
     @field_validator("department")
     @classmethod
@@ -136,7 +153,7 @@ class AppointmentListResponse(BaseModel):
     """Schema para listagem paginada de agendamentos."""
 
     items: list[AppointmentResponse]
-    pagination: dict
+    pagination: PaginationMeta
 
 
 class AppointmentSummaryResponse(BaseModel):
