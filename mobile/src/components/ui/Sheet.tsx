@@ -69,6 +69,7 @@ export const Sheet = forwardRef<SheetRef, SheetProps>(function Sheet(
       ref={modalRef}
       snapPoints={computedSnapPoints}
       enableDynamicSizing={!snapPoints}
+      bottomInset={insets.bottom}
       onDismiss={onDismiss}
       backdropComponent={renderBackdrop}
       // Teclado: o sheet sobe junto com o teclado (input nunca fica escondido) e
@@ -79,7 +80,7 @@ export const Sheet = forwardRef<SheetRef, SheetProps>(function Sheet(
       handleIndicatorStyle={{ backgroundColor: isDark ? '#555555' : '#D0D5DD' }}
       backgroundStyle={{ backgroundColor: colors.surface }}
     >
-      <BottomSheetView style={{ paddingBottom: insets.bottom + 16 }}>
+      <BottomSheetView style={{ paddingBottom: 16 }}>
         {title ? (
           <View className="border-b border-neutral-100 px-5 pb-3 pt-1 dark:border-dark-border-soft">
             <Text className="font-display text-lg text-neutral-900 dark:text-dark-text">

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Users, UserCheck, UserMinus, UserX, Calendar } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -10,9 +11,12 @@ import { EmployeeMovementDialog } from '@/components/features/employees/Employee
 import { EmployeeHistoryDialog } from '@/components/features/employees/EmployeeHistoryDialog';
 import { useEmployees, useEmployeeStats } from '@/hooks/useEmployees';
 import { useDebounce } from '@/hooks/useDebounce';
-import { useAuthStore } from '@/stores/auth.store';
-import { useStoreStore } from '@/stores/store.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
+import { CreateUserDialog } from '@/components/features/users/CreateUserDialog';
+import { useToast } from '@/hooks/use-toast';
+import { employeesService } from '@/services/api/employees.service';
 import type { Employee, EmployeeFilters as Filters } from '@/types/employee.types';
+import type { User } from '@/types/user.types';
 
 interface StatCardProps {
     icon: React.ElementType;
@@ -56,15 +60,20 @@ export function EmployeeManagementPage() {
     const [historicoEmployee, setHistoricoEmployee] = useState<Employee | null>(null);
     const [historicoOpen, setHistoricoOpen] = useState(false);
 
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    // Criar usuário para funcionário
+    const [createUserForEmployee, setCreateUserForEmployee] = useState<Employee | null>(null);
+    const [createUserDialogOpen, setCreateUserDialogOpen] = useState(false);
+
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('employees', 'edit');
-    const { selectedStoreId } = useStoreStore();
+    const { toast } = useToast();
+    const queryClient = useQueryClient();
     const debouncedSearch = useDebounce(filters.search);
     const { employees, total, isLoading } = useEmployees(
         { ...filters, search: debouncedSearch },
         page
     );
-    const { data: stats, isLoading: statsLoading } = useEmployeeStats(selectedStoreId ?? undefined);
+    const { data: stats, isLoading: statsLoading } = useEmployeeStats(filters.store_id ?? undefined);
 
     const handleFicha = (employee: Employee) => {
         setFichaEmployee(employee);
@@ -79,6 +88,31 @@ export function EmployeeManagementPage() {
     const handleHistorico = (employee: Employee) => {
         setHistoricoEmployee(employee);
         setHistoricoOpen(true);
+    };
+
+    const handleCreateUser = (employee: Employee) => {
+        setCreateUserForEmployee(employee);
+        setCreateUserDialogOpen(true);
+    };
+
+    const handleUserCreated = async (newUser: User) => {
+        if (!createUserForEmployee) return;
+        try {
+            await employeesService.update(createUserForEmployee.id, { user_id: newUser.id });
+            queryClient.invalidateQueries({ queryKey: ['employees'] });
+            queryClient.invalidateQueries({ queryKey: ['users'] });
+            toast({
+                title: 'Usuário criado e vinculado',
+                description: `${newUser.full_name} foi criado e vinculado a ${createUserForEmployee.name}.`,
+            });
+        } catch {
+            toast({
+                variant: 'destructive',
+                title: 'Usuário criado, mas vínculo falhou',
+                description: 'O usuário foi criado com sucesso. Vincule-o manualmente na edição do funcionário.',
+            });
+        }
+        setCreateUserForEmployee(null);
     };
 
     return (
@@ -175,6 +209,7 @@ export function EmployeeManagementPage() {
                 onFicha={handleFicha}
                 onMovimentacao={handleMovimentacao}
                 onHistorico={handleHistorico}
+                onCreateUser={canEdit ? handleCreateUser : undefined}
             />
 
             <CreateEmployeeDialog open={createDialogOpen} onOpenChange={setCreateDialogOpen} />
@@ -196,6 +231,22 @@ export function EmployeeManagementPage() {
                 open={historicoOpen}
                 onOpenChange={setHistoricoOpen}
             />
+
+            {createUserForEmployee && (
+                <CreateUserDialog
+                    open={createUserDialogOpen}
+                    onOpenChange={(v) => {
+                        setCreateUserDialogOpen(v);
+                        if (!v) setCreateUserForEmployee(null);
+                    }}
+                    initialValues={{
+                        full_name: [createUserForEmployee.name, createUserForEmployee.last_name].filter(Boolean).join(' '),
+                        email: createUserForEmployee.email ?? '',
+                        store_id: createUserForEmployee.store_id,
+                    }}
+                    onCreated={handleUserCreated}
+                />
+            )}
         </div>
     );
 }

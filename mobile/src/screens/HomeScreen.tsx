@@ -5,13 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { StoreSelector } from '@/components/common/StoreSelector';
 import { useAuthStore } from '@/stores/auth.store';
-import { useMyPermissions } from '@/hooks/useMyPermissions';
+import { useMyPermissions, useCanView } from '@/hooks/useMyPermissions';
 import { useStores } from '@/hooks/useStores';
 import { useUnreadCount } from '@/hooks/useNotifications';
-import { useHomeIndicators } from '@/hooks/useHomeIndicators';
+import { useTimeClockMe } from '@/hooks/useTimeClock';
 import { useVisibleModules } from '@/navigation/guards';
 import { greetingForHour, formatWeekdayLong } from '@/utils/formatDate';
-import { formatInt } from '@/utils/formatNumber';
 import type { AppTabScreenProps } from '@/navigation/types';
 
 /**
@@ -26,15 +25,10 @@ import type { AppTabScreenProps } from '@/navigation/types';
 
 const logoMark = require('../../assets/brand/icon-dark.png');
 
-/** Indicador → texto: "—" quando ainda não há valor (carregando/sem permissão). */
-function indicatorValue(value: number | undefined): string {
-    return value === undefined ? '—' : formatInt(value);
-}
-
-/** Mapeia a chave do módulo (guard) → rota do AppTabs + visual do card grande. */
+/** Mapeia a chave do módulo (guard) → rota + visual do card grande. */
 interface ModuleCardConfig {
     key: string;
-    route: 'ServiceOrders' | 'Scheduling';
+    route: 'ServiceOrders' | 'Scheduling' | 'TimeClock';
     title: string;
     description: string;
     icon: ComponentProps<typeof Ionicons>['name'];
@@ -61,6 +55,16 @@ const MODULE_CARDS: ModuleCardConfig[] = [
     },
 ];
 
+/** Card do Ponto Eletrônico — visual próprio (renderizado à parte por depender do vínculo). */
+const TIME_CLOCK_CARD: ModuleCardConfig = {
+    key: 'time_clock',
+    route: 'TimeClock',
+    title: 'Ponto',
+    description: 'Bater ponto de entrada e saída',
+    icon: 'finger-print-outline',
+    amber: false,
+};
+
 export function HomeScreen({ navigation }: AppTabScreenProps<'Inicio'>) {
     const user = useAuthStore((s) => s.user);
 
@@ -69,11 +73,18 @@ export function HomeScreen({ navigation }: AppTabScreenProps<'Inicio'>) {
     useStores();
 
     const { data: unreadCount = 0 } = useUnreadCount();
-    const indicators = useHomeIndicators();
 
     const modules = useVisibleModules();
     const visibleKeys = new Set(modules.map((m) => m.key));
     const moduleCards = MODULE_CARDS.filter((c) => visibleKeys.has(c.key));
+
+    // Ponto Eletrônico: card visível com permissão `time_clock` E vínculo com
+    // funcionário. A query `me` fica em cache; se `employee_id === null`
+    // (usuário sem vínculo) o card fica escondido. Enquanto carrega, não mostra
+    // (evita piscar um card que some depois).
+    const canViewTimeClock = useCanView('time_clock');
+    const { data: timeClockMe } = useTimeClockMe();
+    const showTimeClock = canViewTimeClock && !!timeClockMe && timeClockMe.employee_id !== null;
 
     const firstName = user?.full_name?.trim().split(/\s+/)[0] ?? '';
     const initials = (user?.full_name ?? '')
@@ -168,99 +179,32 @@ export function HomeScreen({ navigation }: AppTabScreenProps<'Inicio'>) {
                     <StoreSelector />
                 </View>
 
-                {/* Grade 2×2 de indicadores (ligados aos resumos não-gated) */}
-                <View className="mb-5 flex-row flex-wrap gap-3">
-                    <IndicatorCard
-                        label="Ordens em Atraso"
-                        value={indicatorValue(indicators.overdue)}
-                        tone="error"
-                    />
-                    <IndicatorCard
-                        label="Agendamentos Hoje"
-                        value={indicatorValue(indicators.todayCount)}
-                        tone="warning"
-                    />
-                    <IndicatorCard
-                        label="O.S do Mês"
-                        value={indicatorValue(indicators.osThisMonth)}
-                        tone="neutral"
-                    />
-                    <IndicatorCard
-                        label="Veículos Previstos (14d)"
-                        value={indicatorValue(indicators.forecast14d)}
-                        tone="dark"
-                    />
-                </View>
-
                 {/* Cards grandes de módulo (condicionais por permissão) */}
                 <View className="gap-4">
-                    {moduleCards.length === 0 ? (
+                    {moduleCards.length === 0 && !showTimeClock ? (
                         <Text className="py-6 text-center font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
                             Nenhum módulo disponível para o seu perfil.
                         </Text>
                     ) : (
-                        moduleCards.map((card) => (
-                            <ModuleCard
-                                key={card.key}
-                                config={card}
-                                onPress={() => navigation.navigate(card.route)}
-                            />
-                        ))
+                        <>
+                            {moduleCards.map((card) => (
+                                <ModuleCard
+                                    key={card.key}
+                                    config={card}
+                                    onPress={() => navigation.navigate(card.route)}
+                                />
+                            ))}
+                            {showTimeClock ? (
+                                <ModuleCard
+                                    key={TIME_CLOCK_CARD.key}
+                                    config={TIME_CLOCK_CARD}
+                                    onPress={() => navigation.navigate('TimeClock')}
+                                />
+                            ) : null}
+                        </>
                     )}
                 </View>
             </ScrollView>
-        </View>
-    );
-}
-
-type IndicatorTone = 'error' | 'warning' | 'neutral' | 'dark';
-
-interface IndicatorCardProps {
-    label: string;
-    value: string;
-    tone: IndicatorTone;
-}
-
-const INDICATOR_STYLES: Record<
-    IndicatorTone,
-    { container: string; label: string; value: string }
-> = {
-    error: {
-        container: 'bg-error-light dark:bg-dark-elevated',
-        label: 'text-error',
-        value: 'text-error',
-    },
-    warning: {
-        container: 'bg-warning-light dark:bg-dark-elevated',
-        label: 'text-primary-700 dark:text-brand',
-        value: 'text-primary-800 dark:text-brand',
-    },
-    neutral: {
-        container: 'bg-white dark:bg-dark-surface',
-        label: 'text-neutral-400 dark:text-dark-text-muted',
-        value: 'text-neutral-900 dark:text-dark-text',
-    },
-    dark: {
-        container: 'bg-brand-black',
-        label: 'text-neutral-400',
-        value: 'text-white',
-    },
-};
-
-function IndicatorCard({ label, value, tone }: IndicatorCardProps) {
-    const s = INDICATOR_STYLES[tone];
-    return (
-        <View
-            accessibilityRole="summary"
-            accessibilityLabel={`${label}: ${value}`}
-            // ~metade da largura, com gap-3 entre eles
-            style={{ width: '47.5%', flexGrow: 1 }}
-            className={`rounded-2xl p-4 shadow-sm ${s.container}`}
-        >
-            <Text className={`font-sans-semibold text-xs ${s.label}`} numberOfLines={2}>
-                {label}
-            </Text>
-            <Text className={`mt-2 font-display-bold text-3xl ${s.value}`}>{value}</Text>
         </View>
     );
 }

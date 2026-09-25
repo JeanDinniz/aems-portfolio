@@ -23,6 +23,7 @@ export interface ServiceItem {
     code?: string | null;
     category: ServiceCategory | null;
     execution_time_minutes: number | null;
+    points?: number | null;
     created_at?: string;
     updated_at?: string | null;
 }
@@ -83,6 +84,7 @@ export const servicesService = {
         code?: string | null;
         category?: ServiceCategory | null;
         execution_time_minutes?: number | null;
+        points?: number | null;
     }): Promise<ServiceItem> => {
         const response = await apiClient.post('/services', payload);
         return response.data;
@@ -98,6 +100,7 @@ export const servicesService = {
         code?: string | null;
         category?: ServiceCategory | null;
         execution_time_minutes?: number | null;
+        points?: number | null;
     }): Promise<ServiceItem> => {
         const response = await apiClient.patch(`/services/${id}`, payload);
         return response.data;

@@ -7,6 +7,11 @@ export interface CameraCaptureProps {
   onCapture: (file: File) => void
   /** Fecha a câmera sem capturar. */
   onCancel: () => void
+  /**
+   * Câmera preferida. 'environment' = traseira (padrão), 'user' = frontal (selfie).
+   * Selfie: o preview é espelhado para parecer natural, mas a captura NÃO é espelhada.
+   */
+  facingMode?: 'user' | 'environment'
 }
 
 type CameraState = 'loading' | 'active' | 'preview' | 'denied' | 'unavailable' | 'error'
@@ -27,7 +32,7 @@ type CameraState = 'loading' | 'active' | 'preview' | 'denied' | 'unavailable' |
  * (`videoWidth/Height`) em JPEG 0.95 — a compressão para upload acontece depois,
  * a cargo de quem consome (via `compressImage`).
  */
-export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
+export function CameraCapture({ onCapture, onCancel, facingMode = 'environment' }: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -80,7 +85,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
     navigator.mediaDevices
       .getUserMedia({
         video: {
-          facingMode: { ideal: 'environment' },
+          facingMode: { ideal: facingMode ?? 'environment' },
           width: { ideal: 4096 },
           height: { ideal: 2160 },
         },
@@ -226,6 +231,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
           playsInline
           muted
           className="h-full w-full object-cover"
+          style={facingMode === 'user' ? { transform: 'scaleX(-1)' } : undefined}
           aria-label="Visualização da câmera"
         />
 

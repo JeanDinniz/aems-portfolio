@@ -37,10 +37,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # 30 minutes (production safe default)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
-
-    # Login Security
-    MAX_LOGIN_ATTEMPTS: int = 5
-    LOCKOUT_DURATION_MINUTES: int = 30
+    # Postura quando o Redis está indisponível na checagem de revogação/sessão:
+    #  - False (padrão): fail-OPEN — autentica mesmo sem conseguir checar o Redis
+    #    (disponibilidade acima de revogação; não transforma o Redis em SPOF de auth).
+    #  - True: fail-CLOSED — nega o acesso se não der para checar a blacklist
+    #    (revogação garantida; exige Redis em alta disponibilidade). Recomendado em
+    #    produção com Redis HA.
+    TOKEN_REVOCATION_FAIL_CLOSED: bool = False
+    # Validade do token de mídia (servir fotos). Curto por padrão para limitar a
+    # janela de um link de foto vazado (as URLs trafegam e podem ser logadas).
+    MEDIA_TOKEN_EXPIRE_HOURS: int = 12
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
@@ -50,6 +56,10 @@ class Settings(BaseSettings):
 
     # URL base da aplicação (usada para construir URLs absolutas de uploads locais)
     BASE_URL: str = "http://localhost:8000"
+
+    # URL pública do frontend (usada para montar links de e-mail: reset de senha,
+    # boas-vindas). Em dev: http://localhost:5173. Em prod/HML: URL do site.
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Storage (S3/MinIO)
     S3_BUCKET: str = "aems-files"
@@ -73,6 +83,13 @@ class Settings(BaseSettings):
     EXPO_ACCESS_TOKEN: str | None = None
     PUSH_ENABLED: bool = True
 
+    # Web Push (VAPID) — PWA. Gerar chaves: venv/Scripts/vapid.exe --gen
+    # (ou: python -c "from py_vapid import Vapid; v=Vapid(); v.generate_keys(); ...")
+    WEB_PUSH_ENABLED: bool = True
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_PRIVATE_KEY: str = ""
+    VAPID_CLAIMS_EMAIL: str = "mailto:admin@aems.example.com"
+
     # CORS
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
@@ -87,6 +104,36 @@ class Settings(BaseSettings):
     # Validates Origin/Referer headers on state-changing requests.
     # Can be set to False in test environments via CSRF_ENABLED=false env var.
     CSRF_ENABLED: bool = True
+
+    # Feature flags
+    # Ponto eletrônico: desligado o módulo responde 404 e os lembretes do
+    # Celery beat não disparam (usado para manter o ponto só no HML).
+    TIME_CLOCK_ENABLED: bool = True
+    # E-book: desligado o módulo responde 404 (usado para manter o e-book só no
+    # HML enquanto está em teste). O frontend espelha via VITE_EBOOK_ENABLED.
+    EBOOK_ENABLED: bool = True
+    # EPI: desligado o módulo responde 404 (usado para manter o controle de EPIs
+    # só no HML enquanto está em teste). O frontend espelha via VITE_EPI_ENABLED.
+    EPI_ENABLED: bool = True
+
+    # Ponto — dados do empregador para os arquivos fiscais AFD/AEJ (Portaria 671).
+    # Este é um controle interno: o AFD/AEJ é gerado SEM assinatura ICP-Brasil.
+    # Preencha para gerar arquivos com identificadores válidos; vazio → zero-fill
+    # (arquivo estruturalmente compatível, porém com identificadores incompletos).
+    EMPLOYER_ID_TYPE: str = "1"  # 1=CNPJ, 2=CPF
+    EMPLOYER_CNPJ: str = ""  # 14 dígitos do empregador
+    EMPLOYER_NAME: str = ""  # razão social/nome do empregador
+    EMPLOYER_INPI: str = ""  # registro do programa no INPI (REP-P, Art. 91), se houver
+    DEVELOPER_ID_TYPE: str = "1"  # 1=CNPJ, 2=CPF (desenvolvedor do programa)
+    DEVELOPER_CNPJ: str = ""  # 14 dígitos do desenvolvedor
+
+    # Ponto: tolerância de relógio para batidas offline (Opção A / REP-A).
+    OFFLINE_CLOCK_SKEW_MINUTES: int = 5  # quanto o device pode adiantar do servidor
+    OFFLINE_MAX_AGE_DAYS: int = 7  # atraso máximo aceito entre marcação e sync
+    # Sinaliza no espelho quando o intervalo marcação→sync passa deste limite
+    # (batida offline sincronizada muito depois — conferência do RH contra backdating).
+    OFFLINE_SYNC_ALERT_HOURS: int = 24
+    TIME_CLOCK_SYSTEM_ID: str = "AEMS-REP-A"  # identificador interno do sistema (sem INPI)
 
     @field_validator("SECRET_KEY")
     @classmethod

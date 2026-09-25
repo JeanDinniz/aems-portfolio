@@ -1,8 +1,39 @@
 # AEMS — Auto Estética Management System
 
-Sistema de gestão para rede de lojas de estética automotiva. Controla ordens de serviço, agendamentos, estoque de películas, conferência, fechamento mensal e dashboard executivo para concessionárias parceiras de múltiplas montadoras.
+Sistema de gestão para rede de lojas de estética automotiva. Controla ordens de serviço, agendamentos, estoque de películas (bobinas), pedidos de material, conferência, fechamento mensal, ponto eletrônico, EPI, desempenho de instaladores e dashboard executivo para concessionárias parceiras de múltiplas montadoras — com app mobile para a equipe em campo.
 
 > **Sobre este repositório** — projeto real desenvolvido para produção, publicado aqui como amostra de portfólio. O histórico de commits foi omitido e os dados do cliente (nomes de lojas, domínios, infraestrutura, credenciais) foram anonimizados ou removidos.
+
+---
+
+## Em números
+
+| | |
+|---|---|
+| Módulos de backend | **28** (FastAPI, async) |
+| Migrations versionadas | **147** (Alembic) |
+| Testes automatizados | **~1.400 testes pytest** · **95 suítes Jest** (mobile) · Vitest + Playwright (web) |
+| Código de aplicação | **~178 mil linhas** (Python + TypeScript) |
+| Plataformas | API + SPA web (PWA) + app Android (React Native) |
+
+> Snapshot atualizado em setembro/2026. O projeto está em produção e segue em evolução contínua.
+
+---
+
+## Principais funcionalidades
+
+- **Ordens de Serviço** — criação com fotos obrigatórias, finalização pelo instalador com relato técnico, fluxo de status, retornos vinculados à O.S. de origem (inclusive entre lojas da mesma marca) e auditoria.
+- **Agendamento** — visão dia/semana/mês por loja e departamento, exportação Excel/PDF, controle de atrasos.
+- **Películas (estoque)** — bobinas rastreáveis por SMART ID, consumo por serviço, retalho, rebalanceamento entre lojas, indicadores de estoque × faturamento e relatório PDF gerado no backend (fpdf2).
+- **Pedidos de Material** — bobinas e ferramentas por fornecedor, edição com reconciliação de estoque, cancelamento com motivo e trava quando o material já foi consumido.
+- **Conferência e Fechamento mensal** — conferência de O.S. com fotos e anotações, relatórios Excel por departamento.
+- **Ponto eletrônico (REP-A)** — marcação offline no app com horário fiel, NSR persistido, cadeia de hash para imutabilidade, comprovante e exportação AFD/AEJ (Portaria 671).
+- **EPI e ferramentas** — entrega e recebimento com foto obrigatória por item.
+- **Desempenho de instaladores** — resumo, retornos e pontuação.
+- **Biblioteca e certificados** — catálogos técnicos e emissão de certificado de garantia em PDF.
+- **Dashboard executivo** — faturamento, metas, rankings e resumo diário.
+- **Perfis de acesso granulares** — permissões por submódulo e ação, escopo por loja/galpão, validadas no backend.
+- **Tempo real** — notificações in-app via WebSocket e push (FCM) com deep-link para web e mobile.
 
 ---
 
@@ -28,6 +59,7 @@ Projeto desenvolvido **individualmente**, do zero à produção — atuei sozinh
 | PostgreSQL | 15 | Banco de dados |
 | Redis | 7 | Cache e fila de tarefas |
 | Celery | latest | Tarefas assíncronas (e-mail, relatórios) |
+| fpdf2 / openpyxl | latest | Geração de relatórios PDF e Excel |
 | Alembic | latest | Migrations |
 | MinIO | latest | Armazenamento de fotos (S3-compatible) |
 
@@ -37,7 +69,7 @@ Projeto desenvolvido **individualmente**, do zero à produção — atuei sozinh
 | React | 19 | UI |
 | TypeScript | 5+ | Tipagem estática |
 | TailwindCSS | 3 | Estilização |
-| Vite | 5 | Build tool |
+| Vite | 6 | Build tool |
 | TanStack Query | v5 | Cache e fetching de dados |
 | Zustand | latest | Estado global |
 | React Hook Form + Zod | latest | Formulários e validação |
@@ -78,9 +110,19 @@ aems/
 │   │   ├── services/           # Catálogo de serviços por departamento
 │   │   ├── service_orders/     # Ordens de serviço (módulo principal)
 │   │   ├── scheduling/         # Agendamentos por loja e departamento
-│   │   ├── inventory/          # Tipos de película e bobinas
-│   │   ├── analytics/          # Dashboard executivo e rankings
+│   │   ├── inventory/          # Películas: tipos, bobinas, consumo
+│   │   ├── material_requests/  # Pedidos de material (bobinas + ferramentas)
+│   │   ├── suppliers/          # Fornecedores
+│   │   ├── epi/                # EPI e ferramentas
+│   │   ├── time_clock/         # Ponto eletrônico (REP-A, AFD/AEJ)
+│   │   ├── holidays/           # Feriados
+│   │   ├── installer_performance/ # Desempenho de instaladores
+│   │   ├── ebook/              # Biblioteca e certificados de garantia
+│   │   ├── analytics/          # Dashboard executivo, indicadores, PDFs
+│   │   ├── settings/           # Configurações globais (metas)
+│   │   ├── audit_logs/         # Trilha de auditoria
 │   │   ├── notifications/      # Notificações in-app + WebSocket
+│   │   ├── push/               # Push notifications (FCM)
 │   │   └── upload/             # Upload de fotos
 │   └── workers/                # Celery app e tasks
 ├── alembic/                    # Migrations
@@ -225,10 +267,20 @@ npm test
 | `services` | `/services` | Catálogo de serviços por departamento |
 | `service_orders` | `/service-orders` | Ordens de serviço (módulo principal) |
 | `scheduling` | `/scheduling` | Agendamentos por loja e departamento |
-| `inventory` | `/film-types`, `/inventory` | Tipos de película e bobinas |
-| `analytics` | `/analytics` | Dashboard executivo e rankings |
+| `inventory` | `/film-types`, `/inventory` | Tipos de película, bobinas e consumo |
+| `material_requests` | `/material-requests` | Pedidos de material (bobinas e ferramentas) |
+| `suppliers` | `/suppliers` | Fornecedores |
+| `epi` | `/epi` | Entrega/recebimento de EPI e ferramentas |
+| `time_clock` | `/time-clock` | Ponto eletrônico REP-A, espelho e AFD/AEJ |
+| `holidays` | `/holidays` | Feriados |
+| `installer_performance` | `/installer-performance` | Desempenho de instaladores |
+| `ebook` | `/ebook` | Biblioteca de documentos e certificados |
+| `analytics` | `/analytics` | Dashboard executivo, indicadores e relatórios |
+| `settings` | `/settings` | Configurações globais (metas de faturamento) |
+| `audit_logs` | `/audit-logs` | Trilha de auditoria (Owner) |
 | `notifications` | `/notifications` | Notificações in-app + WebSocket |
-| `upload` | `/upload` | Upload de fotos (MinIO) |
+| `push` | `/push` | Registro de dispositivos para push (FCM) |
+| `upload` | `/upload` | Upload de fotos (MinIO/S3) |
 
 ---
 

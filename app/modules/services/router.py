@@ -5,7 +5,7 @@ Service router - API endpoints for service catalog management.
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import UserRole, require_roles
+from app.core.permissions import check_profile_permission
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse
@@ -70,7 +70,7 @@ async def get_service(
     "",
     response_model=ServiceResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("services", "can_edit"))],
 )
 async def create_service(
     data: ServiceCreate,
@@ -79,7 +79,7 @@ async def create_service(
 ):
     """
     Cria um novo serviço no catálogo.
-    Apenas Owners podem criar serviços.
+    Requer permissão de perfil services:can_edit.
     """
     svc = await service.create_service(db=db, data=data)
     return ServiceResponse.model_validate(svc)
@@ -88,7 +88,7 @@ async def create_service(
 @router.patch(
     "/{service_id}",
     response_model=ServiceResponse,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("services", "can_edit"))],
 )
 async def update_service(
     service_id: int,
@@ -98,16 +98,18 @@ async def update_service(
 ):
     """
     Atualiza um serviço existente.
-    Apenas Owners podem atualizar serviços.
+    Requer permissão de perfil services:can_edit.
     """
-    svc = await service.update_service(db=db, service_id=service_id, data=data)
-    return ServiceResponse.model_validate(svc)
+    svc, propagated_count = await service.update_service(db=db, service_id=service_id, data=data)
+    response = ServiceResponse.model_validate(svc)
+    response.courtesy_propagated_count = propagated_count
+    return response
 
 
 @router.delete(
     "/{service_id}",
     response_model=ServiceResponse,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("services", "can_delete"))],
 )
 async def deactivate_service(
     service_id: int,
@@ -116,7 +118,7 @@ async def deactivate_service(
 ):
     """
     Desativa um serviço.
-    Apenas Owners podem desativar serviços.
+    Requer permissão de perfil services:can_delete.
     O serviço não é excluído, apenas marcado como inativo.
     """
     svc = await service.deactivate_service(db=db, service_id=service_id)

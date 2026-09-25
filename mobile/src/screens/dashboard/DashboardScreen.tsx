@@ -11,12 +11,10 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import {
     useDashboardOverview,
     useDashboardSla,
-    useDashboardQueue,
     useDashboardStoresRanking,
     useDashboardServicesRanking,
     useDashboardDepartmentBreakdown,
     useDashboardEmployeesRanking,
-    useDashboardConsultantsRanking,
 } from '@/hooks/useDashboard';
 import type { DashboardParams } from '@/services/api/analytics.service';
 import { isExpoGo } from '@/lib/runtime';
@@ -318,28 +316,23 @@ export function DashboardScreen({ navigation }: AppStackScreenProps<'Dashboard'>
 
     const overview = useDashboardOverview(params);
     const sla = useDashboardSla(params);
-    const queue = useDashboardQueue(selectedStoreId ?? undefined);
     const stores = useDashboardStoresRanking(params);
     const services = useDashboardServicesRanking(params);
     const departments = useDashboardDepartmentBreakdown(params);
     const employees = useDashboardEmployeesRanking(params);
-    const consultants = useDashboardConsultantsRanking(params);
 
     const refreshing =
         overview.isRefetching ||
         sla.isRefetching ||
-        queue.isRefetching ||
         stores.isRefetching;
 
     const handleRefresh = () => {
         void overview.refetch();
         void sla.refetch();
-        void queue.refetch();
         void stores.refetch();
         void services.refetch();
         void departments.refetch();
         void employees.refetch();
-        void consultants.refetch();
     };
 
     // Gate defensivo de UX (a autorização real é do backend).
@@ -520,70 +513,6 @@ export function DashboardScreen({ navigation }: AppStackScreenProps<'Dashboard'>
                     </Card>
                 </View>
 
-                {/* Fila ao vivo */}
-                <SectionTitle hint="Atualiza automaticamente">Fila ao vivo</SectionTitle>
-                <View className="mx-4 overflow-hidden rounded-2xl border border-neutral-100 bg-white dark:border-dark-border-soft dark:bg-dark-surface">
-                    {queue.isLoading ? (
-                        <View className="p-4">
-                            {[0, 1].map((i) => (
-                                <Skeleton key={i} width="100%" height={20} className="mb-3" />
-                            ))}
-                        </View>
-                    ) : queue.isError ? (
-                        <View className="py-6">
-                            <ErrorState
-                                onRetry={() => void queue.refetch()}
-                                description="Não foi possível carregar a fila."
-                            />
-                        </View>
-                    ) : !queue.data || queue.data.length === 0 ? (
-                        <View className="px-4 py-8">
-                            <Text className="text-center font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
-                                Nenhuma loja na fila no momento.
-                            </Text>
-                        </View>
-                    ) : (
-                        queue.data.map((q) => (
-                            <View
-                                key={q.store_id}
-                                className="border-b border-neutral-50 px-4 py-3 dark:border-dark-border-soft"
-                            >
-                                <Text
-                                    className="font-sans-semibold text-sm text-neutral-800 dark:text-dark-text"
-                                    numberOfLines={1}
-                                >
-                                    {q.store_name}
-                                </Text>
-                                <View className="mt-2 flex-row flex-wrap gap-2">
-                                    <Badge
-                                        variant="neutral"
-                                        size="sm"
-                                        label={`Aguardando ${q.waiting}`}
-                                    />
-                                    <Badge
-                                        variant="info"
-                                        size="sm"
-                                        label={`Em execução ${q.in_progress}`}
-                                    />
-                                    <Badge
-                                        variant="success"
-                                        size="sm"
-                                        label={`Concluídas ${q.completed}`}
-                                    />
-                                    {q.overdue > 0 ? (
-                                        <Badge
-                                            variant="error"
-                                            size="sm"
-                                            icon="alert-circle"
-                                            label={`Atrasadas ${q.overdue}`}
-                                        />
-                                    ) : null}
-                                </View>
-                            </View>
-                        ))
-                    )}
-                </View>
-
                 {/* Rankings */}
                 <RankingCard
                     title="Lojas"
@@ -657,25 +586,6 @@ export function DashboardScreen({ navigation }: AppStackScreenProps<'Dashboard'>
                             subtitle={departmentLabel(item.department)}
                             value={`${formatInt(item.orders_count)} O.S.`}
                             valueMuted={`${formatMinutes(item.hours_worked * 60)}`}
-                        />
-                    )}
-                />
-
-                <RankingCard
-                    title="Consultores"
-                    isLoading={consultants.isLoading}
-                    isError={consultants.isError}
-                    onRetry={() => void consultants.refetch()}
-                    items={consultants.data}
-                    emptyText="Sem dados de consultores no período."
-                    renderRow={(item, index) => (
-                        <RankRow
-                            key={item.consultant_id}
-                            position={index + 1}
-                            title={item.consultant_name}
-                            subtitle={item.dealership_name ?? '—'}
-                            value={`${formatInt(item.orders_count)} O.S.`}
-                            valueMuted={formatCurrencyBRL(item.revenue)}
                         />
                     )}
                 />

@@ -39,6 +39,8 @@ export interface OSDraftForm {
     vehicle_model_id?: number;
     vehicle_color?: string;
     consultant_id?: number;
+    /** Vínculo da O.S. de origem quando Retorno (ReturnOriginPicker). */
+    original_service_order_id?: number;
     items?: { service_id: number; quantity: number }[];
     notes?: string;
 }

@@ -73,7 +73,7 @@ As credenciais e os dados de teste são passados por **variáveis de ambiente** 
 | `MODELO_TESTE` | rótulo do modelo no sheet "Selecionar modelo" | `Corolla` |
 | `CONSULTOR_TESTE` | rótulo do consultor no sheet "Selecionar consultor" | `João Silva` |
 | `SERVICO_TESTE` | rótulo do serviço no sheet "Selecionar serviços" (fluxo 2) | `EST-01 — Lavagem` |
-| `LOJA_TESTE` | (opcional) rótulo da loja — só se o usuário tem >1 loja | `Loja Central` |
+| `LOJA_TESTE` | (opcional) rótulo da loja — só se o usuário tem >1 loja | `Loja Barra` |
 | `PLACA_AGD` | placa/chassi do agendamento (fluxo 4) | `XYZ9K88` |
 | `DEPARTAMENTO_AGD` | chip de departamento **não-película** (fluxo 4) | `Estética` |
 | `SERVICO_AGD` | rótulo do serviço no agendamento (fluxo 4) | `EST-01 — Lavagem` |

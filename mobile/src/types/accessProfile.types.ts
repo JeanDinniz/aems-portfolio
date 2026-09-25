@@ -15,6 +15,12 @@ export type SubModule =
     | 'scheduling'
     | 'scheduling_os'
     | 'inventory'
+    | 'time_clock'
+    | 'time_clock_mirror'
+    | 'installer_performance'
+    | 'ebook'
+    | 'epi'
+    | 'material_requests'
 
 export interface ModulePermission {
     id: string

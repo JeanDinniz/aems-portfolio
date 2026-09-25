@@ -11,6 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { useServices } from '@/hooks/useServices';
 import { useUpdateServiceOrder } from '@/hooks/useServiceOrders';
+import { useStoreStore } from '@/stores/store.store';
 import type { ServiceOrder } from '@/types/service-order.types';
 
 interface EditServicesModalProps {
@@ -20,7 +21,15 @@ interface EditServicesModalProps {
 }
 
 export function EditServicesModal({ serviceOrder, open, onClose }: EditServicesModalProps) {
-    const { data: services, isLoading: isLoadingServices } = useServices(serviceOrder.department);
+    // Regra de negócio: mostrar só os serviços da MARCA da loja da O.S. (igual ao
+    // QuickCreate). Resolve a marca a partir da loja da O.S. (location_id).
+    const { availableStores } = useStoreStore();
+    const storeBrandId =
+        availableStores.find((s) => s.id === serviceOrder.location_id)?.brand_id ?? undefined;
+    const { data: services, isLoading: isLoadingServices } = useServices(
+        serviceOrder.department,
+        storeBrandId
+    );
     const updateServiceOrder = useUpdateServiceOrder();
 
     const [selectedServiceIds, setSelectedServiceIds] = useState<number[]>(
@@ -34,11 +43,35 @@ export function EditServicesModal({ serviceOrder, open, onClose }: EditServicesM
         setNotes(serviceOrder.notes ?? '');
     }, [serviceOrder.id, serviceOrder.items, serviceOrder.notes]);
 
-    // Serviços exclusivos de cortesia só aparecem em O.S. cortesia
-    // (ou se já estiverem vinculados à O.S., para permitir desmarcar)
-    const visibleServices = (services ?? []).filter(
+    // Catálogo ativo do departamento. Serviços exclusivos de cortesia só aparecem em
+    // O.S. cortesia (ou se já estiverem vinculados à O.S., para permitir desmarcar).
+    const catalogServices = (services ?? []).filter(
         (s) => serviceOrder.is_courtesy || !s.is_courtesy_only || selectedServiceIds.includes(s.id)
     );
+
+    // Serviços que a O.S. já tem mas que NÃO vêm no catálogo ativo (inativos ou fora do
+    // limite de busca): precisam aparecer marcados para o encarregado poder desmarcá-los
+    // e trocar pelo serviço correto. Sem isso, o serviço lançado some da lista.
+    const catalogIds = new Set((services ?? []).map((s) => s.id));
+    const orphanServices = (serviceOrder.items ?? [])
+        .filter((i) => i.service_id != null && !catalogIds.has(i.service_id))
+        .filter((i, idx, arr) => arr.findIndex((x) => x.service_id === i.service_id) === idx)
+        .map((i) => ({
+            id: i.service_id,
+            name: i.service_name || i.service_code || `Serviço #${i.service_id}`,
+            code: i.service_code ?? null,
+            outOfCatalog: true,
+        }));
+
+    const visibleServices: Array<{
+        id: number;
+        name: string;
+        code?: string | null;
+        outOfCatalog?: boolean;
+    }> = [
+        ...orphanServices,
+        ...catalogServices.map((s) => ({ id: s.id, name: s.name, code: s.code })),
+    ];
 
     const toggleService = (id: number) => {
         setSelectedServiceIds((prev) =>
@@ -112,7 +145,14 @@ export function EditServicesModal({ serviceOrder, open, onClose }: EditServicesM
                                             className="border-[#D1D1D1] dark:border-[#555555] data-[state=checked]:bg-[#F5A800] data-[state=checked]:border-[#F5A800]"
                                         />
                                         <span className="text-sm text-[#111111] dark:text-zinc-200 select-none">
-                                            {service.name}
+                                            {service.code && service.code !== service.name
+                                                ? `${service.code} - ${service.name}`
+                                                : service.name}
+                                            {service.outOfCatalog && (
+                                                <span className="ml-1.5 text-[10px] uppercase tracking-wide text-[#999999] dark:text-zinc-500">
+                                                    (atual)
+                                                </span>
+                                            )}
                                         </span>
                                     </label>
                                 );

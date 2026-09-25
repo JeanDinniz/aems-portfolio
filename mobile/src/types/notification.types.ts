@@ -30,6 +30,12 @@ export interface AppNotification {
     is_read: boolean;
     is_galpon: boolean;
     created_at: string;
+    /**
+     * Link do recurso da notificação (ex.: `"/estoque?roll=123"`). Opcional —
+     * nem todo tipo/backend antigo o envia. O tap usa `parseRelatedUrl` para abrir
+     * o detalhe correspondente (hoje: bobina do Estoque).
+     */
+    related_url?: string | null;
 }
 
 /** Resposta paginada de `GET /notifications`. */

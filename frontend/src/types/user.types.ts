@@ -13,6 +13,10 @@ export interface User {
     store_name?: string | null;
     supervised_store_ids?: number[];
 
+    // Vínculo com funcionário
+    employee_id?: number | null;
+    employee_name?: string | null;
+
     // Metadados
     created_at: string;
     updated_at: string;
@@ -42,6 +46,7 @@ export interface UserFilters {
     is_active?: boolean;
     store_id?: number;
     search?: string;
+    has_employee?: boolean;
 }
 
 export interface UsersListResponse {

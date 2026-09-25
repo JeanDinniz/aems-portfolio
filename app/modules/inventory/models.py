@@ -123,6 +123,12 @@ class FilmRoll(Base, TimestampMixin):
         ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Pedido de material que originou esta bobina (entrada via /material-requests).
+    # NULL para bobinas cadastradas direto no Estoque. SET NULL ao excluir o pedido.
+    material_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("material_requests.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Relationships
     film_type: Mapped["FilmType"] = relationship("FilmType", back_populates="rolls")
     store: Mapped["Store"] = relationship("Store")  # noqa: F821
@@ -155,7 +161,17 @@ class FilmConsumption(Base):
     service_order_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("service_order_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    film_withdrawal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("film_withdrawals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     meters_consumed: Mapped[float] = mapped_column(Float, nullable=False)
+    # Tipo do movimento no extrato da bobina: consumo (O.S.), estorno (devolução),
+    # ajuste (correção manual pela conferência de estoque) ou reconciliacao (linha
+    # da migração 107 que casou saldo x extrato). NULL = movimento legado (inferir
+    # pelos FKs de O.S./saída avulsa).
+    kind: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # Motivo obrigatório quando kind == 'ajuste' (por que o saldo foi corrigido).
+    adjustment_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -167,3 +183,57 @@ class FilmConsumption(Base):
 
     def __repr__(self) -> str:
         return f"<FilmConsumption #{self.id} roll={self.film_roll_id} {self.meters_consumed}m>"
+
+
+class FilmWithdrawal(Base):
+    """
+    Saída avulsa de película: metros entregues a um funcionário fora de O.S.
+    (ex.: pedaço para retrabalho ou uso pessoal, descontado em folha no fim do mês).
+
+    O débito/crédito de metros fica no ledger FilmConsumption via
+    film_withdrawal_id; store_id é snapshot da loja da bobina no momento da
+    saída (transferências posteriores da bobina não reescrevem o histórico).
+    Estorno é soft: reversed_at/reversed_by preenchidos, registro preservado.
+    """
+
+    __tablename__ = "film_withdrawals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    film_roll_id: Mapped[int] = mapped_column(
+        ForeignKey("film_rolls.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    store_id: Mapped[int] = mapped_column(
+        ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    meters: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reversed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Relationships
+    film_roll: Mapped["FilmRoll"] = relationship("FilmRoll")
+    store: Mapped["Store"] = relationship("Store")  # noqa: F821
+    employee: Mapped["Employee"] = relationship("Employee")  # noqa: F821
+    created_by: Mapped["User"] = relationship(  # noqa: F821
+        "User", foreign_keys=[created_by_user_id]
+    )
+    reversed_by: Mapped["User"] = relationship(  # noqa: F821
+        "User", foreign_keys=[reversed_by_user_id]
+    )
+
+    def __repr__(self) -> str:
+        return f"<FilmWithdrawal #{self.id} roll={self.film_roll_id} {self.meters}m>"

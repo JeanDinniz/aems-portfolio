@@ -200,6 +200,8 @@ async def create_profile(
         name=data.name,
         description=data.description,
         is_galpon_profile=data.is_galpon_profile,
+        hide_galpon_option=data.hide_galpon_option,
+        scheduling_departments=data.scheduling_departments,
         is_active=data.is_active,
     )
     db.add(profile)
@@ -444,6 +446,7 @@ async def get_user_effective_permissions(
             store_ids=[],
             is_galpon_profile=True,
             hide_galpon_option=False,
+            scheduling_departments=[],
         )
 
     # Buscar perfis ativos vinculados ao usuário
@@ -501,6 +504,20 @@ async def get_user_effective_permissions(
     is_galpon_profile = profiles_all_have_flag(active_profiles, "is_galpon_profile")
     hide_galpon_option = profiles_all_have_flag(active_profiles, "hide_galpon_option")
 
+    # Departamentos visíveis no Agendamento: se algum perfil ativo não restringe
+    # (lista vazia), o usuário vê todos ([]); caso contrário, união das listas.
+    scheduling_departments: list[str] = []
+    if active_profiles:
+        allowed: set[str] = set()
+        unrestricted = False
+        for profile in active_profiles:
+            depts = profile.scheduling_departments or []
+            if not depts:
+                unrestricted = True
+                break
+            allowed.update(depts)
+        scheduling_departments = [] if unrestricted else sorted(allowed)
+
     return UserEffectivePermissions(
         user_id=user_id,
         is_owner=False,
@@ -508,4 +525,5 @@ async def get_user_effective_permissions(
         store_ids=sorted(store_ids_set),
         is_galpon_profile=is_galpon_profile,
         hide_galpon_option=hide_galpon_option,
+        scheduling_departments=scheduling_departments,
     )

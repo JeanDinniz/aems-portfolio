@@ -32,6 +32,21 @@ export function useMyPermissions() {
 }
 
 /**
+ * Checker de permissão REATIVO (fonte da verdade para exibição/UX).
+ *
+ * `store.hasPermission` é fail-closed (nega enquanto as permissões não chegam) e
+ * é uma referência ESTÁVEL — selecioná-la sozinha não re-renderiza o componente
+ * quando `effectivePermissions` é sincronizado. Este hook assina
+ * `effectivePermissions`, garantindo o re-render (e o recálculo) assim que os
+ * dados chegam. Use SEMPRE este hook em vez de `useAuthStore((s) => s.hasPermission)`.
+ */
+export function useHasPermission() {
+    // Assina o slice para re-renderizar quando as permissões chegarem/mudarem.
+    useAuthStore((s) => s.effectivePermissions);
+    return useAuthStore((s) => s.hasPermission);
+}
+
+/**
  * Retorna true se o usuário pode visualizar o módulo.
  * Owner sempre retorna true.
  * Usuários sem permissões configuradas recebem acesso negado,
@@ -39,34 +54,47 @@ export function useMyPermissions() {
  */
 export function useCanView(sub_module: SubModule): boolean {
     const isOwnerFn = useAuthStore((s) => s.isOwner);
-    const hasPermissionFn = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const { isLoading } = useMyPermissions();
 
     if (isOwnerFn()) return true;
     // Allow while loading to prevent blank screens
     if (isLoading) return true;
 
-    return hasPermissionFn(sub_module, 'view');
+    return hasPermission(sub_module, 'view');
 }
 
 export function useCanEdit(sub_module: SubModule): boolean {
     const isOwnerFn = useAuthStore((s) => s.isOwner);
-    const hasPermissionFn = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const { isLoading } = useMyPermissions();
 
     if (isOwnerFn()) return true;
     if (isLoading) return true;
 
-    return hasPermissionFn(sub_module, 'edit');
+    return hasPermission(sub_module, 'edit');
 }
 
 export function useCanDelete(sub_module: SubModule): boolean {
     const isOwnerFn = useAuthStore((s) => s.isOwner);
-    const hasPermissionFn = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const { isLoading } = useMyPermissions();
 
     if (isOwnerFn()) return true;
     if (isLoading) return true;
 
-    return hasPermissionFn(sub_module, 'delete');
+    return hasPermission(sub_module, 'delete');
+}
+
+/**
+ * Departamentos que o usuário pode ver no módulo de Agendamentos.
+ * Lista vazia = sem restrição (vê todos). Owner nunca é restrito.
+ */
+export function useSchedulingDepartments(): string[] {
+    const isOwnerFn = useAuthStore((s) => s.isOwner);
+    const effectivePermissions = useAuthStore((s) => s.effectivePermissions);
+    useMyPermissions();
+
+    if (isOwnerFn()) return [];
+    return effectivePermissions?.scheduling_departments ?? [];
 }

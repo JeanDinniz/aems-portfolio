@@ -19,6 +19,7 @@ from app.db.base import Base
 from app.core.audit import AuditLog  # noqa: F401
 from app.modules.auth.models import AccessLog, User  # noqa: F401
 from app.modules.brands.models import Brand  # noqa: F401
+from app.modules.ebook.models import Certificate, LibraryDocument  # noqa: F401
 from app.modules.access_profiles.models import (  # noqa: F401
     AccessProfile,
     AccessProfileModulePermission,
@@ -34,6 +35,12 @@ from app.modules.services.models import Service  # noqa: F401
 from app.modules.stores.models import Store  # noqa: F401
 from app.modules.vehicle_models.models import VehicleModel  # noqa: F401
 from app.modules.inventory.models import FilmType, FilmTypeService, FilmRoll, FilmConsumption  # noqa: F401
+from app.modules.material_requests.models import (  # noqa: F401
+    MaterialPurchaseLine,
+    MaterialRequest,
+    MaterialRequestTool,
+    ToolReceipt,
+)
 
 # this is the Alembic Config object
 config = context.config

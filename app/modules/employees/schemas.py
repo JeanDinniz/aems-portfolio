@@ -2,7 +2,7 @@
 Employee schemas - Pydantic models for employee data validation.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +30,7 @@ class EmployeeCreate(EmployeeBase):
     entry_date: date | None = None
     phone: str | None = Field(None, max_length=20)
     email: str | None = Field(None, max_length=200)
+    cpf: str | None = Field(None, max_length=14)
     pix_key: str | None = Field(None, max_length=200)
     bank_account: str | None = Field(None, max_length=200)
     address: str | None = Field(None, max_length=500)
@@ -38,6 +39,10 @@ class EmployeeCreate(EmployeeBase):
     last_name: str | None = None
     birth_date: date | None = None
     hr_status: str | None = None
+    # Ponto Eletrônico
+    user_id: int | None = Field(None, gt=0)
+    work_start_time: time | None = None
+    work_end_time: time | None = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -57,6 +62,7 @@ class EmployeeUpdate(BaseModel):
     entry_date: date | None = None
     phone: str | None = Field(None, max_length=20)
     email: str | None = Field(None, max_length=200)
+    cpf: str | None = Field(None, max_length=14)
     pix_key: str | None = Field(None, max_length=200)
     bank_account: str | None = Field(None, max_length=200)
     address: str | None = Field(None, max_length=500)
@@ -70,6 +76,11 @@ class EmployeeUpdate(BaseModel):
     last_name: str | None = None
     birth_date: date | None = None
     hr_status: str | None = None
+    # Ponto Eletrônico (user_id: 0 ou None limpa o vínculo)
+    user_id: int | None = Field(None, ge=0)
+    clear_user: bool = False
+    work_start_time: time | None = None
+    work_end_time: time | None = None
 
 
 class EmployeeResponse(EmployeeBase):
@@ -90,6 +101,7 @@ class EmployeeResponse(EmployeeBase):
     entry_date: date | None = None
     phone: str | None = None
     email: str | None = None
+    cpf: str | None = None
     pix_key: str | None = None
     bank_account: str | None = None
     address: str | None = None
@@ -103,6 +115,11 @@ class EmployeeResponse(EmployeeBase):
     last_name: str | None = None
     birth_date: date | None = None
     hr_status: str = "active"
+    # Ponto Eletrônico
+    user_id: int | None = None
+    user_name: str | None = None
+    work_start_time: time | None = None
+    work_end_time: time | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -157,3 +174,26 @@ class EmployeeStatsResponse(BaseModel):
     away: int
     dismissed: int
     vacations_planned: int
+
+
+class EmployeeDayStatusItem(BaseModel):
+    """Status de um funcionário em um dia (Faltas do Dia / Resumo Diário)."""
+
+    employee_id: int
+    name: str
+    position: str | None = None
+    status: str  # presente | falta | ferias | afastado
+    reason: str | None = None
+    fault_movement_id: int | None = None  # permite desfazer a falta do dia
+    attachment_url: str | None = None  # anexo do movimento que cobre o dia (atestado, print)
+    needs_return: bool = False  # afastamento datado já encerrado; oferecer "Registrar retorno"
+
+
+class DayStatusResponse(BaseModel):
+    """Resposta da consulta de status do dia por loja."""
+
+    items: list[EmployeeDayStatusItem]
+    present: int
+    faults: int
+    vacations: int
+    absences: int

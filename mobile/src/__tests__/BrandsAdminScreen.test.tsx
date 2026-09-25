@@ -1,18 +1,18 @@
 import { render, fireEvent, act } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 import type { ReactNode } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { BrandsAdminScreen } from '@/screens/admin/BrandsAdminScreen';
 import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import type { BrandItem } from '@/services/api/brands.service';
 
 /**
  * Admin — Fatia 5 (UX): troca Button → Switch nas telas de catálogo.
  *
  * Cobre o comportamento padronizado do `ToggleActiveSwitch` na tela de Marcas:
- * - ATIVAR (off → on): sem Alert, muta direto com isActive:true.
- * - DESATIVAR (on → off): abre Alert; só muta ao confirmar; ao cancelar, não muta.
+ * - ATIVAR (off → on): sem diálogo, muta direto com isActive:true.
+ * - DESATIVAR (on → off): abre o ConfirmDialog; só muta ao confirmar; ao cancelar, não muta.
  * - Sem `can_edit`: mostra Badge estático (sem Switch).
  */
 
@@ -48,7 +48,9 @@ const metrics = {
 function Providers({ children }: { children: ReactNode }) {
     return (
         <SafeAreaProvider initialMetrics={metrics}>
-            <ThemeProvider>{children}</ThemeProvider>
+            <ThemeProvider>
+                <ConfirmProvider>{children}</ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
 }
@@ -86,51 +88,50 @@ beforeEach(() => {
 });
 
 describe('BrandsAdminScreen — Switch Ativar/Desativar', () => {
-    it('ATIVAR (off → on) muta direto sem Alert', async () => {
+    it('ATIVAR (off → on) muta direto sem diálogo', async () => {
         mockBrands = [makeBrand({ id: 4, name: 'BYD', is_active: false })];
-        const alertSpy = jest.spyOn(Alert, 'alert');
-        const { getByLabelText } = await renderScreen();
+        const { getByLabelText, queryByText } = await renderScreen();
 
         await act(async () => {
             fireEvent(getByLabelText('Inativa: BYD'), 'valueChange', true);
         });
 
-        expect(alertSpy).not.toHaveBeenCalled();
+        // Ativar é direto: nenhum diálogo de confirmação aparece.
+        expect(queryByText('Desativar marca')).toBeNull();
         expect(mockToggleMutate).toHaveBeenCalledWith({ id: 4, isActive: true });
     });
 
-    it('DESATIVAR (on → off) abre Alert e só muta ao confirmar', async () => {
+    it('DESATIVAR (on → off) abre diálogo e só muta ao confirmar', async () => {
         mockBrands = [makeBrand({ id: 7, name: 'Toyota', is_active: true })];
-        const alertSpy = jest
-            .spyOn(Alert, 'alert')
-            .mockImplementation((_t, _m, buttons) => {
-                // Confirma pressionando o botão destrutivo (não-cancel).
-                buttons?.find((b) => b.style === 'destructive')?.onPress?.();
-            });
-        const { getByLabelText } = await renderScreen();
+        const { getByLabelText, findByText, getByText } = await renderScreen();
 
         await act(async () => {
             fireEvent(getByLabelText('Ativa: Toyota'), 'valueChange', false);
         });
 
-        expect(alertSpy).toHaveBeenCalledWith(
-            'Desativar marca',
-            'Desativar Toyota?',
-            expect.anything()
-        );
+        // O ConfirmDialog aparece com título e mensagem.
+        expect(await findByText('Desativar marca')).toBeTruthy();
+        expect(getByText('Desativar Toyota?')).toBeTruthy();
+
+        // Confirma no botão do diálogo.
+        await act(async () => {
+            fireEvent.press(getByText('Desativar'));
+        });
+
         expect(mockToggleMutate).toHaveBeenCalledWith({ id: 7, isActive: false });
     });
 
     it('DESATIVAR: cancelar não muta', async () => {
         mockBrands = [makeBrand({ id: 7, name: 'Toyota', is_active: true })];
-        jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
-            // Cancela: aciona o botão de cancelar (sem onPress de muta).
-            buttons?.find((b) => b.style === 'cancel')?.onPress?.();
-        });
-        const { getByLabelText } = await renderScreen();
+        const { getByLabelText, findByText, getByText } = await renderScreen();
 
         await act(async () => {
             fireEvent(getByLabelText('Ativa: Toyota'), 'valueChange', false);
+        });
+
+        await findByText('Desativar marca');
+        await act(async () => {
+            fireEvent.press(getByText('Cancelar'));
         });
 
         expect(mockToggleMutate).not.toHaveBeenCalled();

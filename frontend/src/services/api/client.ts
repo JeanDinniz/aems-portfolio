@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { useAuthStore } from '@/stores/auth.store';
+import { getApiBaseUrl } from '@/lib/apiBase';
 import type { User } from '@/types/auth.types';
 
 export function mapUser(userData: Record<string, unknown>, mustChangePassword: boolean): User {
@@ -19,7 +20,7 @@ export function mapUser(userData: Record<string, unknown>, mustChangePassword: b
 }
 
 export const apiClient = axios.create({
-    baseURL: import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api/v1` : 'http://localhost:8000/api/v1',
+    baseURL: `${getApiBaseUrl()}/api/v1`,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -29,6 +30,10 @@ export const apiClient = axios.create({
 // Request interceptor - adiciona token
 apiClient.interceptors.request.use(
     (config) => {
+        // Header explícito tem prioridade: o login busca /auth/me com o token
+        // RECÉM-emitido antes do setAuth — sobrescrever com o token do store
+        // (sessão anterior) fazia o novo login assumir a identidade antiga.
+        if (config.headers.Authorization) return config;
         const { tokens } = useAuthStore.getState();
         if (tokens?.accessToken) {
             config.headers.Authorization = `Bearer ${tokens.accessToken}`;
@@ -68,6 +73,9 @@ apiClient.interceptors.response.use(
                     failedQueue.push({ resolve, reject });
                 })
                     .then((token) => {
+                        // W2 (auditoria): headers pode vir indefinido em requests
+                        // sem headers — garantir o objeto antes de escrever.
+                        originalRequest.headers = originalRequest.headers ?? {};
                         originalRequest.headers.Authorization = `Bearer ${token}`;
                         return apiClient(originalRequest);
                     })
@@ -112,6 +120,8 @@ apiClient.interceptors.response.use(
 
                 processQueue(null, newTokens.accessToken);
 
+                // W2 (auditoria): garantir headers antes de escrever (ver acima).
+                originalRequest.headers = originalRequest.headers ?? {};
                 originalRequest.headers.Authorization = `Bearer ${newTokens.accessToken}`;
                 return apiClient(originalRequest);
             } catch (refreshError) {

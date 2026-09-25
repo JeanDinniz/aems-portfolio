@@ -470,6 +470,94 @@ class TestUpdateService:
         await db_session.refresh(unrelated)
         assert sibling.is_courtesy_only is True
         assert unrelated.is_courtesy_only is False
+        # A resposta informa quantas linhas irmãs foram afetadas (transparência).
+        assert response.json()["courtesy_propagated_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_update_is_courtesy_only_audits_sibling_brands(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_service: Service,
+    ):
+        """A propagação cross-marca gera auditoria individual de cada serviço irmão."""
+        from sqlalchemy import select
+
+        from app.core.audit import AuditLog
+
+        other_brand = Brand(name="Fiat Svc", code="fiatsvc", is_active=True)
+        db_session.add(other_brand)
+        await db_session.commit()
+        await db_session.refresh(other_brand)
+
+        sibling = Service(
+            name=test_service.name,
+            department=test_service.department,
+            base_price=350.00,
+            is_active=True,
+            brand_id=other_brand.id,
+        )
+        db_session.add(sibling)
+        await db_session.commit()
+        await db_session.refresh(sibling)
+
+        response = await owner_client.patch(
+            f"/api/v1/services/{test_service.id}",
+            json={"is_courtesy_only": True},
+        )
+        assert response.status_code == 200
+
+        logs = (
+            await db_session.execute(
+                select(AuditLog).where(
+                    AuditLog.resource_type == "service",
+                    AuditLog.resource_id == sibling.id,
+                    AuditLog.action == "update",
+                )
+            )
+        ).scalars().all()
+        assert len(logs) >= 1
+
+
+class TestServicePoints:
+    """Tests for the points field on Service."""
+
+    @pytest.mark.asyncio
+    async def test_create_service_with_points(
+        self, owner_client: AsyncClient, test_brand_svc: Brand
+    ):
+        """Creating a service with points should echo that value in the response."""
+        resp = await owner_client.post(
+            "/api/v1/services",
+            json={
+                "name": "Servico com pontos",
+                "department": "film",
+                "base_price": "250.00",
+                "brand_id": test_brand_svc.id,
+                "code": "POLI1",
+                "points": "1.00",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert float(body["points"]) == 1.00
+
+    @pytest.mark.asyncio
+    async def test_default_points_is_zero(
+        self, owner_client: AsyncClient, test_brand_svc: Brand
+    ):
+        """Creating a service without points should default to 0."""
+        resp = await owner_client.post(
+            "/api/v1/services",
+            json={
+                "name": "Servico sem pontos",
+                "department": "film",
+                "base_price": "100.00",
+                "brand_id": test_brand_svc.id,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert float(resp.json()["points"]) == 0.0
 
 
 class TestDeactivateService:

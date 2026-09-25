@@ -1,45 +1,16 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type { Store } from '@/services/api/stores.service';
 
+// Guarda apenas a LISTA de lojas acessíveis ao usuário (usada para popular
+// dropdowns de "Loja" nas telas). A antiga "loja selecionada" global foi
+// removida — cada tela tem seu próprio filtro de loja local. A lista é
+// repovoada a cada carregamento por useStores(), então não é persistida.
 interface StoreState {
     availableStores: Store[];
-    selectedStoreId: number | null;
-    isMultiStore: boolean;
     setAvailableStores: (stores: Store[]) => void;
-    selectStore: (storeId: number | null) => void;  // null = "Todas as Lojas"
 }
 
-export const useStoreStore = create<StoreState>()(
-    persist(
-        (set, get) => ({
-            availableStores: [],
-            selectedStoreId: null,
-            isMultiStore: false,
-
-            setAvailableStores: (stores) => {
-                const current = get().selectedStoreId;
-                // Manter a seleção persistida se a loja ainda existe na lista
-                const stillValid = current !== null && stores.some(s => s.id === current);
-
-                set({
-                    availableStores: stores,
-                    isMultiStore: stores.length > 1,
-                    selectedStoreId: stores.length === 1
-                        ? stores[0].id
-                        : stillValid
-                            ? current
-                            : null,
-                });
-            },
-
-            selectStore: (storeId) => set({ selectedStoreId: storeId }),
-        }),
-        {
-            name: 'aems-store-selection',
-            partialize: (state) => ({
-                selectedStoreId: state.selectedStoreId,
-            }),
-        }
-    )
-);
+export const useStoreStore = create<StoreState>()((set) => ({
+    availableStores: [],
+    setAvailableStores: (stores) => set({ availableStores: stores }),
+}));

@@ -8,11 +8,12 @@ import {
     TextInput,
     View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 
 import { AppointmentCard } from '@/components/features/AppointmentCard';
+import { CalendarMonthView } from '@/components/features/scheduling/CalendarMonthView';
 import {
     SchedulingFilterSheet,
     type SchedulingFilterSheetRef,
@@ -20,12 +21,15 @@ import {
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import {
-    useAppointments,
-    useSchedulingStoreSummary,
-} from '@/hooks/useScheduling';
+import { useAppointments } from '@/hooks/useScheduling';
 import { useCanEdit } from '@/hooks/useMyPermissions';
+import { useToast } from '@/components/ui/Toast';
+import { useStoreStore } from '@/stores/store.store';
 import { useTheme } from '@/theme';
+import { downloadAndSharePdf } from '@/utils/exportShare';
+import { ymdLocal } from '@/utils/formatDate';
+import { monthRange } from '@/utils/monthCalendar';
+import { getApiErrorMessage } from '@/lib/api-error';
 import {
     APPOINTMENT_STATUS_CONFIG,
     STATUS_PRIORITY,
@@ -34,7 +38,6 @@ import type {
     Appointment,
     AppointmentDisplayStatus,
     AppointmentFilters,
-    SchedulingStoreSummary,
 } from '@/types/scheduling.types';
 import type { SchedulingStackScreenProps } from '@/navigation/types';
 
@@ -57,6 +60,7 @@ const STATUS_ORDER: AppointmentDisplayStatus[] = [
     'atencao',
     'agendado',
     'em_execucao',
+    'duplicidade',
     'finalizado',
     'cancelado',
 ];
@@ -79,13 +83,6 @@ function countActiveFilters(f: AppointmentFilters): number {
 type ListRow =
     | { type: 'header'; key: string; label: string }
     | { type: 'card'; key: string; appointment: Appointment };
-
-function ymdLocal(d: Date): string {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-}
 
 /** Rótulo do cabeçalho de dia: "Hoje" / "Amanhã" / DD/MM/AAAA. */
 function dayLabel(deliveryDate: string): string {
@@ -148,13 +145,19 @@ export function SchedulingListScreen({
     navigation,
 }: SchedulingStackScreenProps<'SchedulingList'>) {
     const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
+    const toast = useToast();
     const canEdit = useCanEdit('scheduling');
+    const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
     const filterSheetRef = useRef<SchedulingFilterSheetRef>(null);
 
     const [sheetFilters, setSheetFilters] = useState<AppointmentFilters>({});
     const [searchInput, setSearchInput] = useState('');
     const [search, setSearch] = useState('');
     const [showHidden, setShowHidden] = useState(false);
+    const [exportingCarros, setExportingCarros] = useState(false);
+    const [view, setView] = useState<'lista' | 'mes'>('lista');
+    const [currentDate, setCurrentDate] = useState(() => new Date());
     const searchRef = useRef<TextInput>(null);
 
     useEffect(() => {
@@ -162,15 +165,36 @@ export function SchedulingListScreen({
         return () => clearTimeout(t);
     }, [searchInput]);
 
-    // Cancelados só vêm do backend se include_cancelled = true.
-    const filters = useMemo<AppointmentFilters>(
-        () => ({
+    // Cancelados só vêm do backend se include_cancelled = true. No modo Mês, o
+    // range é dirigido pelo mês corrente e força include_cancelled (o calendário
+    // exibe finalizados/cancelados também).
+    // M1 (auditoria): o backend oculta finalizados/cancelados por padrão. Ao
+    // buscar (placa/O.S.) é preciso trazê-los (include_terminal + include_cancelled),
+    // senão a busca não acha carro finalizado — mesma regra do web.
+    const hasSearch = !!search;
+    const filters = useMemo<AppointmentFilters>(() => {
+        const revealTerminal = showHidden || hasSearch;
+        const base: AppointmentFilters = {
             ...sheetFilters,
             search: search || undefined,
-            include_cancelled: showHidden || undefined,
-        }),
-        [sheetFilters, search, showHidden]
-    );
+            include_cancelled: revealTerminal || undefined,
+            include_terminal: revealTerminal || undefined,
+        };
+        if (view === 'mes') {
+            const { date_from, date_to } = monthRange(
+                currentDate.getFullYear(),
+                currentDate.getMonth()
+            );
+            return {
+                ...base,
+                date_from,
+                date_to,
+                include_cancelled: true,
+                include_terminal: true,
+            };
+        }
+        return base;
+    }, [sheetFilters, search, hasSearch, showHidden, view, currentDate]);
 
     const {
         items,
@@ -184,13 +208,33 @@ export function SchedulingListScreen({
         isRefetching,
     } = useAppointments(filters);
 
-    const { data: storeSummary, isLoading: summaryLoading } = useSchedulingStoreSummary({
-        date_from: sheetFilters.date_from,
-        date_to: sheetFilters.date_to,
-        department: sheetFilters.department,
-    });
-
     const activeFilterCount = countActiveFilters(sheetFilters);
+
+    // Resumo: contado a partir dos PRÓPRIOS itens carregados (mesma fonte do
+    // banner e da lista), para bater exatamente com o que está na tela e
+    // atualizar junto. Antes vinha de um endpoint preso ao mês vigente, o que
+    // divergia dos atrasados de meses anteriores exibidos na lista.
+    const summaryTotals = useMemo(() => {
+        const acc: Record<AppointmentDisplayStatus, number> = {
+            atrasado: 0,
+            atencao: 0,
+            agendado: 0,
+            em_execucao: 0,
+            duplicidade: 0,
+            finalizado: 0,
+            cancelado: 0,
+        };
+        for (const a of items) {
+            if (a.display_status in acc) acc[a.display_status] += 1;
+        }
+        return acc;
+    }, [items]);
+
+    // Título do card: nome da loja selecionada (todos os itens são dela) ou geral.
+    const summaryTitle = useMemo(
+        () => (selectedStoreId !== null ? (items[0]?.store_name ?? 'Loja') : 'Todas as lojas'),
+        [selectedStoreId, items]
+    );
 
     // Contagem de atrasados + de itens ocultos (finalizado/cancelado).
     const lateCount = useMemo(
@@ -203,12 +247,14 @@ export function SchedulingListScreen({
     );
 
     // Itens efetivamente exibidos (esconde finalizado/cancelado por padrão).
+    // Durante a busca, exibe também os terminais (senão o carro finalizado
+    // buscado viria do backend mas ficaria escondido) — paridade com o web.
     const visibleItems = useMemo(
         () =>
-            showHidden
+            showHidden || hasSearch
                 ? items
                 : items.filter((a) => !HIDDEN_BY_DEFAULT.includes(a.display_status)),
-        [items, showHidden]
+        [items, showHidden, hasSearch]
     );
 
     const rows = useMemo(() => buildRows(visibleItems), [visibleItems]);
@@ -221,6 +267,45 @@ export function SchedulingListScreen({
         (id: number) => navigation.navigate('AppointmentDetail', { id }),
         [navigation]
     );
+
+    /**
+     * "Carros para fazer" (PDF) — reusa os filtros aplicados na tela (loja global,
+     * departamento, categoria, período e busca). O backend já restringe aos status
+     * pendentes; não enviamos `display_status` (a lista mobile não tem seleção de
+     * status), o que equivale ao web sem chips de status selecionados. `category`
+     * espelha o param do web (não `service_category`).
+     */
+    const handleExportCarros = useCallback(async () => {
+        if (exportingCarros) return;
+        setExportingCarros(true);
+        try {
+            await downloadAndSharePdf({
+                path: '/scheduling/export/carros-para-fazer',
+                params: {
+                    store_id: selectedStoreId ?? undefined,
+                    department: sheetFilters.department || undefined,
+                    category: sheetFilters.service_category || undefined,
+                    date_from: sheetFilters.date_from || undefined,
+                    date_to: sheetFilters.date_to || undefined,
+                    search: search || undefined,
+                },
+                filename: `carros-para-fazer-${ymdLocal()}.pdf`,
+            });
+        } catch (err) {
+            toast.error(getApiErrorMessage(err as Error, 'Não foi possível gerar o PDF.'));
+        } finally {
+            setExportingCarros(false);
+        }
+    }, [
+        exportingCarros,
+        selectedStoreId,
+        sheetFilters.department,
+        sheetFilters.service_category,
+        sheetFilters.date_from,
+        sheetFilters.date_to,
+        search,
+        toast,
+    ]);
 
     const renderItem = useCallback(
         ({ item }: { item: ListRow }) => {
@@ -264,6 +349,23 @@ export function SchedulingListScreen({
                                 {subtitle}
                             </Text>
                         </View>
+
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Carros para fazer (PDF)"
+                            accessibilityState={{ busy: exportingCarros, disabled: exportingCarros }}
+                            disabled={exportingCarros}
+                            onPress={() => void handleExportCarros()}
+                            className={`h-11 w-11 items-center justify-center rounded-full bg-white/10 active:opacity-70 ${
+                                exportingCarros ? 'opacity-50' : ''
+                            }`}
+                        >
+                            {exportingCarros ? (
+                                <ActivityIndicator color="#FFFFFF" />
+                            ) : (
+                                <Ionicons name="clipboard-outline" size={20} color="#FFFFFF" />
+                            )}
+                        </Pressable>
 
                         <Pressable
                             accessibilityRole="button"
@@ -314,6 +416,36 @@ export function SchedulingListScreen({
                             </Pressable>
                         ) : null}
                     </Pressable>
+
+                    {/* Segmented control Lista / Mês */}
+                    <View className="mt-3 flex-row rounded-xl bg-white/10 p-1">
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Ver em lista"
+                            accessibilityState={{ selected: view === 'lista' }}
+                            onPress={() => setView('lista')}
+                            className={`flex-1 items-center rounded-lg py-2 ${view === 'lista' ? 'bg-brand' : ''}`}
+                        >
+                            <Text
+                                className={`font-sans-semibold text-sm ${view === 'lista' ? 'text-brand-black' : 'text-white'}`}
+                            >
+                                Lista
+                            </Text>
+                        </Pressable>
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Ver em calendário"
+                            accessibilityState={{ selected: view === 'mes' }}
+                            onPress={() => setView('mes')}
+                            className={`flex-1 items-center rounded-lg py-2 ${view === 'mes' ? 'bg-brand' : ''}`}
+                        >
+                            <Text
+                                className={`font-sans-semibold text-sm ${view === 'mes' ? 'text-brand-black' : 'text-white'}`}
+                            >
+                                Mês
+                            </Text>
+                        </Pressable>
+                    </View>
                 </View>
             </SafeAreaView>
 
@@ -323,17 +455,28 @@ export function SchedulingListScreen({
                     <ListSkeleton />
                 ) : isError ? (
                     <ErrorState onRetry={() => void refetch()} />
+                ) : view === 'mes' ? (
+                    <CalendarMonthView
+                        appointments={items}
+                        currentDate={currentDate}
+                        onNavigate={setCurrentDate}
+                        onDayPress={(dateStr) => {
+                            setSheetFilters((f) => ({ ...f, date_from: dateStr, date_to: dateStr }));
+                            setView('lista');
+                        }}
+                        onCardPress={(a) => handleOpen(a.id)}
+                    />
                 ) : (
                     <FlashList
                         data={rows}
                         renderItem={renderItem}
                         keyExtractor={keyExtractor}
                         getItemType={getItemType}
-                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 96 }}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 96 + insets.bottom }}
                         ListHeaderComponent={
                             <ListHeader
-                                summary={storeSummary}
-                                summaryLoading={summaryLoading}
+                                summaryTotals={summaryTotals}
+                                summaryTitle={summaryTitle}
                                 lateCount={lateCount}
                                 hiddenCount={hiddenCount}
                                 showHidden={showHidden}
@@ -371,13 +514,14 @@ export function SchedulingListScreen({
                 )}
             </View>
 
-            {/* FAB Novo agendamento (stub na próxima ronda) */}
+            {/* FAB Novo agendamento */}
             {canEdit ? (
                 <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Novo agendamento"
                     onPress={() => navigation.navigate('CreateAppointment')}
-                    className="absolute bottom-6 right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
+                    style={{ bottom: insets.bottom + 24 }}
+                    className="absolute right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
                 >
                     <Ionicons name="add" size={24} color="#1A1A1A" />
                     <Text className="font-sans-bold text-base text-brand-black">Novo</Text>
@@ -396,8 +540,8 @@ export function SchedulingListScreen({
 // ─── Cabeçalho da lista: banner + resumo + toggle ────────────────────────────
 
 interface ListHeaderProps {
-    summary: SchedulingStoreSummary[] | undefined;
-    summaryLoading: boolean;
+    summaryTotals: Record<AppointmentDisplayStatus, number>;
+    summaryTitle: string;
     lateCount: number;
     hiddenCount: number;
     showHidden: boolean;
@@ -405,8 +549,8 @@ interface ListHeaderProps {
 }
 
 function ListHeader({
-    summary,
-    summaryLoading,
+    summaryTotals,
+    summaryTitle,
     lateCount,
     hiddenCount,
     showHidden,
@@ -424,8 +568,8 @@ function ListHeader({
                 </View>
             ) : null}
 
-            {/* Resumo por loja */}
-            <StoreSummaryCard summary={summary} loading={summaryLoading} />
+            {/* Resumo da loja selecionada */}
+            <StoreSummaryCard totals={summaryTotals} title={summaryTitle} />
 
             {/* Toggle de itens ocultos */}
             {hiddenCount > 0 || showHidden ? (
@@ -457,41 +601,21 @@ function ListHeader({
 }
 
 function StoreSummaryCard({
-    summary,
-    loading,
+    totals,
+    title,
 }: {
-    summary: SchedulingStoreSummary[] | undefined;
-    loading: boolean;
+    totals: Record<AppointmentDisplayStatus, number>;
+    title: string;
 }) {
-    // Agrega todas as lojas retornadas no contexto atual em 6 contadores.
-    const totals = useMemo(() => {
-        const acc: Record<AppointmentDisplayStatus, number> = {
-            atrasado: 0,
-            atencao: 0,
-            agendado: 0,
-            em_execucao: 0,
-            finalizado: 0,
-            cancelado: 0,
-        };
-        for (const s of summary ?? []) {
-            for (const st of STATUS_ORDER) acc[st] += s[st] ?? 0;
-        }
-        return acc;
-    }, [summary]);
+    const hasAny = STATUS_ORDER.some((st) => totals[st] > 0);
 
-    if (loading) {
-        return (
-            <View className="px-4 pb-1 pt-3">
-                <Skeleton width="100%" height={72} radius={16} />
-            </View>
-        );
-    }
-    if (!summary || summary.length === 0) return null;
+    // Nenhum agendamento carregado (tudo zerado) → esconde o card.
+    if (!hasAny) return null;
 
     return (
         <View className="mx-4 mb-1 mt-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm dark:border-dark-border-soft dark:bg-dark-surface">
             <Text className="mb-2.5 font-sans-semibold text-xs uppercase tracking-wide text-neutral-400 dark:text-dark-text-muted">
-                Resumo da loja
+                {`Resumo · ${title}`}
             </Text>
             <ScrollView
                 horizontal

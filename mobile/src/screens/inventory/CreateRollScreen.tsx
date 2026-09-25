@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Keyboard, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useConfirm } from '@/components/ui';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
@@ -96,6 +97,7 @@ export function CreateRollScreen({ navigation }: InventoryStackScreenProps<'Crea
     const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
     const createRoll = useCreateRoll();
     const toast = useToast();
+    const { confirm } = useConfirm();
 
     const defaultStoreId = selectedStoreId ?? stores[0]?.id ?? undefined;
 
@@ -191,26 +193,21 @@ export function CreateRollScreen({ navigation }: InventoryStackScreenProps<'Crea
         } catch (err) {
             if (isCriticalRollsError(err)) {
                 // 409: bobinas críticas pendentes → confirma "registrar mesmo assim".
-                Alert.alert(
-                    'Bobinas críticas pendentes',
-                    'Existem bobinas críticas nesta loja. Deseja registrar mesmo assim?',
-                    [
-                        { text: 'Cancelar', style: 'cancel' },
-                        {
-                            text: 'Registrar',
-                            style: 'destructive',
-                            onPress: () => {
-                                createRoll.mutateAsync({ payload, force: true }).then(
-                                    () => navigation.goBack(),
-                                    (e: unknown) =>
-                                        toast.error(
-                                            getApiErrorMessage(e as Error, 'Erro ao registrar bobina.')
-                                        )
-                                );
-                            },
-                        },
-                    ]
-                );
+                const ok = await confirm({
+                    title: 'Bobinas críticas pendentes',
+                    message: 'Existem bobinas críticas nesta loja. Deseja registrar mesmo assim?',
+                    confirmLabel: 'Registrar',
+                    destructive: true,
+                });
+                if (ok) {
+                    createRoll.mutateAsync({ payload, force: true }).then(
+                        () => navigation.goBack(),
+                        (e: unknown) =>
+                            toast.error(
+                                getApiErrorMessage(e as Error, 'Erro ao registrar bobina.')
+                            )
+                    );
+                }
                 return;
             }
             toast.error(getApiErrorMessage(err as Error, 'Erro ao registrar bobina.'));

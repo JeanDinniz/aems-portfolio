@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Loader2, Film, MoreHorizontal, Trash2, Edit } from 'lucide-react';
+import { Plus, Loader2, Film, MoreHorizontal, Trash2, Edit, Power, PowerOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -83,6 +83,7 @@ export function FilmTypesPage() {
         queryKey: ['film-types', filterDepartment],
         queryFn: () => inventoryService.listFilmTypes({
             department: filterDepartment !== 'all' ? filterDepartment : undefined,
+            include_inactive: true,
         }),
     });
 
@@ -393,7 +394,7 @@ export function FilmTypesPage() {
                                 </tr>
                             )}
                             {filmTypes.map((ft) => (
-                                <tr key={ft.id} className="hover:bg-muted/30 transition-colors">
+                                <tr key={ft.id} className={`hover:bg-muted/30 transition-colors ${ft.is_active ? '' : 'opacity-60'}`}>
                                     <td className="px-4 py-3 font-medium">{ft.name}</td>
                                     <td className="px-4 py-3">
                                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
@@ -446,6 +447,15 @@ export function FilmTypesPage() {
                                             <DropdownMenuContent align="end">
                                                 <DropdownMenuItem onClick={() => openEdit(ft)}>
                                                     <Edit className="h-4 w-4 mr-2" /> Editar
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem
+                                                    onClick={() => updateMutation.mutate({ id: ft.id, payload: { is_active: !ft.is_active } })}
+                                                >
+                                                    {ft.is_active ? (
+                                                        <><PowerOff className="h-4 w-4 mr-2" /> Desativar</>
+                                                    ) : (
+                                                        <><Power className="h-4 w-4 mr-2" /> Ativar</>
+                                                    )}
                                                 </DropdownMenuItem>
                                                 <DropdownMenuItem
                                                     className="text-destructive focus:text-destructive"

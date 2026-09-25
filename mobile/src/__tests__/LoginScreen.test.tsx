@@ -28,8 +28,9 @@ describe('LoginScreen', () => {
     beforeEach(() => jest.clearAllMocks());
 
     it('renderiza o formulário de login', async () => {
-        const { getByText } = await renderScreen();
-        expect(getByText('AEMS')).toBeTruthy();
+        const { getByText, getByLabelText } = await renderScreen();
+        // A marca agora é o logo (Image) com accessibilityLabel "AEMS".
+        expect(getByLabelText('AEMS')).toBeTruthy();
         expect(getByText('Entrar')).toBeTruthy();
     });
 

@@ -5,13 +5,19 @@ import Constants from 'expo-constants';
 
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Card } from '@/components/ui/Card';
-import { useToast } from '@/components/ui';
+import { Button, TextField, useToast } from '@/components/ui';
+import { useRevenueGoals, useUpdateRevenueGoals } from '@/hooks/useSettings';
+import { useAuthStore } from '@/stores/auth.store';
 import {
     authenticate,
     getBiometricLabel,
     isBiometricAvailable,
     type BiometricLabel,
 } from '@/services/biometrics';
+import {
+    registerForPushNotificationsAsync,
+    unregisterPushNotificationsAsync,
+} from '@/services/push/push.service';
 import { useSettingsStore, type ThemePreference } from '@/stores/settings.store';
 import { useStores } from '@/hooks/useStores';
 import { brand, neutral } from '@/theme/tokens';
@@ -86,6 +92,37 @@ export function SettingsScreen({ navigation }: AppStackScreenProps<'Settings'>) 
     const toast = useToast();
     const { stores, isMultiStore, selectStore } = useStores();
 
+    // Metas de Faturamento (por funcionário) — só Owner. Espelha o card do web
+    // (SettingsPage). Owner é detectado pelo mesmo helper usado em todo o app.
+    const isOwner = useAuthStore((s) => s.isOwner)();
+    const revenueGoalsQuery = useRevenueGoals(isOwner);
+    const updateGoals = useUpdateRevenueGoals();
+    const [goals, setGoals] = useState({ tier_1: '', tier_2: '', tier_3: '' });
+    // Sincroniza os campos com o valor carregado do backend na 1ª chegada;
+    // depois o usuário edita livremente (mesmo padrão do web, sem useEffect).
+    const [syncedGoals, setSyncedGoals] = useState<typeof revenueGoalsQuery.data>(undefined);
+    if (revenueGoalsQuery.data && revenueGoalsQuery.data !== syncedGoals) {
+        setSyncedGoals(revenueGoalsQuery.data);
+        setGoals({
+            tier_1: String(revenueGoalsQuery.data.tier_1),
+            tier_2: String(revenueGoalsQuery.data.tier_2),
+            tier_3: String(revenueGoalsQuery.data.tier_3),
+        });
+    }
+
+    const handleSaveGoals = () => {
+        const parsed = {
+            tier_1: Number(goals.tier_1),
+            tier_2: Number(goals.tier_2),
+            tier_3: Number(goals.tier_3),
+        };
+        if (Object.values(parsed).some((v) => Number.isNaN(v) || v < 0)) {
+            toast.error('Informe valores numéricos maiores ou iguais a zero');
+            return;
+        }
+        updateGoals.mutate(parsed);
+    };
+
     // Disponibilidade de biometria neste aparelho (hardware + cadastro). Checada
     // no mount; indisponível → linha desabilitada com legenda explicativa.
     const [biometricAvailable, setBiometricAvailable] = useState<boolean | null>(null);
@@ -156,10 +193,15 @@ export function SettingsScreen({ navigation }: AppStackScreenProps<'Settings'>) 
     const chooseTheme = (value: ThemePreference) => setThemePreference(value);
 
     const togglePush = (value: boolean) => {
-        // TODO(Fatia futura): integrar com o PushProvider para registrar/des-registrar
-        // o token de push (expo-notifications) conforme esta preferência. Por ora só
-        // persiste a escolha do usuário. Ver src/providers/PushProvider.tsx.
+        // Persiste a preferência e sincroniza o registro do device de push.
+        // Ambas as chamadas são fire-and-forget e degradam graciosamente (Expo Go,
+        // emulador, permissão negada) — não bloqueiam a UI. Ver PushProvider.tsx.
         setPushEnabled(value);
+        if (value) {
+            void registerForPushNotificationsAsync();
+        } else {
+            void unregisterPushNotificationsAsync();
+        }
     };
 
     const chooseDefaultStore = (id: number | null) => {
@@ -293,6 +335,49 @@ export function SettingsScreen({ navigation }: AppStackScreenProps<'Settings'>) 
                                     />
                                 ))}
                             </View>
+                        </Card>
+                    </>
+                ) : null}
+
+                {/* Metas de Faturamento — só Owner. */}
+                {isOwner ? (
+                    <>
+                        <SectionTitle>Metas de Faturamento</SectionTitle>
+                        <Card className="mb-5">
+                            <Text className="mb-4 font-sans text-xs text-neutral-400 dark:text-dark-text-muted">
+                                Valor por funcionário. No Dashboard, a meta de cada loja é este
+                                valor multiplicado pelo nº de funcionários ativos (sem
+                                instaladores).
+                            </Text>
+                            <View className="gap-1">
+                                {(
+                                    [
+                                        ['tier_1', 'Meta 1 (R$ por funcionário)'],
+                                        ['tier_2', 'Meta 2 (R$ por funcionário)'],
+                                        ['tier_3', 'Meta 3 (R$ por funcionário)'],
+                                    ] as const
+                                ).map(([key, label]) => (
+                                    <TextField
+                                        key={key}
+                                        label={label}
+                                        keyboardType="numeric"
+                                        inputMode="numeric"
+                                        value={goals[key]}
+                                        onChangeText={(text) =>
+                                            setGoals((g) => ({ ...g, [key]: text }))
+                                        }
+                                        editable={!revenueGoalsQuery.isLoading}
+                                        placeholder="0"
+                                    />
+                                ))}
+                            </View>
+                            <Button
+                                title="Salvar metas"
+                                icon="save-outline"
+                                loading={updateGoals.isPending}
+                                disabled={revenueGoalsQuery.isLoading}
+                                onPress={handleSaveGoals}
+                            />
                         </Card>
                     </>
                 ) : null}

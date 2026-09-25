@@ -34,9 +34,6 @@ export function useWebSocket(): void {
     const invalidateConference = () =>
       queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference', 'summary'] });
 
-    const invalidateQueue = () =>
-      queryClient.invalidateQueries({ queryKey: ['dashboard', 'queue'] });
-
     const onOsVerified = () => {
       invalidateOrders();
       invalidateConference();
@@ -52,7 +49,6 @@ export function useWebSocket(): void {
     wsService.on('os_finalized', invalidateOrders);
     wsService.on('os_cancelled', invalidateOrders);
     wsService.on('os_verified', onOsVerified);
-    wsService.on('semaphore_updated', invalidateQueue);
     wsService.on('appointment_created', invalidateScheduling);
     wsService.on('appointment_updated', invalidateScheduling);
     wsService.on('appointment_cancelled', invalidateScheduling);
@@ -63,7 +59,6 @@ export function useWebSocket(): void {
       wsService.off('os_finalized', invalidateOrders);
       wsService.off('os_cancelled', invalidateOrders);
       wsService.off('os_verified', onOsVerified);
-      wsService.off('semaphore_updated', invalidateQueue);
       wsService.off('appointment_created', invalidateScheduling);
       wsService.off('appointment_updated', invalidateScheduling);
       wsService.off('appointment_cancelled', invalidateScheduling);

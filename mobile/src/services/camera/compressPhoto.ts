@@ -8,7 +8,7 @@
  * Regras anti-pico de memória (OBRIGATÓRIAS):
  * - Processar UMA foto por vez (serial). NUNCA `Promise.all` de N imagens grandes.
  * - Comprimir imediatamente após capturar.
- * - Alvo: maior lado ~1600px; JPEG `compress: 0.7`.
+ * - Alvo: maior lado ~1280px; JPEG `compress: 0.65` (ADR upload moderado 2026-08-31).
  * - Validar o resultado com `utils/fileValidation.ts` antes de enfileirar/enviar.
  *
  * API expo-image-manipulator v14 (contextual/object-oriented):
@@ -22,8 +22,11 @@ import { File } from 'expo-file-system';
 import { validateImageFile } from '@/utils/fileValidation';
 import type { LocalPhotoAsset } from '@/types/photo.types';
 
-const MAX_DIMENSION = 1600;
-const JPEG_QUALITY = 0.7;
+// Upload mobile "moderado" (ADR 2026-08-31): foto menor = arquivo menor = sobe
+// mais rápido em rede de loja/galpão, mantendo legibilidade para a conferência.
+// REVERTER para o pré-ADR: MAX_DIMENSION=1600, JPEG_QUALITY=0.7. Ver ADR.
+const MAX_DIMENSION = 1280;
+const JPEG_QUALITY = 0.65;
 const OUTPUT_MIME = 'image/jpeg';
 
 /** Erro de compressão (inclui falha de validação do resultado). */
@@ -70,7 +73,7 @@ function resizeTarget(
 }
 
 /**
- * Comprime UM asset: resize para ~1600px no maior lado + JPEG 0.7.
+ * Comprime UM asset: resize para ~1280px no maior lado + JPEG 0.65.
  * Roda serialmente (ver `runSerial`) e valida o resultado (tipo + 10 MB).
  *
  * @throws {CompressionError} se a manipulação falhar ou o resultado for inválido.

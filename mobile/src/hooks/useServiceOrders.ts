@@ -13,7 +13,12 @@ import {
 } from '@/services/api/service-orders.service';
 import { useStoreStore } from '@/stores/store.store';
 import { addBreadcrumb } from '@/lib/sentry';
-import type { ServiceOrder, ServiceOrderFilters, CreateServiceOrderData } from '@/types/service-order.types';
+import type {
+    ServiceOrder,
+    ServiceOrderFilters,
+    CreateServiceOrderData,
+    FinalizeServiceOrderPayload,
+} from '@/types/service-order.types';
 
 /**
  * Hooks de Ordens de Serviço (OS-01) — adaptados de
@@ -182,6 +187,24 @@ export const useUpdateServiceOrderStatus = () => {
     });
 };
 
+/**
+ * Desfaz o "Lançado Errado" restaurando o status anterior (via endpoint dedicado).
+ * Invalida também `scheduling`: restaurar para Finalizado altera se o agendamento
+ * vinculado aparece ou não como "Atrasado".
+ */
+export const useUndoWrong = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (id: number) => serviceOrdersService.undoWrong(id),
+        onSuccess: (_, id) => {
+            queryClient.invalidateQueries({ queryKey: ['service-orders'] });
+            queryClient.invalidateQueries({ queryKey: ['service-order', id] });
+            queryClient.invalidateQueries({ queryKey: ['os-history', id] });
+            queryClient.invalidateQueries({ queryKey: ['scheduling'] });
+        },
+    });
+};
+
 export const useFinalizeServiceOrder = () => {
     const queryClient = useQueryClient();
     return useMutation({
@@ -190,11 +213,7 @@ export const useFinalizeServiceOrder = () => {
             payload,
         }: {
             id: number;
-            payload: {
-                completion_photos: string[];
-                film_roll_assignments: Array<{ service_id: number; film_roll_id: number }>;
-                employee_ids: number[];
-            };
+            payload: FinalizeServiceOrderPayload;
         }) => serviceOrdersService.finalize(id, payload),
         onSuccess: (_, variables) => {
             queryClient.invalidateQueries({ queryKey: ['service-orders'] });

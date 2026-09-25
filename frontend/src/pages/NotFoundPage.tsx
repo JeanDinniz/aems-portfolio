@@ -11,7 +11,7 @@ export function NotFoundPage() {
             {/* Logo */}
             <img
                 src="/brand/logo-white.png"
-                alt="AEMS AEMS"
+                alt="AEMS"
                 className="h-12 w-auto mb-10 object-contain"
             />
 

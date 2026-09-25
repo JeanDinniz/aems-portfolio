@@ -1,0 +1,127 @@
+/*
+ * Animações e texturas dos modelos do painel esquerdo do login.
+ * Todas as classes usam o prefixo lp- para não colidir com o restante do app.
+ */
+
+@keyframes lp-fade-up {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.lp-fade-up {
+    animation: lp-fade-up 0.6s ease-out var(--lp-delay, 0s) both;
+}
+
+/* Faixa de luz que percorre o painel, como reflexo em pintura polida */
+@keyframes lp-sweep {
+    0% {
+        transform: translateX(0);
+    }
+    55%,
+    100% {
+        transform: translateX(260%);
+    }
+}
+
+.lp-sweep {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -60%;
+    width: 70%;
+    pointer-events: none;
+    background: linear-gradient(
+        100deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.05) 45%,
+        rgba(245, 168, 0, 0.1) 50%,
+        rgba(255, 255, 255, 0.05) 55%,
+        transparent 80%
+    );
+    animation: lp-sweep 8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Partículas de poeira em estúdio de luz */
+@keyframes lp-float {
+    0%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.15;
+    }
+    50% {
+        transform: translateY(-22px);
+        opacity: 0.5;
+    }
+}
+
+.lp-float {
+    animation: lp-float 10s ease-in-out infinite;
+    will-change: transform, opacity;
+}
+
+/* Traço do carro sendo desenhado (usa pathLength=100 nos elementos SVG) */
+@keyframes lp-draw {
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
+.lp-draw {
+    stroke-dasharray: 100 100;
+    stroke-dashoffset: 100;
+    animation: lp-draw var(--lp-draw-dur, 1.6s) ease-out var(--lp-draw-delay, 0s) both;
+}
+
+/* Reflexo de película percorrendo a carroceria (clipado no corpo do carro) */
+@keyframes lp-film-sweep {
+    0% {
+        transform: translateX(0);
+    }
+    60%,
+    100% {
+        transform: translateX(720px);
+    }
+}
+
+.lp-film-sweep {
+    animation: lp-film-sweep 6s ease-in-out 2.4s infinite;
+}
+
+/* Textura de fibra de carbono (weave) */
+.lp-carbon-weave {
+    background-color: #161616;
+    background-image: radial-gradient(rgba(0, 0, 0, 0.9) 15%, transparent 16%),
+        radial-gradient(rgba(0, 0, 0, 0.9) 15%, transparent 16%),
+        radial-gradient(rgba(255, 255, 255, 0.05) 15%, transparent 20%),
+        radial-gradient(rgba(255, 255, 255, 0.05) 15%, transparent 20%);
+    background-position: 0 0, 9px 9px, 0 1px, 9px 10px;
+    background-size: 18px 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .lp-fade-up,
+    .lp-float {
+        animation: none;
+        opacity: 1;
+    }
+
+    .lp-float {
+        opacity: 0.25;
+    }
+
+    .lp-draw {
+        animation: none;
+        stroke-dashoffset: 0;
+    }
+
+    .lp-sweep,
+    .lp-film-sweep {
+        display: none;
+    }
+}

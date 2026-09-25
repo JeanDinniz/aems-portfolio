@@ -15,6 +15,7 @@ import { DEPARTMENTS_MAP } from '@/constants/service-orders';
 import { formatCurrencyBRL } from '@/utils/formatNumber';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useCanView } from '@/hooks/useMyPermissions';
+import { CONFERENCE_ENABLED } from '@/constants/features';
 import type { Department, ServiceOrder } from '@/types/service-order.types';
 import type { AppStackScreenProps } from '@/navigation/types';
 
@@ -83,11 +84,18 @@ type OrderWithItems = ServiceOrder & {
     is_return?: boolean;
 };
 
+interface GroupOrderRow {
+    order: OrderWithItems;
+    total: number;
+}
+
 interface GroupResult {
     key: string;
     label: string;
     count: number;
     total: number;
+    /** O.S. do grupo (para a listagem expandível), cada uma com o valor roteado. */
+    orders: GroupOrderRow[];
     exportParams: {
         department?: string;
         is_courtesy?: boolean;
@@ -274,6 +282,11 @@ function exportParamsForGroup(key: string): GroupResult['exportParams'] {
 export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento'>) {
     const toast = useToast();
     const canView = useCanView('fechamento');
+    // HML-246: botão "Visualizar" por carro só para quem acessa a Conferência
+    // (mesmo padrão do MoreScreen: o hook é chamado SEMPRE — regra de hooks — e
+    // a flag de módulo apenas combina com o resultado; Owner = true pelo hook).
+    const _canConferenceView = useCanView('conference');
+    const canConference = CONFERENCE_ENABLED && _canConferenceView;
     const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
     const availableStores = useStoreStore((s) => s.availableStores);
 
@@ -324,17 +337,22 @@ export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento
     );
 
     const { groups, grandCount, grandTotal } = useMemo(() => {
-        // key → { orderIds únicas (contagem), total acumulado dos itens roteados }
-        const groupMap = new Map<string, { orderIds: Set<number>; total: number }>();
+        // key → { orderIds únicas (contagem), total acumulado dos itens roteados,
+        // orders (linhas por carro, com o valor roteado àquele grupo) }
+        const groupMap = new Map<
+            string,
+            { orderIds: Set<number>; total: number; orders: GroupOrderRow[] }
+        >();
         for (const order of allOrders) {
             for (const bucket of routeOrder(order)) {
                 let g = groupMap.get(bucket.key);
                 if (!g) {
-                    g = { orderIds: new Set(), total: 0 };
+                    g = { orderIds: new Set(), total: 0, orders: [] };
                     groupMap.set(bucket.key, g);
                 }
                 g.orderIds.add(order.id);
                 g.total += bucket.total;
+                g.orders.push({ order, total: bucket.total });
             }
         }
 
@@ -342,7 +360,9 @@ export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento
         for (const key of GROUP_ORDER) {
             // "Oficina Lavagem Simples" é sempre exibida, mesmo sem O.S. no período
             const g = groupMap.get(key)
-                ?? (key === 'workshop_lavagem' ? { orderIds: new Set<number>(), total: 0 } : undefined);
+                ?? (key === 'workshop_lavagem'
+                    ? { orderIds: new Set<number>(), total: 0, orders: [] as GroupOrderRow[] }
+                    : undefined);
             if (!g || (g.orderIds.size === 0 && key !== 'workshop_lavagem')) continue;
             const label =
                 VIRTUAL_LABELS[key] ?? DEPARTMENTS_MAP[key as Department] ?? key;
@@ -351,6 +371,7 @@ export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento
                 label,
                 count: g.orderIds.size,
                 total: g.total,
+                orders: g.orders,
                 exportParams: exportParamsForGroup(key),
             });
         }
@@ -428,6 +449,18 @@ export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento
         [runExport, storeId, validFrom, validTo, storeName]
     );
 
+    // Abre a O.S. no editor. Navegação aninhada (mesmo padrão da Conferência):
+    // AppStack → Tabs → ServiceOrders → EditServiceOrder.
+    const openOrder = useCallback(
+        (id: number) => {
+            navigation.navigate('Tabs', {
+                screen: 'ServiceOrders',
+                params: { screen: 'EditServiceOrder', params: { id } },
+            });
+        },
+        [navigation]
+    );
+
     const subtitle = isLoading
         ? 'Carregando...'
         : `${grandCount} ${grandCount === 1 ? 'O.S verificada' : 'O.S verificadas'}`;
@@ -501,6 +534,8 @@ export function FechamentoScreen({ navigation }: AppStackScreenProps<'Fechamento
                                     busy={downloadingKey === group.key}
                                     disabled={!!downloadingKey}
                                     onExport={() => handleExportGroup(group)}
+                                    canOpenOrder={canConference}
+                                    onOpenOrder={openOrder}
                                 />
                             ))}
 
@@ -621,44 +656,130 @@ interface GroupCardProps {
     busy: boolean;
     disabled: boolean;
     onExport: () => void;
+    /** Se `true`, cada linha por carro ganha o botão "Visualizar" (acesso à Conferência). */
+    canOpenOrder: boolean;
+    onOpenOrder: (id: number) => void;
 }
 
-function GroupCard({ group, busy, disabled, onExport }: GroupCardProps) {
+function GroupCard({ group, busy, disabled, onExport, canOpenOrder, onOpenOrder }: GroupCardProps) {
+    const [expanded, setExpanded] = useState(false);
+    const hasOrders = group.orders.length > 0;
+
     return (
-        <View className="mb-2.5 flex-row items-center rounded-2xl border border-neutral-100 bg-white p-4 dark:border-dark-border-soft dark:bg-dark-surface">
+        <View className="mb-2.5 rounded-2xl border border-neutral-100 bg-white dark:border-dark-border-soft dark:bg-dark-surface">
+            <View className="flex-row items-center p-4">
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                        hasOrders
+                            ? `${expanded ? 'Recolher' : 'Expandir'} ${group.label}`
+                            : group.label
+                    }
+                    accessibilityState={{ expanded }}
+                    disabled={!hasOrders}
+                    onPress={() => setExpanded((v) => !v)}
+                    className="flex-1 flex-row items-center pr-3 active:opacity-70"
+                >
+                    <View className="flex-1">
+                        <Text
+                            className="font-sans-bold text-base text-neutral-900 dark:text-dark-text"
+                            numberOfLines={1}
+                        >
+                            {group.label}
+                        </Text>
+                        <View className="mt-1 flex-row items-center gap-2">
+                            <Text className="font-sans text-xs text-neutral-500 dark:text-dark-text-muted">
+                                {`${group.count} ${group.count === 1 ? 'O.S' : 'O.S'}`}
+                            </Text>
+                            <View className="h-1 w-1 rounded-full bg-neutral-300 dark:bg-dark-border-soft" />
+                            <Text className="font-sans-semibold text-sm text-brand">
+                                {formatCurrencyBRL(group.total)}
+                            </Text>
+                        </View>
+                    </View>
+                    {hasOrders ? (
+                        <Ionicons
+                            name={expanded ? 'chevron-up' : 'chevron-down'}
+                            size={18}
+                            color="#98A2B3"
+                        />
+                    ) : null}
+                </Pressable>
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Exportar ${group.label}`}
+                    accessibilityState={{ busy, disabled }}
+                    disabled={disabled}
+                    onPress={onExport}
+                    className={`ml-2 h-11 w-11 items-center justify-center rounded-full bg-neutral-100 active:opacity-70 dark:bg-dark-elevated ${
+                        disabled && !busy ? 'opacity-40' : ''
+                    }`}
+                >
+                    {busy ? (
+                        <ActivityIndicator color="#667085" />
+                    ) : (
+                        <Ionicons name="download-outline" size={20} color="#667085" />
+                    )}
+                </Pressable>
+            </View>
+
+            {expanded && hasOrders ? (
+                <View className="border-t border-neutral-100 dark:border-dark-border-soft">
+                    {group.orders.map((row, i) => (
+                        <OrderRow
+                            key={`${row.order.id}-${i}`}
+                            row={row}
+                            canOpen={canOpenOrder}
+                            onOpen={() => onOpenOrder(row.order.id)}
+                        />
+                    ))}
+                </View>
+            ) : null}
+        </View>
+    );
+}
+
+// ─── Linha por carro (dentro de um card expandido) ──────────────────────────
+
+interface OrderRowProps {
+    row: GroupOrderRow;
+    canOpen: boolean;
+    onOpen: () => void;
+}
+
+function OrderRow({ row, canOpen, onOpen }: OrderRowProps) {
+    const { order, total } = row;
+    const osNumber = order.external_os_number ?? '—';
+    return (
+        <View className="flex-row items-center border-b border-neutral-50 px-4 py-3 dark:border-dark-border-soft">
             <View className="flex-1 pr-3">
                 <Text
-                    className="font-sans-bold text-base text-neutral-900 dark:text-dark-text"
+                    className="font-sans-semibold text-sm text-neutral-800 dark:text-dark-text"
                     numberOfLines={1}
                 >
-                    {group.label}
+                    {order.plate}
                 </Text>
-                <View className="mt-1 flex-row items-center gap-2">
+                <View className="mt-0.5 flex-row items-center gap-2">
                     <Text className="font-sans text-xs text-neutral-500 dark:text-dark-text-muted">
-                        {`${group.count} ${group.count === 1 ? 'O.S' : 'O.S'}`}
+                        {`OS ${osNumber}`}
                     </Text>
                     <View className="h-1 w-1 rounded-full bg-neutral-300 dark:bg-dark-border-soft" />
-                    <Text className="font-sans-semibold text-sm text-brand">
-                        {formatCurrencyBRL(group.total)}
+                    <Text className="font-sans-medium text-xs text-brand">
+                        {formatCurrencyBRL(total)}
                     </Text>
                 </View>
             </View>
-            <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Exportar ${group.label}`}
-                accessibilityState={{ busy, disabled }}
-                disabled={disabled}
-                onPress={onExport}
-                className={`h-11 w-11 items-center justify-center rounded-full bg-neutral-100 active:opacity-70 dark:bg-dark-elevated ${
-                    disabled && !busy ? 'opacity-40' : ''
-                }`}
-            >
-                {busy ? (
-                    <ActivityIndicator color="#667085" />
-                ) : (
-                    <Ionicons name="download-outline" size={20} color="#667085" />
-                )}
-            </Pressable>
+            {canOpen ? (
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Visualizar O.S. ${order.plate}`}
+                    onPress={onOpen}
+                    hitSlop={8}
+                    className="h-10 w-10 items-center justify-center rounded-full bg-neutral-100 active:opacity-70 dark:bg-dark-elevated"
+                >
+                    <Ionicons name="eye-outline" size={18} color="#667085" />
+                </Pressable>
+            ) : null}
         </View>
     );
 }

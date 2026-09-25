@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { useStores } from '@/hooks/useStores';
 import {
   DollarSign,
-  CheckCircle,
   TrendingUp,
-  Percent,
+  ClipboardCheck,
+  CalendarClock,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -17,30 +19,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { formatCurrency } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import { useDateRangeFilter } from '@/hooks/useDateRangeFilter';
+import { useDashboardFiltersStore } from '@/stores/filters.store';
 import {
   useDashboardOverview,
   useDashboardStoresRanking,
   useDashboardServicesRanking,
   useDashboardDepartmentBreakdown,
   useDashboardEmployeesRanking,
-  useDashboardConsultantsRanking,
-  useDashboardSla,
-  useDashboardQueue,
   useDashboardTimeseriesByType,
   useDashboardFilmPpfRanking,
+  useDashboardDealershipsRanking,
+  useDashboardRevenueForecast,
 } from '@/hooks/useDashboard';
 import { KpiCard } from '@/components/features/dashboard/KpiCard';
+import { MetaGoalCard } from '@/components/features/dashboard/MetaGoalCard';
 import { RevenueTrendChart } from '@/components/features/dashboard/RevenueTrendChart';
+import { RevenueByTypeChart } from '@/components/features/dashboard/RevenueByTypeChart';
 import { StoreRankingCard } from '@/components/features/dashboard/StoreRankingCard';
 import { ServicesTopCard } from '@/components/features/dashboard/ServicesTopCard';
 import { DepartmentDonut } from '@/components/features/dashboard/DepartmentDonut';
-import { ConsultantsRankingTable } from '@/components/features/dashboard/ConsultantsRankingTable';
 import { EmployeesRankingTable } from '@/components/features/dashboard/EmployeesRankingTable';
-import { SlaSummary } from '@/components/features/dashboard/SlaSummary';
-import { LiveQueueCard } from '@/components/features/dashboard/LiveQueueCard';
 import { FilmPpfRankingTable } from '@/components/features/dashboard/FilmPpfRankingTable';
+import { DealershipRankingTable } from '@/components/features/dashboard/DealershipRankingTable';
 
 // ─────────────────────────────────────────────────────────────
 // Date helpers
@@ -71,14 +73,29 @@ function getLast7DaysStart(): string {
   return d.toISOString().split('T')[0];
 }
 
+/**
+ * True quando o período aplicado é o mês corrente (do 1º dia do mês até hoje ou
+ * além). Só nesse caso o card mostra a Previsão; nos demais, o faturamento realizado.
+ */
+function isCurrentMonthPeriod(start: string, end: string): boolean {
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  const today = now.toISOString().split('T')[0];
+  return start === firstDay && end >= today;
+}
+
+function formatUpdatedAt(ts: number): string {
+  return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
 // ─────────────────────────────────────────────────────────────
 // Skeletons
 // ─────────────────────────────────────────────────────────────
 
-function KpiSkeleton() {
+function KpiSkeleton({ count = 6 }: { count?: number }) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      {Array.from({ length: 4 }).map((_, i) => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      {Array.from({ length: count }).map((_, i) => (
         <Card key={i} className="bg-white dark:bg-[#161616] border-gray-200 dark:border-[#1E1E1E]">
           <CardContent className="pt-5 pb-4 space-y-3">
             <Skeleton className="h-3 w-24 bg-gray-200 dark:bg-[#2a2a2a]" />
@@ -128,16 +145,37 @@ const GRANULARITY_OPTIONS: { value: Granularity; label: string }[] = [
 ];
 
 // ─────────────────────────────────────────────────────────────
+// Preset button style
+// ─────────────────────────────────────────────────────────────
+const presetBtnClass =
+  'h-8 text-xs border-gray-200 dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:border-[#F5A800]';
+
+// ─────────────────────────────────────────────────────────────
 // Main Page
 // ─────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const [granularity, setGranularity] = useState<Granularity>('day');
+  // Drill-down departamento
+  const [selectedDept, setSelectedDept] = useState<string | null>(null);
   const [servicesDept, setServicesDept] = useState<string | null>(null);
-  const [employeesDept, setEmployeesDept] = useState<string | null>(null);
+  // Ranking de funcionários: multi-select de departamentos DA O.S. (film/security_film/ppf)
+  const [employeesDepts, setEmployeesDepts] = useState<string[]>([]);
+
+  // Filtros colapsáveis (mobile)
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const { stores } = useStores();
-  const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
+
+  // ── Filtros persistidos (Zustand + sessionStorage) ───────────
+  const {
+    appliedStart: persistedStart,
+    appliedEnd: persistedEnd,
+    storeId: persistedStoreId,
+    granularity: persistedGranularity,
+    setRange: persistRange,
+    setStoreId: persistStoreId,
+    setGranularity: persistGranularity,
+  } = useDashboardFiltersStore();
 
   const {
     startDate,
@@ -147,10 +185,37 @@ export default function DashboardPage() {
     appliedStart,
     appliedEnd,
     apply,
+    applyRange,
   } = useDateRangeFilter({
-    defaultStart: getFirstDayOfMonth(),
-    defaultEnd: getToday(),
+    defaultStart: persistedStart,
+    defaultEnd: persistedEnd,
   });
+
+  // Sincroniza a store quando aplica (wrapping apply/applyRange)
+  const handleApply = () => {
+    apply();
+    persistRange(startDate, endDate);
+  };
+
+  const handleApplyRange = (start: string, end: string) => {
+    applyRange(start, end);
+    persistRange(start, end);
+  };
+
+  const [selectedStoreId, setSelectedStoreId] = useState<number | null>(persistedStoreId);
+  const [granularity, setGranularity] = useState<Granularity>(persistedGranularity as Granularity);
+
+  const handleStoreChange = (v: string) => {
+    const id = v === 'all' ? null : Number(v);
+    setSelectedStoreId(id);
+    persistStoreId(id);
+  };
+
+  const handleGranularityChange = (v: string) => {
+    const g = v as Granularity;
+    setGranularity(g);
+    persistGranularity(g);
+  };
 
   const params = {
     start_date: appliedStart,
@@ -158,42 +223,39 @@ export default function DashboardPage() {
     ...(selectedStoreId !== null && { store_id: selectedStoreId }),
   };
 
+  // ── Queries ──────────────────────────────────────────────────
   const overviewQuery = useDashboardOverview(params);
   const storesQuery = useDashboardStoresRanking(params);
   const servicesQuery = useDashboardServicesRanking(params, servicesDept ?? undefined);
   const departmentsQuery = useDashboardDepartmentBreakdown(params);
-  const employeesQuery = useDashboardEmployeesRanking(params, employeesDept ?? undefined);
-  const consultantsQuery = useDashboardConsultantsRanking(params);
-  const slaQuery = useDashboardSla(params);
-  const queueQuery = useDashboardQueue();
-  const timeseriesQuery = useDashboardTimeseriesByType(params, granularity);
+  const employeesQuery = useDashboardEmployeesRanking(
+    params,
+    employeesDepts.length > 0 ? employeesDepts : undefined
+  );
+  const typeSeriesQuery = useDashboardTimeseriesByType(params, granularity);
   const filmPpfQuery = useDashboardFilmPpfRanking(params);
+  const dealershipsQuery = useDashboardDealershipsRanking(params);
+  const forecastQuery = useDashboardRevenueForecast(selectedStoreId);
 
   const overview = overviewQuery.data;
+  const forecast = forecastQuery.data;
 
-  // ── Quick-date shortcuts ─────────────────────────────────────
-  function applyPreset(start: string, end: string) {
-    setStartDate(start);
-    setEndDate(end);
-    // apply immediately via the store state trick — we call apply after state flush
-    // by setting both and triggering apply in next tick via effect-free approach
-    // Since useDateRangeFilter keeps startDate/endDate as local state, we need to
-    // trigger apply after the state updates. We do this by exposing a controlled
-    // version: just update both and rely on user confirming, OR we use a simpler
-    // workaround of also calling apply() (which will capture the *previous* values).
-    // The cleanest approach is to not rely on `apply` here and instead sync directly.
-  }
-
-  // Cleaner approach: have a separate "applied" state driven by button clicks
-  const handlePreset = (start: string, end: string) => {
-    setStartDate(start);
-    setEndDate(end);
-    // We need to call apply with the NEW values, but useDateRangeFilter's apply()
-    // reads from local state (which hasn't flushed yet). So we track an override.
-    // Instead, bypass the hook for presets by directly setting applied values:
-    void applyPreset; // suppress unused warning
-    setTimeout(() => apply(), 0);
+  // Drill-down: clicar numa fatia do donut aplica como filtro de departamento
+  const handleDeptSelect = (dept: string | null) => {
+    setSelectedDept(dept);
+    setServicesDept(dept);
+    // Ranking de funcionários só filtra departamentos de instalação;
+    // fatias de outros departamentos limpam o filtro (= Todos)
+    setEmployeesDepts(
+      dept && ['film', 'security_film', 'ppf'].includes(dept) ? [dept] : []
+    );
   };
+
+  // Timestamp de atualização (da query de overview)
+  const updatedAt = overviewQuery.dataUpdatedAt;
+
+  // Card de faturamento: Previsão (run-rate) no mês corrente; realizado nos demais períodos
+  const showForecast = isCurrentMonthPeriod(appliedStart, appliedEnd);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-[#111111]">
@@ -203,45 +265,53 @@ export default function DashboardPage() {
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard Executivo</h1>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Visão consolidada da operação
-            </p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <p className="text-sm text-gray-500">Visão consolidada da operação</p>
+              {updatedAt > 0 && (
+                <span className="text-[11px] text-gray-400 dark:text-gray-600">
+                  · Atualizado às {formatUpdatedAt(updatedAt)}
+                </span>
+              )}
+            </div>
           </div>
 
-          {/* Filters */}
-          <div className="flex flex-wrap items-end gap-3">
+          {/* Toggle filtros em mobile */}
+          <div className="lg:hidden">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setFiltersOpen((o) => !o)}
+              className="h-8 text-xs gap-1.5"
+            >
+              Filtros
+              {filtersOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </Button>
+          </div>
+
+          {/* Filters — sempre visíveis no desktop, colapsáveis no mobile */}
+          <div
+            className={cn(
+              'flex-wrap items-end gap-3',
+              'lg:flex',
+              filtersOpen ? 'flex' : 'hidden lg:flex'
+            )}
+          >
             {/* Quick presets */}
             <div className="flex items-center gap-1.5 flex-wrap">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs border-gray-200 dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:border-[#F5A800]"
-                onClick={() => handlePreset(getToday(), getToday())}
-              >
+              <Button size="sm" variant="outline" className={presetBtnClass}
+                onClick={() => handleApplyRange(getToday(), getToday())}>
                 Hoje
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs border-gray-200 dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:border-[#F5A800]"
-                onClick={() => handlePreset(getLast7DaysStart(), getToday())}
-              >
+              <Button size="sm" variant="outline" className={presetBtnClass}
+                onClick={() => handleApplyRange(getLast7DaysStart(), getToday())}>
                 7 dias
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs border-gray-200 dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:border-[#F5A800]"
-                onClick={() => handlePreset(getFirstDayOfMonth(), getToday())}
-              >
+              <Button size="sm" variant="outline" className={presetBtnClass}
+                onClick={() => handleApplyRange(getFirstDayOfMonth(), getToday())}>
                 Mês atual
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs border-gray-200 dark:border-[#2a2a2a] bg-white dark:bg-[#1a1a1a] text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:border-[#F5A800]"
-                onClick={() => handlePreset(getFirstDayOfLastMonth(), getLastDayOfLastMonth())}
-              >
+              <Button size="sm" variant="outline" className={presetBtnClass}
+                onClick={() => handleApplyRange(getFirstDayOfLastMonth(), getLastDayOfLastMonth())}>
                 Mês anterior
               </Button>
             </div>
@@ -274,7 +344,7 @@ export default function DashboardPage() {
               </div>
               <Button
                 size="sm"
-                onClick={apply}
+                onClick={handleApply}
                 className="h-8 text-xs bg-[#F5A800] hover:bg-[#d48f00] text-black font-semibold"
               >
                 Aplicar
@@ -286,10 +356,7 @@ export default function DashboardPage() {
               <span className="block text-[10px] font-medium text-gray-600 uppercase tracking-wide">
                 Granularidade
               </span>
-              <Select
-                value={granularity}
-                onValueChange={(v) => setGranularity(v as Granularity)}
-              >
+              <Select value={granularity} onValueChange={handleGranularityChange}>
                 <SelectTrigger className="h-8 w-28 text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -311,7 +378,7 @@ export default function DashboardPage() {
                 </label>
                 <Select
                   value={selectedStoreId !== null ? String(selectedStoreId) : 'all'}
-                  onValueChange={(v) => setSelectedStoreId(v === 'all' ? null : Number(v))}
+                  onValueChange={handleStoreChange}
                 >
                   <SelectTrigger id="dashboard-store-filter" className="h-8 w-40 text-xs">
                     <SelectValue placeholder="Todas as lojas" />
@@ -328,11 +395,11 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── KPI Cards ──────────────────────────────────────── */}
+        {/* ── 1) KPI Cards (5) ───────────────────────────────── */}
         {overviewQuery.isLoading ? (
-          <KpiSkeleton />
+          <KpiSkeleton count={5} />
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
             <KpiCard
               label="Receita Total"
               value={overview ? formatCurrency(overview.revenue.current) : '—'}
@@ -349,29 +416,63 @@ export default function DashboardPage() {
               subLabel="por O.S."
             />
             <KpiCard
-              label="Taxa de Conclusão"
-              value={overview ? `${overview.completion_rate.current.toFixed(1)}%` : '—'}
-              icon={Percent}
-              delta={null}
-              badgeText={overview ? `${overview.total_orders.current.toLocaleString('pt-BR')} O.S. total` : undefined}
+              label="O.S. Conferidas"
+              value={overview ? overview.verified_orders.current.toLocaleString('pt-BR') : '—'}
+              icon={ClipboardCheck}
+              delta={overview?.verified_orders.delta_pct ?? null}
+              badgeText={
+                overview && overview.total_orders.current > 0
+                  ? `${((overview.verified_orders.current / overview.total_orders.current) * 100).toFixed(0)}% de ${overview.total_orders.current.toLocaleString('pt-BR')} O.S.`
+                  : undefined
+              }
             />
-            <KpiCard
-              label="O.S. Concluídas"
-              value={overview ? overview.completed_orders.current.toLocaleString('pt-BR') : '—'}
-              icon={CheckCircle}
-              delta={overview?.completed_orders.delta_pct ?? null}
-              subLabel="vs. período anterior"
-            />
+            <MetaGoalCard goal={overview?.revenue_goal} />
+            {/* KPI de faturamento: no mês corrente é a Previsão (run-rate por dias
+                úteis); em qualquer outro período vira o Faturamento realizado do
+                intervalo (assim o valor acompanha o filtro). */}
+            {showForecast ? (
+              <KpiCard
+                label="Previsão de Faturamento"
+                value={forecast ? formatCurrency(forecast.forecast) : '—'}
+                icon={CalendarClock}
+                delta={null}
+                badgeText={
+                  forecast
+                    ? `${forecast.business_days_elapsed}/${forecast.business_days_total} dias úteis`
+                    : undefined
+                }
+                subLabel="projeção do mês corrente"
+              />
+            ) : (
+              <KpiCard
+                label="Faturamento do Período"
+                value={overview ? formatCurrency(overview.revenue.current) : '—'}
+                icon={CalendarClock}
+                delta={overview?.revenue.delta_pct ?? null}
+                subLabel="realizado no período"
+              />
+            )}
           </div>
         )}
 
-        {/* ── Revenue Trend + Store Ranking ─────────────────── */}
+        {/* ── 2) Volume + Faturamento por Tipo (empilhados) | Ranking de Lojas ──
+            Coluna esquerda: quantidade em cima, valor faturado embaixo (mesmas
+            séries, pedido do chefe); coluna direita: Ranking de Lojas (comprido).
+            Empilhar os dois gráficos de tipo preenche o espaço vertical do
+            ranking, que cresce com o nº de lojas. ─────────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {timeseriesQuery.isLoading ? (
-            <ChartSkeleton />
-          ) : (
-            <RevenueTrendChart data={timeseriesQuery.data ?? []} />
-          )}
+          <div className="space-y-6">
+            {typeSeriesQuery.isLoading ? (
+              <ChartSkeleton />
+            ) : (
+              <RevenueTrendChart data={typeSeriesQuery.data ?? []} granularity={granularity} />
+            )}
+            {typeSeriesQuery.isLoading ? (
+              <ChartSkeleton />
+            ) : (
+              <RevenueByTypeChart data={typeSeriesQuery.data ?? []} granularity={granularity} />
+            )}
+          </div>
           {storesQuery.isLoading ? (
             <ChartSkeleton />
           ) : (
@@ -379,8 +480,17 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* ── Services Top + Department Donut ───────────────── */}
+        {/* ── 3) Departamentos (donut) + Top Serviços ─────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {departmentsQuery.isLoading ? (
+            <ChartSkeleton />
+          ) : (
+            <DepartmentDonut
+              data={departmentsQuery.data ?? []}
+              selectedDept={selectedDept}
+              onDeptSelect={handleDeptSelect}
+            />
+          )}
           {servicesQuery.isLoading ? (
             <ChartSkeleton />
           ) : (
@@ -390,50 +500,31 @@ export default function DashboardPage() {
               onDepartmentChange={setServicesDept}
             />
           )}
-          {departmentsQuery.isLoading ? (
-            <ChartSkeleton />
-          ) : (
-            <DepartmentDonut data={departmentsQuery.data ?? []} />
-          )}
         </div>
 
-        {/* ── Consultants + Employees Rankings ──────────────── */}
+        {/* ── 4) Concessionárias + Funcionários ─────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {consultantsQuery.isLoading ? (
+          {dealershipsQuery.isLoading ? (
             <TableSkeleton />
           ) : (
-            <ConsultantsRankingTable data={consultantsQuery.data ?? []} />
+            <DealershipRankingTable data={dealershipsQuery.data ?? []} />
           )}
           {employeesQuery.isLoading ? (
             <TableSkeleton />
           ) : (
             <EmployeesRankingTable
               data={employeesQuery.data ?? []}
-              department={employeesDept}
-              onDepartmentChange={setEmployeesDept}
+              departments={employeesDepts}
+              onDepartmentsChange={setEmployeesDepts}
             />
           )}
         </div>
 
-        {/* ── SLA Summary + Film/PPF Ranking ────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {slaQuery.isLoading ? (
-            <ChartSkeleton />
-          ) : slaQuery.data ? (
-            <SlaSummary data={slaQuery.data} />
-          ) : null}
-          {filmPpfQuery.isLoading ? (
-            <TableSkeleton />
-          ) : (
-            <FilmPpfRankingTable data={filmPpfQuery.data ?? []} />
-          )}
-        </div>
-
-        {/* ── Live Queue ────────────────────────────────────── */}
-        {queueQuery.isLoading ? (
-          <ChartSkeleton />
+        {/* ── 5) Película×PPF ───────────────────────────────── */}
+        {filmPpfQuery.isLoading ? (
+          <TableSkeleton />
         ) : (
-          <LiveQueueCard data={queueQuery.data ?? []} />
+          <FilmPpfRankingTable data={filmPpfQuery.data ?? []} />
         )}
       </div>
     </div>

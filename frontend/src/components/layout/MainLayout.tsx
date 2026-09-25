@@ -23,7 +23,7 @@ export function MainLayout() {
     }
 
     return (
-        <div className="h-screen flex overflow-hidden bg-[#F5F5F5] dark:bg-[#111111]">
+        <div className="h-screen flex overflow-hidden bg-shell">
             {/* Sidebar — in-flow on desktop (pushes content), fixed overlay on mobile */}
             <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 

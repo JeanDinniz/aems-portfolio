@@ -14,7 +14,7 @@ import { useServicesAdmin, useToggleServiceActive } from '@/hooks/useServicesAdm
 import { useBrands } from '@/hooks/useBrands';
 import { useCanEdit } from '@/hooks/useMyPermissions';
 import { DEPARTMENT_LABELS } from '@/constants/scheduling';
-import { formatCurrencyBRL } from '@/utils/formatNumber';
+import { formatDecimalBRL } from '@/utils/formatNumber';
 import { useTheme } from '@/theme';
 import type { ServiceItem, ServiceListParams } from '@/services/api/services.service';
 import type { AdminStackScreenProps } from '@/navigation/types';
@@ -102,7 +102,7 @@ export function ServicesAdminScreen({ navigation }: AdminStackScreenProps<'Servi
                             {DEPARTMENT_LABELS[item.department] ?? item.department}
                         </Text>
                         <Text className="mt-1 font-sans-semibold text-sm text-neutral-700 dark:text-dark-text">
-                            {item.has_variable_price ? 'Preço variável' : formatCurrencyBRL(item.base_price)}
+                            {item.has_variable_price ? 'Preço variável' : formatDecimalBRL(item.base_price)}
                         </Text>
                     </View>
                     <View className="items-end gap-2">

@@ -77,6 +77,16 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
 }
 
 
+def is_owner(user: "User") -> bool:
+    """True se o usuário tem role owner (bypass total de autorização).
+
+    Ponto ÚNICO de verdade do bypass de owner — use em todos os call-sites
+    no lugar de comparar ``user.role == "owner"`` manualmente, para evitar
+    divergência de implementação entre endpoints.
+    """
+    return user.role == UserRole.OWNER.value
+
+
 def has_permission(role: UserRole, permission: Permission) -> bool:
     """Verifica se um role possui uma permissão específica."""
     return permission in ROLE_PERMISSIONS.get(role, set())
@@ -133,7 +143,7 @@ def check_profile_permission(sub_module: str, action: str = "can_view") -> Calla
         db: AsyncSession = Depends(get_db),
     ) -> "User":
         # Owner tem acesso total
-        if current_user.role == UserRole.OWNER.value:
+        if is_owner(current_user):
             return current_user
 
         # Para users: consulta perfis de acesso no banco
@@ -182,7 +192,7 @@ def check_can_change_os_status() -> Callable:
         current_user=Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ) -> "User":
-        if current_user.role == UserRole.OWNER.value:
+        if is_owner(current_user):
             return current_user
 
         from sqlalchemy import select
@@ -212,6 +222,67 @@ def check_can_change_os_status() -> Callable:
         raise AuthorizationError(
             detail="Permissão negada: service_orders:can_edit ou scheduling_os:can_edit requerida"
         )
+
+    return checker
+
+
+def check_any_profile_permission(*checks: tuple[str, str]) -> Callable:
+    """
+    Dependency factory: concede acesso se o usuário for Owner OU tiver QUALQUER
+    uma das permissões (sub_module, action) informadas (acumulação OR).
+
+    Uso:
+        Depends(check_any_profile_permission(
+            ("users", "can_view"), ("employees", "can_edit"), ("profiles", "can_view"),
+        ))
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.security import get_current_user
+    from app.db.session import get_db
+
+    # Fail-fast na criação da dependency: um typo na ação (ex.: "can_veiw")
+    # negaria acesso silenciosamente via getattr(..., False).
+    _valid_actions = {"can_view", "can_edit", "can_delete"}
+    invalid = {ac for _, ac in checks if ac not in _valid_actions}
+    if invalid:
+        raise ValueError(f"Ações inválidas em check_any_profile_permission: {invalid}")
+
+    async def checker(
+        current_user=Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> "User":
+        if is_owner(current_user):
+            return current_user
+
+        from sqlalchemy import select
+
+        from app.modules.access_profiles.models import (
+            AccessProfile,
+            AccessProfileModulePermission,
+            access_profile_users,
+        )
+
+        sub_modules = {sub_module for sub_module, _ in checks}
+        result = await db.execute(
+            select(AccessProfileModulePermission)
+            .join(AccessProfile, AccessProfileModulePermission.profile_id == AccessProfile.id)
+            .join(access_profile_users, AccessProfile.id == access_profile_users.c.profile_id)
+            .where(
+                access_profile_users.c.user_id == current_user.id,
+                AccessProfile.is_active == True,  # noqa: E712
+                AccessProfileModulePermission.sub_module.in_(sub_modules),
+            )
+        )
+        rows = result.scalars().all()
+
+        for sub_module, action in checks:
+            for p in rows:
+                if p.sub_module == sub_module and getattr(p, action, False):
+                    return current_user
+
+        required = ", ".join(f"{sm}:{ac}" for sm, ac in checks)
+        raise AuthorizationError(detail=f"Permissão negada: requer uma de [{required}]")
 
     return checker
 
@@ -264,7 +335,7 @@ class PermissionChecker:
             True se usuário pode gerenciar a loja
         """
         # Owner pode gerenciar qualquer loja
-        if user.role == UserRole.OWNER.value:
+        if is_owner(user):
             return True
 
         # User: verifica se store_id está nas lojas permitidas pelos perfis de acesso
@@ -298,7 +369,7 @@ class PermissionChecker:
             Lista de store_ids que o usuário pode acessar.
             Lista vazia para Owner (acesso a todas).
         """
-        if user.role == UserRole.OWNER.value:
+        if is_owner(user):
             return []  # Empty list means all stores
 
         # User: coletar lojas do store_id direto + perfis de acesso ativos
@@ -401,13 +472,35 @@ def apply_store_filter(
     """
     store_ids = PermissionChecker.get_user_store_ids(user)
     if not store_ids:
-        if user.role == UserRole.OWNER.value:
+        if is_owner(user):
             return query  # Owner acessa tudo
         # User sem lojas configuradas: bloqueia tudo
         return query.where(store_field == -1)
     if len(store_ids) == 1:
         return query.where(store_field == store_ids[0])
     return query.where(store_field.in_(store_ids))
+
+
+def store_scope_cache_key(user: "User") -> str:
+    """
+    Fragmento de chave de cache com o escopo de lojas do usuário.
+
+    Usado por catálogos de referência (consultores, funcionários) cuja listagem
+    é restrita via ``apply_store_filter``/``get_user_store_ids``: o mesmo filtro
+    (ex.: sem store_id) produz resultados diferentes para usuários com acesso a
+    lojas diferentes, então o escopo precisa entrar na chave — nunca cachear o
+    resultado de um usuário e servir para outro.
+
+    Returns:
+        "all" para Owner (vê todas as lojas); "u<ids>" com os store_ids
+        ordenados do usuário, ou "u-none" se ele não tiver loja alguma.
+    """
+    if is_owner(user):
+        return "all"
+    store_ids = sorted(PermissionChecker.get_user_store_ids(user))
+    if not store_ids:
+        return "u-none"
+    return "u" + "-".join(str(sid) for sid in store_ids)
 
 
 def require_resource_access(user: "User", store_id: int, resource_name: str = "Recurso") -> None:
@@ -453,7 +546,7 @@ def is_galpon_profile_user(user: "User") -> bool:
     Usuário misto (loja + galpão) NÃO é galpão: vê O.S. normais e de galpão das
     suas lojas. Owner nunca é galpão.
     """
-    if user.role == UserRole.OWNER.value:
+    if is_owner(user):
         return False
     return profiles_all_have_flag(_active_profiles(user), "is_galpon_profile")
 
@@ -464,9 +557,39 @@ def hide_galpon_user(user: "User") -> bool:
 
     Usuário misto não tem o galpão ocultado. Owner nunca é afetado.
     """
-    if user.role == UserRole.OWNER.value:
+    if is_owner(user):
         return False
     return profiles_all_have_flag(_active_profiles(user), "hide_galpon_option")
+
+
+def scheduling_visibility_scopes(user: "User") -> list[tuple[list[int], list[str]]] | None:
+    """
+    Escopos de visibilidade do módulo de Agendamentos, POR PERFIL.
+
+    Cada perfil define um escopo combinado (lojas × departamentos); o usuário vê
+    a UNIÃO dos escopos dos seus perfis ativos (+ a loja direta do usuário, se
+    houver, com todos os departamentos). Isso resolve o caso de perfis com
+    escopos diferentes — ex.: "todas as lojas × só segurança" + "loja shopping ×
+    todos" → segurança em todas as lojas E todos os departamentos no shopping.
+
+    Retorna None quando não há restrição (owner). Cada tupla (store_ids, depts):
+      - store_ids: lojas do escopo (sempre preenchido)
+      - depts: [] = todos os departamentos; senão restrito a esses códigos
+    Lista vazia (sem escopos) = usuário sem acesso.
+    """
+    if is_owner(user):
+        return None
+    scopes: list[tuple[list[int], list[str]]] = []
+    store_id = getattr(user, "store_id", None)
+    if store_id is not None:
+        scopes.append(([store_id], []))
+    for profile in _active_profiles(user):
+        store_ids = [s.id for s in getattr(profile, "stores", [])]
+        if not store_ids:
+            continue
+        depts = list(getattr(profile, "scheduling_departments", None) or [])
+        scopes.append((store_ids, depts))
+    return scopes
 
 
 # Global instance for easy access
@@ -493,7 +616,7 @@ def get_access_profile_permission(user: "User", sub_module: str, action: str = "
     Returns:
         True se qualquer perfil ativo do usuário concede a permissão
     """
-    if user.role == UserRole.OWNER.value:
+    if is_owner(user):
         return True
 
     for profile in getattr(user, "access_profiles", []):

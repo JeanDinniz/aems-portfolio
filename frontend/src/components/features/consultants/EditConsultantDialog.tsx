@@ -124,7 +124,7 @@ export function EditConsultantDialog({ consultant, open, onOpenChange }: EditCon
                             <SelectContent>
                                 {stores?.map((store) => (
                                     <SelectItem key={store.id} value={store.id.toString()}>
-                                        {store.code} - {store.name}
+                                        {store.name}
                                     </SelectItem>
                                 ))}
                             </SelectContent>

@@ -2,9 +2,11 @@
 Inventory service - Business logic for film roll and type management.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, cast, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,13 +19,22 @@ from app.core.permissions import (
     is_galpon_profile_user,
     require_resource_access,
 )
-from app.modules.inventory.models import FilmConsumption, FilmRoll, FilmType, FilmTypeService
+from app.modules.inventory.models import (
+    FilmConsumption,
+    FilmRoll,
+    FilmType,
+    FilmTypeService,
+    FilmWithdrawal,
+)
 from app.modules.inventory.schemas import (
     FilmRollCreate,
     FilmTypeCreate,
     FilmTypeServiceCreate,
     FilmTypeUpdate,
+    FilmWithdrawalCreate,
 )
+
+TZ_LOCAL = ZoneInfo("America/Sao_Paulo")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -182,7 +193,15 @@ async def create_film_type(
         available_tonalities=data.available_tonalities or _default_tonalities(data.department),
     )
     db.add(film_type)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # Race condition (I4): outro request inseriu o mesmo nome entre o SELECT e
+        # este flush. Converte IntegrityError em 409 amigável (em vez de 500).
+        await db.rollback()
+        raise ConflictError(
+            detail=f"Já existe um tipo de película com o nome '{data.name}'"
+        ) from exc
 
     await log_audit(
         db=db,
@@ -195,6 +214,10 @@ async def create_film_type(
 
     await db.refresh(film_type)
     await db.commit()
+
+    # Catálogo de tipos de película é cacheado no editor de O.S. — invalida
+    # pós-commit (get_db lê a flag e bumpa depois que o dado persistir).
+    db.info["bump_catalogs"] = True
 
     return await get_film_type(db, film_type.id)
 
@@ -223,6 +246,18 @@ async def update_film_type(db: AsyncSession, film_type_id: int, data: FilmTypeUp
         raise NotFoundError(resource="Tipo de Película")
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # Validar estado final dos limiares (I2): considera o valor atual do banco
+    # para o campo não enviado no payload (atualização parcial).
+    final_yellow = update_data.get("yellow_threshold_meters", film_type.yellow_threshold_meters)
+    final_red = update_data.get("red_threshold_meters", film_type.red_threshold_meters)
+    if final_red >= final_yellow:
+        raise ValidationError(
+            detail=(
+                f"O limiar vermelho ({final_red}) deve ser menor que o limiar amarelo "
+                f"({final_yellow}). Ajuste os valores antes de salvar."
+            )
+        )
 
     # Verificar unicidade do nome se está sendo alterado
     if "name" in update_data and update_data["name"] != film_type.name:
@@ -255,6 +290,8 @@ async def update_film_type(db: AsyncSession, film_type_id: int, data: FilmTypeUp
     )
 
     await db.commit()
+
+    db.info["bump_catalogs"] = True
 
     return await get_film_type(db, film_type_id)
 
@@ -298,6 +335,8 @@ async def delete_film_type_hard(
     await db.delete(film_type)
     await db.flush()
     await db.commit()
+
+    db.info["bump_catalogs"] = True
 
 
 async def add_service_to_film_type(
@@ -350,6 +389,9 @@ async def add_service_to_film_type(
     await db.flush()
     await db.commit()
 
+    # Associação afeta o campo `services` do FilmTypeResponse cacheado.
+    db.info["bump_catalogs"] = True
+
     # Recarregar com service eager loaded
     result = await db.execute(
         select(FilmTypeService)
@@ -388,6 +430,8 @@ async def remove_service_from_film_type(
     await db.flush()
     await db.commit()
 
+    db.info["bump_catalogs"] = True
+
 
 # ---------------------------------------------------------------------------
 # Film Rolls
@@ -422,7 +466,7 @@ async def list_rolls(
     store_id: int | None = None,
     film_type_id: int | None = None,
     service_id: int | None = None,
-    status: str | None = None,
+    statuses: list[str] | None = None,
     department: str | None = None,
     page: int = 1,
     limit: int = 20,
@@ -442,7 +486,7 @@ async def list_rolls(
         user: Usuário atual (para controle de acesso por loja)
         store_id: Filtrar por loja específica (ignorado quando use_galpon_store=True)
         film_type_id: Filtrar por tipo de película
-        status: Filtrar por status (em_estoque, em_uso, esgotada)
+        statuses: Filtrar por status (lista, ex.: ``["em_uso", "esgotada"]``)
         department: Filtrar por departamento do tipo de película: film ou ppf
         page: Página atual
         limit: Itens por página
@@ -489,7 +533,11 @@ async def list_rolls(
             galpon_store_id = galpon_id_result.scalar_one_or_none()
             if galpon_store_id is not None:
                 query = query.where(FilmRoll.store_id != galpon_store_id)
-        elif store_id is not None:
+        # FIX (furo do seletor): `if` separado, NÃO `elif`. Antes, usuário com perfil
+        # "Ocultar Galpão" caía no ramo de cima e PULAVA o filtro de loja — o seletor
+        # passava a oferecer bobina de TODAS as lojas acessíveis (raiz do consumo de
+        # bobina em loja errada). Agora galpão E loja são aplicados juntos (AND).
+        if store_id is not None:
             # Verificar se a loja possui estoque compartilhado com parceiras
             target_store_result = await db.execute(
                 select(Store)
@@ -517,8 +565,11 @@ async def list_rolls(
         )
         attr_conditions.append(FilmRoll.film_type_id.in_(film_type_subquery))
 
-    if status is not None:
-        attr_conditions.append(FilmRoll.status == status)
+    if statuses:
+        if len(statuses) == 1:
+            attr_conditions.append(FilmRoll.status == statuses[0])
+        else:
+            attr_conditions.append(FilmRoll.status.in_(statuses))
 
     if department is not None:
         attr_conditions.append(
@@ -709,14 +760,111 @@ async def register_roll(
         resource_id=roll.id,
         new_value={
             "film_type_id": data.film_type_id,
-            "store_id": data.store_id,
+            "tonality": data.tonality,
             "total_meters": data.total_meters,
+            "receipt_date": receipt_date.isoformat(),
+            "store_id": data.store_id,
         },
     )
 
     await db.commit()
 
+    # Indicadores agregam bobinas cadastradas → marca para invalidar o cache de
+    # analytics pós-commit (get_db lê a flag e bumpa depois que o dado persistir)
+    db.info["bump_analytics"] = True
+
     return await _get_roll_with_type(db, roll.id)
+
+
+async def _recalc_remaining_from_ledger(db: AsyncSession, roll: FilmRoll) -> float:
+    """
+    Recalcula ``remaining_meters`` como FONTE DA VERDADE derivada do extrato:
+    ``total_meters - soma(FilmConsumption)``. Deve ser chamada SEMPRE após
+    inserir/remover linhas de consumo do roll (na mesma transação, após ``flush``).
+
+    Opção A (decisão 2026-07-30): sem clamp. Se o consumo exceder o disponível o
+    saldo pode ficar negativo, sinalizando bobina mal lançada para reconciliação —
+    não trava a operação.
+    """
+    total_consumed = (
+        await db.execute(
+            select(func.coalesce(func.sum(FilmConsumption.meters_consumed), 0.0)).where(
+                FilmConsumption.film_roll_id == roll.id
+            )
+        )
+    ).scalar_one()
+    roll.remaining_meters = roll.total_meters - float(total_consumed)
+    return roll.remaining_meters
+
+
+def _recalc_roll_status(roll: FilmRoll) -> None:
+    """
+    Recalcula o STATUS da bobina a partir do saldo (C-03). Antes o status não
+    acompanhava os metros: zerar não virava 'esgotada' e cancelar O.S. devolvia
+    metros sem tirar de 'esgotada'.
+
+    - saldo <= 0  → 'esgotada'
+    - estava 'esgotada' e voltou a ter saldo (estorno/ajuste/cancelamento) → 'em_uso'
+
+    Não mexe na distinção em_uso/em_estoque (abrir a bobina é uma ação deliberada
+    via ``open_roll``), só corrige o par saldo↔esgotada.
+    """
+    if roll.remaining_meters <= 1e-9:
+        if roll.status != "esgotada":
+            roll.status = "esgotada"
+    elif roll.status == "esgotada":
+        roll.status = "em_uso"
+
+
+async def _assert_roll_store_matches_order(
+    db: AsyncSession, roll: FilmRoll, service_order_item_id: int | None
+) -> None:
+    """
+    C-04: a bobina vinculada a uma O.S. tem que ser da MESMA loja da O.S. — exceto
+    lojas com estoque compartilhado (StoreInventoryLink) ou O.S. de galpão.
+
+    Enforcement no ponto de estrangulamento: fecha na origem a atribuição de bobina
+    de loja errada, independente do caminho da tela. Vale tanto para o consumo
+    (``consume_roll``) quanto para a bobina de ORIGEM do retalho (``record_scrap_use``):
+    o retalho dispensa as guardas de STATUS (vem de rolo esgotado), mas continua
+    preso à loja — senão o histórico de uma bobina passa a listar carros de outra.
+    Não se aplica a saída avulsa (``service_order_item_id is None``).
+    """
+    if service_order_item_id is None:
+        return
+
+    from app.modules.service_orders.models import ServiceOrder, ServiceOrderItem
+    from app.modules.stores.models import StoreInventoryLink
+
+    os_row = (
+        await db.execute(
+            select(ServiceOrder.store_id, ServiceOrder.is_galpon)
+            .join(ServiceOrderItem, ServiceOrderItem.service_order_id == ServiceOrder.id)
+            .where(ServiceOrderItem.id == service_order_item_id)
+        )
+    ).first()
+    if os_row is None:
+        return
+
+    os_store_id, os_is_galpon = os_row
+    if os_is_galpon or roll.store_id == os_store_id:
+        return
+
+    link_exists = (
+        await db.execute(
+            select(StoreInventoryLink.id).where(
+                StoreInventoryLink.store_id == os_store_id,
+                StoreInventoryLink.linked_store_id == roll.store_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if link_exists is None:
+        raise ValidationError(
+            detail=(
+                "Esta bobina é de outra loja e as lojas não compartilham "
+                "estoque. Selecione uma bobina da loja da O.S."
+            )
+        )
 
 
 async def consume_roll(
@@ -724,15 +872,16 @@ async def consume_roll(
     film_roll_id: int,
     service_order_item_id: int | None,
     meters: float,
+    film_withdrawal_id: int | None = None,
 ) -> FilmRoll:
     """
     Desconta metros de uma bobina e registra o consumo para auditoria.
 
     Regras:
     1. Busca bobina com film_type eager loaded.
-    2. Calcula cor ANTES do desconto.
-    3. Decrementa remaining_meters (mínimo 0).
-    4. Atualiza status para 'em_uso' se era 'em_estoque'.
+    2. Rejeita bobina esgotada ou lacrada (em_estoque) — só bobina aberta (em_uso) consome.
+    3. Calcula cor ANTES do desconto.
+    4. Decrementa remaining_meters (mínimo 0).
     5. Calcula cor DEPOIS do desconto.
     6. Se cruzou threshold (verde→amarelo ou amarelo→vermelho): dispara notificação.
     7. Cria FilmConsumption para auditoria.
@@ -742,6 +891,7 @@ async def consume_roll(
         film_roll_id: ID da bobina
         service_order_item_id: ID do item de O.S. que gerou o consumo (pode ser None)
         meters: Metros a descontar
+        film_withdrawal_id: ID da saída avulsa que gerou o consumo (pode ser None)
 
     Raises:
         NotFoundError: Bobina não encontrada
@@ -752,33 +902,38 @@ async def consume_roll(
     if roll.status == "esgotada":
         raise ValidationError(detail="Esta bobina já está esgotada e não pode receber consumo")
 
+    # Só bobinas abertas (em_uso) recebem consumo. Bobina lacrada (em_estoque) deve ser
+    # aberta deliberadamente antes (via open_roll) — impede lançamento em bobina errada.
+    if roll.status == "em_estoque":
+        raise ValidationError(
+            detail="Bobina está lacrada (Em Estoque). Abra a bobina antes de usar."
+        )
+
+    await _assert_roll_store_matches_order(db, roll, service_order_item_id)
+
     # Calcular cor antes
     color_before = get_color(roll)
 
     # Capturar remaining_meters antes do desconto para o audit log
     remaining_before = roll.remaining_meters
 
-    # Decrementar metros (mínimo 0)
-    new_remaining = max(0.0, roll.remaining_meters - meters)
-    roll.remaining_meters = new_remaining
-
-    # Atualizar status
-    if roll.status == "em_estoque":
-        roll.status = "em_uso"
-
-    # Calcular cor depois
-    color_after = get_color(roll)
-
-    # Registrar consumo para auditoria
+    # Registrar o consumo no extrato (fonte da verdade) e derivar o saldo dele.
     consumption = FilmConsumption(
         film_roll_id=film_roll_id,
         service_order_item_id=service_order_item_id,
+        film_withdrawal_id=film_withdrawal_id,
         meters_consumed=meters,
+        kind="consumo",
         created_at=datetime.now(UTC),
     )
     db.add(consumption)
-
     await db.flush()
+
+    # Opção A: saldo = total - soma(extrato), SEM clamp (pode ficar negativo e
+    # sinalizar bobina mal lançada). Cor recalculada sobre o novo saldo.
+    new_remaining = await _recalc_remaining_from_ledger(db, roll)
+    _recalc_roll_status(roll)
+    color_after = get_color(roll)
 
     await log_audit(
         db=db,
@@ -798,6 +953,11 @@ async def consume_roll(
             # Notificações são best-effort — não bloquear o consumo
             pass
 
+    # Indicadores agregam consumo/custo desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (idempotente: chamado em loop por item da
+    # O.S., mas o get_db só bumpa 1× por transação)
+    db.info["bump_analytics"] = True
+
     return roll
 
 
@@ -806,6 +966,8 @@ async def release_roll_meters(
     film_roll_id: int,
     service_order_item_id: int | None,
     meters: float,
+    film_withdrawal_id: int | None = None,
+    record_consumption: bool = True,
 ) -> FilmRoll:
     """
     Credita metros de volta a uma bobina (operação inversa de :func:`consume_roll`).
@@ -816,31 +978,42 @@ async def release_roll_meters(
 
     Regras:
     1. Incrementa ``remaining_meters`` respeitando o teto ``total_meters``.
-    2. Registra ``FilmConsumption`` com metros negativos para auditoria.
-    3. Não altera o status da bobina (uma bobina marcada como esgotada permanece
-       esgotada; sua restauração é manual via ``restore_roll``).
+    2. Registra ``FilmConsumption`` com metros negativos para auditoria
+       (a menos que ``record_consumption=False``).
+    3. Recalcula o status (C-03): se a bobina estava 'esgotada' e volta a ter
+       saldo (ex.: cancelamento de O.S.), retorna para 'em_uso'.
 
     Args:
         db: Sessão do banco de dados
         film_roll_id: ID da bobina
         service_order_item_id: ID do item de O.S. relacionado (pode ser None)
         meters: Metros a creditar de volta (valor positivo)
+        film_withdrawal_id: ID da saída avulsa estornada (pode ser None)
+        record_consumption: Quando ``False``, apenas restaura os metros SEM inserir a
+            linha ``FilmConsumption`` negativa. Usado na troca de bobina de um item de
+            O.S., onde a linha de consumo original é DELETADA — sem isso o histórico da
+            bobina antiga ficaria com um "-Xm" órfão (Modelo/Placa em branco).
     """
     roll = await _get_roll_with_type(db, film_roll_id, for_update=True)
 
     remaining_before = roll.remaining_meters
-    new_remaining = min(roll.total_meters, roll.remaining_meters + meters)
-    roll.remaining_meters = new_remaining
 
-    consumption = FilmConsumption(
-        film_roll_id=film_roll_id,
-        service_order_item_id=service_order_item_id,
-        meters_consumed=-meters,
-        created_at=datetime.now(UTC),
-    )
-    db.add(consumption)
+    if record_consumption:
+        consumption = FilmConsumption(
+            film_roll_id=film_roll_id,
+            service_order_item_id=service_order_item_id,
+            film_withdrawal_id=film_withdrawal_id,
+            meters_consumed=-meters,
+            kind="estorno",
+            created_at=datetime.now(UTC),
+        )
+        db.add(consumption)
 
     await db.flush()
+    # Saldo derivado do extrato. Com record_consumption=False (troca de bobina), o
+    # caller já removeu a linha original; recalcular reflete essa remoção.
+    new_remaining = await _recalc_remaining_from_ledger(db, roll)
+    _recalc_roll_status(roll)
 
     await log_audit(
         db=db,
@@ -852,7 +1025,219 @@ async def release_roll_meters(
         new_value={"remaining_meters": new_remaining},
     )
 
+    # Indicadores agregam consumo/custo desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (get_db lê a flag e bumpa depois do commit)
+    db.info["bump_analytics"] = True
+
     return roll
+
+
+async def release_item_consumption(
+    db: AsyncSession, service_order_item_id: int, film_roll_id: int
+) -> float:
+    """
+    Estorna o consumo (kind='consumo') de UM item de O.S. numa bobina: apaga as
+    linhas do extrato e devolve os metros SEM inserir estorno negativo (o
+    histórico simplesmente deixa de mostrar aquele consumo). Retorna os metros
+    devolvidos.
+
+    Usado quando um serviço já debitado passa a ser retalho no Finalizar — os
+    metros que a marcação existe para não gastar voltam para a bobina. Não mexe
+    em linhas de retalho (0m) nem em ajustes: filtra por ``kind == 'consumo'``.
+    """
+    rows = (
+        await db.execute(
+            select(FilmConsumption.id, FilmConsumption.meters_consumed).where(
+                FilmConsumption.service_order_item_id == service_order_item_id,
+                FilmConsumption.film_roll_id == film_roll_id,
+                FilmConsumption.kind == "consumo",
+            )
+        )
+    ).all()
+    if not rows:
+        return 0.0
+    net = float(sum(m for (_cid, m) in rows))
+    await db.execute(
+        FilmConsumption.__table__.delete().where(
+            FilmConsumption.id.in_([cid for (cid, _m) in rows])
+        )
+    )
+    if net > 1e-9:
+        await release_roll_meters(db, film_roll_id, None, net, record_consumption=False)
+    return net
+
+
+async def record_scrap_use(
+    db: AsyncSession,
+    film_roll_id: int,
+    service_order_item_id: int | None,
+) -> None:
+    """
+    Registra no extrato que um serviço foi feito com RETALHO desta bobina.
+
+    Movimento de 0m (``kind='retalho'``): o pedaço já foi debitado lá atrás,
+    quando o carro de origem consumiu os metros de tabela — descontar de novo é
+    justamente o que zerava a bobina antes da hora. A linha existe só para o
+    histórico da bobina mostrar o carro que aproveitou a sobra.
+
+    Diferente de :func:`consume_roll`, NÃO passa pelas guardas de status: o
+    retalho costuma vir de bobina antiga, já 'esgotada'. Como o saldo é derivado
+    do extrato e a linha vale 0m, saldo e status ficam intactos. A trava de LOJA
+    (C-04), porém, continua valendo — a bobina de origem tem que ser da loja da
+    O.S., senão o extrato de uma loja passa a listar carros de outra.
+    """
+    roll = await _get_roll_with_type(db, film_roll_id)
+    await _assert_roll_store_matches_order(db, roll, service_order_item_id)
+    db.add(
+        FilmConsumption(
+            film_roll_id=roll.id,
+            service_order_item_id=service_order_item_id,
+            meters_consumed=0.0,
+            kind="retalho",
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db.flush()
+
+    # Indicadores agregam uso de retalho desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (get_db lê a flag e bumpa depois do commit)
+    db.info["bump_analytics"] = True
+
+
+# Freio contra "marcar retalho sempre para a bobina nunca zerar": alerta quando o
+# instalador passa desta fatia de serviços de película feitos com retalho no mês.
+SCRAP_ALERT_RATIO = 0.40
+SCRAP_ALERT_MIN_SERVICES = 10
+FILM_DEPARTMENTS = ("film", "security_film", "ppf")
+
+
+async def notify_scrap_ratio_if_crossed(db: AsyncSession, service_order_id: int) -> None:
+    """
+    Avisa os Owners quando um instalador CRUZA o limiar de uso de retalho no mês.
+
+    Só dispara na transição (estava abaixo do limiar antes desta O.S., ficou
+    acima depois) — mesmo padrão de :func:`_notify_threshold_crossed`, evitando
+    repetir a notificação a cada carro sem precisar de tabela de controle.
+    """
+    from sqlalchemy import case
+
+    from app.modules.auth.models import User
+    from app.modules.employees.models import Employee
+    from app.modules.notifications.service import create_notification
+    from app.modules.service_orders.models import (
+        ServiceOrder,
+        ServiceOrderItem,
+        ServiceOrderWorker,
+    )
+
+    now_local = datetime.now(TZ_LOCAL)
+    month_start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(
+        UTC
+    )
+
+    async def _counts(only_this_order: bool) -> dict[int, tuple[int, int]]:
+        query = (
+            select(
+                ServiceOrderWorker.employee_id,
+                func.count(ServiceOrderItem.id),
+                func.count(case((ServiceOrderItem.used_scrap, 1))),
+            )
+            .join(
+                ServiceOrderItem,
+                ServiceOrderItem.id == ServiceOrderWorker.service_order_item_id,
+            )
+            .join(ServiceOrder, ServiceOrder.id == ServiceOrderItem.service_order_id)
+            .where(
+                ServiceOrder.status == "completed",
+                ServiceOrder.department.in_(FILM_DEPARTMENTS),
+                ServiceOrder.completion_time >= month_start,
+            )
+            .group_by(ServiceOrderWorker.employee_id)
+        )
+        if only_this_order:
+            query = query.where(ServiceOrderItem.service_order_id == service_order_id)
+        rows = await db.execute(query)
+        return {emp_id: (int(total), int(scrap)) for emp_id, total, scrap in rows.all()}
+
+    deltas = await _counts(only_this_order=True)
+    if not deltas:
+        return
+    totals = await _counts(only_this_order=False)
+
+    crossed: list[tuple[int, int, int]] = []  # (employee_id, scrap, total)
+    for employee_id, (delta_total, delta_scrap) in deltas.items():
+        total_now, scrap_now = totals.get(employee_id, (0, 0))
+        if total_now < SCRAP_ALERT_MIN_SERVICES:
+            continue
+        if scrap_now / total_now < SCRAP_ALERT_RATIO:
+            continue
+        total_before = total_now - delta_total
+        scrap_before = scrap_now - delta_scrap
+        was_above = (
+            total_before >= SCRAP_ALERT_MIN_SERVICES
+            and total_before > 0
+            and scrap_before / total_before >= SCRAP_ALERT_RATIO
+        )
+        if not was_above:
+            crossed.append((employee_id, scrap_now, total_now))
+
+    if not crossed:
+        return
+
+    name_rows = (
+        await db.execute(
+            select(Employee.id, Employee.name).where(Employee.id.in_([c[0] for c in crossed]))
+        )
+    ).all()
+    names: dict[int, str] = {int(emp_id): name for emp_id, name in name_rows}
+    owners = list(
+        (
+            await db.execute(
+                select(User).where(User.role == "owner", User.is_active == True)  # noqa: E712
+            )
+        )
+        .scalars()
+        .all()
+    )
+    order = (
+        await db.execute(select(ServiceOrder).where(ServiceOrder.id == service_order_id))
+    ).scalar_one_or_none()
+    is_galpon = bool(order.is_galpon) if order else False
+
+    for employee_id, scrap_count, total_count in crossed:
+        employee_name = names.get(employee_id, f"Instalador #{employee_id}")
+        percent = round(scrap_count / total_count * 100)
+        for owner in owners:
+            await create_notification(
+                db=db,
+                user_id=owner.id,
+                type="warning",
+                title="Uso de retalho acima do normal",
+                body=(
+                    f"{employee_name} marcou {scrap_count} de {total_count} serviços de "
+                    f"película como retalho neste mês ({percent}%). Vale conferir se as "
+                    f"bobinas estão sendo debitadas corretamente."
+                ),
+                is_galpon=is_galpon,
+            )
+
+
+def _roll_notification_label(roll: FilmRoll) -> str:
+    """
+    Monta descrição legível e rastreável da bobina para uso em notificações.
+
+    Usa os mesmos componentes do SMART ID (tipo, tonalidade, data, metros,
+    loja), mas em formato de leitura humana — sem underscores.
+
+    Formato: "Bobina {tipo}{ tonalidade} · {DD/MM/AAAA} [{metros}m] ({loja})"
+    Ex.: "Bobina WindowBlue G20 · 31/08/2026 [30m] (Hyundai Unidade 10)"
+    """
+    film_type_name = roll.film_type.name if roll.film_type else "Desconhecido"
+    tonality_str = f" {roll.tonality}" if roll.tonality else ""
+    date_str = roll.receipt_date.strftime("%d/%m/%Y")
+    meters = int(roll.total_meters)
+    store_name = roll.store.name if roll.store else f"Loja #{roll.store_id}"
+    return f"Bobina {film_type_name}{tonality_str} · {date_str} [{meters}m] ({store_name})"
 
 
 async def _notify_threshold_crossed(db: AsyncSession, roll: FilmRoll, new_color: str) -> None:
@@ -876,20 +1261,16 @@ async def _notify_threshold_crossed(db: AsyncSession, roll: FilmRoll, new_color:
     )
     owners = list(owners_result.scalars().all())
 
-    film_type_name = roll.film_type.name if roll.film_type else "Desconhecido"
-    tonality_str = f" {roll.tonality}" if roll.tonality else ""
+    roll_label = _roll_notification_label(roll)
 
     if new_color == "yellow":
         title = "Estoque de Película Baixo"
-        body = (
-            f"Bobina #{roll.id} ({film_type_name}{tonality_str}) está com estoque baixo: "
-            f"{roll.remaining_meters:.1f}m restantes."
-        )
+        body = f"{roll_label} está com estoque baixo: {roll.remaining_meters:.1f}m restantes."
         notif_type = "warning"
     else:  # red
         title = "Estoque de Película Crítico"
         body = (
-            f"Bobina #{roll.id} ({film_type_name}{tonality_str}) está em nível crítico: "
+            f"{roll_label} está em nível crítico: "
             f"{roll.remaining_meters:.1f}m restantes. Considere repor o estoque."
         )
         notif_type = "alert"
@@ -911,6 +1292,7 @@ async def _notify_threshold_crossed(db: AsyncSession, roll: FilmRoll, new_color:
             title=title,
             body=body,
             is_galpon=is_roll_galpon,
+            related_url=f"/estoque?roll={roll.id}",
         )
 
 
@@ -974,6 +1356,225 @@ async def restore_roll(db: AsyncSession, film_roll_id: int, user) -> FilmRoll:
     return await _get_roll_with_type(db, film_roll_id)
 
 
+async def open_roll(db: AsyncSession, film_roll_id: int, user) -> FilmRoll:
+    """
+    Abre uma bobina para uso: transição deliberada em_estoque→em_uso.
+
+    Só bobinas 'em_estoque' (lacradas) podem ser abertas. Abrir uma bobina é a
+    condição para que ela possa receber consumo (ver guarda em :func:`consume_roll`),
+    e a ação é auditada. NÃO altera metros.
+
+    Args:
+        db: Sessão do banco de dados
+        film_roll_id: ID da bobina
+        user: Usuário que está abrindo a bobina
+
+    Raises:
+        NotFoundError: Bobina não encontrada ou sem permissão
+        ValidationError: Bobina não está em estoque
+    """
+    roll = await _get_roll_with_type(db, film_roll_id, for_update=True)
+    require_resource_access(user, roll.store_id, "Bobina")
+
+    if roll.status != "em_estoque":
+        raise ValidationError(detail="Bobina não está em estoque")
+
+    roll.status = "em_uso"
+    await db.flush()
+
+    await log_audit(
+        db=db,
+        action="roll_open",
+        resource_type="film_roll",
+        user_id=getattr(user, "id", None),
+        resource_id=roll.id,
+        old_value={"status": "em_estoque"},
+        new_value={"status": "em_uso"},
+    )
+
+    await db.commit()
+
+    # Indicadores agregam status/estoque desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (get_db lê a flag e bumpa depois do commit)
+    db.info["bump_analytics"] = True
+
+    return await _get_roll_with_type(db, film_roll_id)
+
+
+async def adjust_roll_meters(
+    db: AsyncSession,
+    film_roll_id: int,
+    new_remaining: float,
+    user,
+    note: str | None = None,
+) -> FilmRoll:
+    """
+    Ajusta os metros restantes de uma bobina para bater com a contagem física
+    (conferência de estoque). Auditado.
+
+    Opção A (2026-07-30): NÃO sobrescreve o saldo. Lança um MOVIMENTO de ajuste no
+    extrato (FilmConsumption kind='ajuste') com o delta e o MOTIVO obrigatório, e
+    deriva ``remaining_meters`` do extrato. Assim saldo e extrato nunca descolam e
+    todo ajuste fica rastreável (quem/quando/porquê).
+
+    Args:
+        db: Sessão do banco de dados
+        film_roll_id: ID da bobina
+        new_remaining: Metros restantes reais (0 <= x <= total_meters)
+        user: Usuário que está ajustando
+        note: Motivo do ajuste (OBRIGATÓRIO — por que o saldo foi corrigido)
+
+    Raises:
+        NotFoundError: Bobina não encontrada ou sem permissão
+        ValidationError: Motivo vazio, ou valor fora do intervalo [0, total_meters]
+    """
+    roll = await _get_roll_with_type(db, film_roll_id, for_update=True)
+    require_resource_access(user, roll.store_id, "Bobina")
+
+    if not note or not note.strip():
+        raise ValidationError(detail="Informe o motivo do ajuste de estoque.")
+    reason = note.strip()
+
+    if new_remaining < 0 or new_remaining > roll.total_meters:
+        raise ValidationError(detail=f"Metros restantes deve estar entre 0 e {roll.total_meters}.")
+
+    old_remaining = roll.remaining_meters
+    # delta > 0 baixa o saldo (consumiu a mais que o registrado); delta < 0 devolve.
+    delta = old_remaining - float(new_remaining)
+    if abs(delta) > 1e-9:
+        db.add(
+            FilmConsumption(
+                film_roll_id=roll.id,
+                meters_consumed=delta,
+                kind="ajuste",
+                adjustment_reason=reason,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await db.flush()
+        await _recalc_remaining_from_ledger(db, roll)
+        _recalc_roll_status(roll)
+
+    await log_audit(
+        db=db,
+        action="roll_adjust_meters",
+        resource_type="film_roll",
+        user_id=getattr(user, "id", None),
+        resource_id=roll.id,
+        old_value={"remaining_meters": old_remaining},
+        new_value={"remaining_meters": roll.remaining_meters, "note": reason},
+    )
+
+    await db.commit()
+
+    # Indicadores agregam metros/saldo desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (get_db lê a flag e bumpa depois do commit)
+    db.info["bump_analytics"] = True
+
+    return await _get_roll_with_type(db, film_roll_id)
+
+
+async def update_roll(db: AsyncSession, film_roll_id: int, data, user) -> FilmRoll:
+    """Edita os dados de uma bobina (tipo, tonalidade, fornecedor, NF, custo, lote,
+    data de recebimento, metros totais).
+
+    Não mexe diretamente no saldo: alterar ``total_meters`` recalcula
+    ``remaining_meters`` a partir do extrato (preservando o já consumido) e
+    ressincroniza o status. Auditado.
+    """
+    roll = await _get_roll_with_type(db, film_roll_id, for_update=True)
+    require_resource_access(user, roll.store_id, "Bobina")
+
+    old_value = {
+        "film_type_id": roll.film_type_id,
+        "tonality": roll.tonality,
+        "supplier": roll.supplier,
+        "supplier_id": roll.supplier_id,
+        "nfe_number": roll.nfe_number,
+        "cost": float(roll.cost) if roll.cost is not None else None,
+        "lot_number": roll.lot_number,
+        "total_meters": roll.total_meters,
+        "receipt_date": roll.receipt_date.isoformat(),
+    }
+
+    if data.film_type_id is not None and data.film_type_id != roll.film_type_id:
+        film_type = (
+            await db.execute(
+                select(FilmType).where(
+                    FilmType.id == data.film_type_id,
+                    FilmType.is_active == True,  # noqa: E712
+                )
+            )
+        ).scalar_one_or_none()
+        if not film_type:
+            raise NotFoundError(resource="Tipo de Película")
+        roll.film_type_id = data.film_type_id
+
+    if data.tonality is not None:
+        roll.tonality = data.tonality
+
+    if data.clear_supplier:
+        roll.supplier = None
+        roll.supplier_id = None
+    else:
+        if data.supplier is not None:
+            roll.supplier = data.supplier
+        if data.supplier_id is not None:
+            roll.supplier_id = data.supplier_id
+
+    if data.clear_nfe:
+        roll.nfe_number = None
+    elif data.nfe_number is not None:
+        roll.nfe_number = data.nfe_number
+
+    if data.clear_cost:
+        roll.cost = None
+    elif data.cost is not None:
+        roll.cost = data.cost
+
+    if data.clear_lot:
+        roll.lot_number = None
+    elif data.lot_number is not None:
+        roll.lot_number = data.lot_number
+
+    if data.receipt_date is not None:
+        roll.receipt_date = data.receipt_date
+
+    if data.total_meters is not None and data.total_meters != roll.total_meters:
+        roll.total_meters = data.total_meters
+        await db.flush()
+        await _recalc_remaining_from_ledger(db, roll)
+        _recalc_roll_status(roll)
+
+    await db.flush()
+    await log_audit(
+        db=db,
+        action="roll_update",
+        resource_type="film_roll",
+        user_id=getattr(user, "id", None),
+        resource_id=roll.id,
+        old_value=old_value,
+        new_value={
+            "film_type_id": roll.film_type_id,
+            "tonality": roll.tonality,
+            "supplier": roll.supplier,
+            "supplier_id": roll.supplier_id,
+            "nfe_number": roll.nfe_number,
+            "cost": float(roll.cost) if roll.cost is not None else None,
+            "lot_number": roll.lot_number,
+            "total_meters": roll.total_meters,
+            "receipt_date": roll.receipt_date.isoformat(),
+        },
+    )
+    await db.commit()
+
+    # Indicadores agregam custo/metadados desta bobina → marca para invalidar o
+    # cache de analytics pós-commit (get_db lê a flag e bumpa depois do commit)
+    db.info["bump_analytics"] = True
+
+    return await _get_roll_with_type(db, film_roll_id)
+
+
 async def list_consumptions(
     db: AsyncSession,
     film_roll_id: int,
@@ -997,6 +1598,7 @@ async def list_consumptions(
     Raises:
         NotFoundError: Bobina não encontrada ou sem permissão
     """
+    from app.modules.employees.models import Employee
     from app.modules.service_orders.models import ServiceOrder, ServiceOrderItem
 
     # Verificar acesso
@@ -1007,10 +1609,15 @@ async def list_consumptions(
             FilmConsumption.id,
             FilmConsumption.film_roll_id,
             FilmConsumption.service_order_item_id,
+            FilmConsumption.film_withdrawal_id,
             FilmConsumption.meters_consumed,
+            FilmConsumption.kind,
+            FilmConsumption.adjustment_reason,
             FilmConsumption.created_at,
             ServiceOrder.vehicle_model,
             ServiceOrder.vehicle_plate.label("plate"),
+            ServiceOrder.completion_time,
+            Employee.name.label("withdrawal_employee_name"),
         )
         .outerjoin(
             ServiceOrderItem,
@@ -1020,10 +1627,34 @@ async def list_consumptions(
             ServiceOrder,
             ServiceOrder.id == ServiceOrderItem.service_order_id,
         )
+        .outerjoin(
+            FilmWithdrawal,
+            FilmWithdrawal.id == FilmConsumption.film_withdrawal_id,
+        )
+        .outerjoin(
+            Employee,
+            Employee.id == FilmWithdrawal.employee_id,
+        )
         .where(FilmConsumption.film_roll_id == film_roll_id)
-        .order_by(FilmConsumption.created_at.desc())
+        # A "Data" exibida é o completion_time da O.S. quando existe (ver abaixo). A
+        # ordenação segue a MESMA data efetiva — senão uma correção retroativa (linha
+        # inserida hoje, mas datada na finalização antiga) desalinharia a lista "mais
+        # recente primeiro".
+        .order_by(func.coalesce(ServiceOrder.completion_time, FilmConsumption.created_at).desc())
     )
-    return [row._asdict() for row in result.all()]
+    history: list[dict] = []
+    for row in result.all():
+        data = row._asdict()
+        # A "Data" do histórico representa QUANDO a película foi usada no carro, não
+        # quando a linha do extrato foi inserida. Ao corrigir uma O.S. finalizada com a
+        # bobina errada (troca pós-finalização), a linha nasce no dia da correção, mas o
+        # uso real é a finalização da O.S. — datamos pelo completion_time (ADR 0014).
+        # Saídas avulsas e ajustes manuais não têm O.S.: mantêm o created_at do movimento.
+        completion_time = data.pop("completion_time", None)
+        if completion_time is not None:
+            data["created_at"] = completion_time
+        history.append(data)
+    return history
 
 
 async def transfer_film_roll(
@@ -1036,7 +1667,10 @@ async def transfer_film_roll(
     Transfere uma bobina de película para outra loja.
 
     Regras de negócio:
-    - Apenas bobinas com status 'em_estoque' podem ser transferidas.
+    - Bobinas 'em_estoque' OU 'em_uso' podem ser transferidas (a bobina
+      parcialmente usada viaja com os metros restantes e mantém o histórico
+      de consumo; as O.S. da loja de origem continuam referenciando-a).
+    - Bobinas 'esgotada' não podem ser transferidas (restaurar antes, se for o caso).
     - A loja de destino deve existir e estar ativa.
     - A loja de destino deve ser diferente da loja atual.
     - O usuário deve ter acesso à loja de origem da bobina.
@@ -1049,7 +1683,7 @@ async def transfer_film_roll(
 
     Raises:
         NotFoundError: Bobina não encontrada, sem permissão, ou loja de destino não encontrada
-        HTTPException 400: Bobina não está em estoque ou loja de destino é a mesma
+        HTTPException 400: Bobina esgotada ou loja de destino é a mesma
     """
     from fastapi import HTTPException
 
@@ -1061,13 +1695,13 @@ async def transfer_film_roll(
     # 3. Verificar que o usuário tem acesso à loja da bobina
     require_resource_access(current_user, roll.store_id, "Bobina")
 
-    # 4. Validar que status == 'em_estoque'
-    if roll.status != "em_estoque":
+    # 4. Bobina esgotada não é transferível (sem metros para movimentar)
+    if roll.status == "esgotada":
         raise HTTPException(
             status_code=400,
             detail=(
-                "Bobina não está em estoque. "
-                "Apenas bobinas com status 'em_estoque' podem ser transferidas."
+                "Bobina esgotada não pode ser transferida. "
+                "Restaure a bobina antes, se ela ainda tiver metros."
             ),
         )
 
@@ -1100,7 +1734,13 @@ async def transfer_film_roll(
         resource_type="film_roll",
         user_id=getattr(current_user, "id", None),
         resource_id=roll.id,
-        old_value={"store_id": origin_store_id},
+        # status/metros no momento da transferência: rastreia bobinas que
+        # mudaram de loja já parcialmente usadas
+        old_value={
+            "store_id": origin_store_id,
+            "status": roll.status,
+            "remaining_meters": roll.remaining_meters,
+        },
         new_value={"store_id": target_store_id},
     )
 
@@ -1141,7 +1781,7 @@ async def get_meters_for_service(
 async def delete_film_roll(
     db: AsyncSession,
     film_roll_id: int,
-    user_id: int | None = None,
+    user,
 ) -> None:
     """
     Exclui permanentemente uma bobina do estoque.
@@ -1149,10 +1789,12 @@ async def delete_film_roll(
     Bloqueia se existirem registros de consumo vinculados (carros que usaram a bobina).
 
     Raises:
-        NotFoundError: Bobina não encontrada
+        NotFoundError: Bobina não encontrada (ou fora do escopo de loja do usuário)
         ConflictError: Bobina possui consumos registrados
     """
     roll = await _get_roll_with_type(db, film_roll_id)
+    # Escopo de loja: só exclui bobina de loja à qual o usuário tem acesso
+    require_resource_access(user, roll.store_id, "Bobina")
 
     consumption_count_result = await db.execute(
         select(func.count(FilmConsumption.id)).where(FilmConsumption.film_roll_id == film_roll_id)
@@ -1171,7 +1813,7 @@ async def delete_film_roll(
         db=db,
         action="delete",
         resource_type="film_roll",
-        user_id=user_id,
+        user_id=user.id,
         resource_id=film_roll_id,
         old_value={
             "film_type_id": roll.film_type_id,
@@ -1560,3 +2202,393 @@ async def get_roll_items_for_export(db: AsyncSession, film_roll_id: int, user) -
             detail="Export limitado a 50.000 itens. Bobina possui muitos registros."
         )
     return roll, items[:50000]
+
+
+async def list_roll_service_orders(db: AsyncSession, film_roll_id: int, user):
+    """Carros (O.S.) atendidos por uma bobina — drill-down do Rendimento.
+
+    Reusa get_roll_items_for_export (roll + itens com O.S./workers/serviço) e
+    junta os metros consumidos (FilmConsumption kind='consumo') por item.
+    Respeita o escopo de loja (via get_roll_items_for_export).
+    """
+    from app.modules.inventory.schemas import RollServiceOrderRow, RollServiceOrdersResponse
+
+    roll, items = await get_roll_items_for_export(db, film_roll_id, user)
+
+    # Metros consumidos por item (kind=consumo; ignora estorno/ajuste/reconciliação).
+    meters_by_item: dict[int, float] = {}
+    consumptions = (
+        (
+            await db.execute(
+                select(FilmConsumption).where(
+                    FilmConsumption.film_roll_id == film_roll_id,
+                    or_(FilmConsumption.kind == "consumo", FilmConsumption.kind.is_(None)),
+                    FilmConsumption.service_order_item_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for c in consumptions:
+        if c.service_order_item_id is not None:
+            meters_by_item[c.service_order_item_id] = meters_by_item.get(
+                c.service_order_item_id, 0.0
+            ) + float(c.meters_consumed or 0)
+
+    rows: list[RollServiceOrderRow] = []
+    for item in items:
+        so = item.service_order
+        if so is None:
+            continue
+        installers = sorted({w.employee.name for w in so.workers if w.employee})
+        rows.append(
+            RollServiceOrderRow(
+                service_order_id=so.id,
+                vehicle_plate=so.vehicle_plate,
+                service_date=so.service_date,
+                service_code=item.service.code if item.service else None,
+                service_name=item.service.name if item.service else None,
+                installers=installers,
+                meters_consumed=meters_by_item.get(item.id),
+            )
+        )
+    rows.sort(key=lambda r: r.service_date or date.min, reverse=True)
+
+    return RollServiceOrdersResponse(
+        film_roll_id=roll.id,
+        film_type_name=roll.film_type.name if roll.film_type else None,
+        tonality=roll.tonality,
+        receipt_date=roll.receipt_date,
+        rows=rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Film Withdrawals (saída avulsa)
+# ---------------------------------------------------------------------------
+
+
+def _withdrawal_load_options():
+    # Avaliado por chamada (não no import do módulo): encadear selectinload
+    # dispara configure_mappers antes de todos os models estarem registrados
+    return (
+        selectinload(FilmWithdrawal.film_roll).selectinload(FilmRoll.film_type),
+        selectinload(FilmWithdrawal.store),
+        selectinload(FilmWithdrawal.employee),
+        selectinload(FilmWithdrawal.created_by),
+        selectinload(FilmWithdrawal.reversed_by),
+    )
+
+
+def build_withdrawal_response_dict(w: FilmWithdrawal) -> dict:
+    """Constrói dicionário para FilmWithdrawalResponse a partir de uma saída carregada."""
+    roll = w.film_roll
+    film_type_name = roll.film_type.name if roll and roll.film_type else ""
+    return {
+        "id": w.id,
+        "film_roll_id": w.film_roll_id,
+        "roll_visual_id": compute_visual_id(
+            film_type_name, roll.tonality, roll.receipt_date, roll.total_meters
+        )
+        if roll
+        else "",
+        "roll_receipt_date": roll.receipt_date if roll else None,
+        "roll_total_meters": roll.total_meters if roll else None,
+        "film_type_name": film_type_name or None,
+        "tonality": roll.tonality if roll else None,
+        "store_id": w.store_id,
+        "store_name": w.store.name if w.store else None,
+        "employee_id": w.employee_id,
+        "employee_name": w.employee.name if w.employee else None,
+        "meters": w.meters,
+        "reason": w.reason,
+        "created_by_name": w.created_by.full_name if w.created_by else None,
+        "created_at": w.created_at,
+        "reversed_at": w.reversed_at,
+        "reversed_by_name": w.reversed_by.full_name if w.reversed_by else None,
+        "is_reversed": w.reversed_at is not None,
+    }
+
+
+async def _get_withdrawal(db: AsyncSession, withdrawal_id: int) -> FilmWithdrawal:
+    """Busca saída avulsa com relacionamentos eager loaded."""
+    result = await db.execute(
+        select(FilmWithdrawal)
+        .options(*_withdrawal_load_options())
+        .where(FilmWithdrawal.id == withdrawal_id)
+    )
+    withdrawal = result.scalar_one_or_none()
+    if not withdrawal:
+        raise NotFoundError(resource="Saída de película")
+    return withdrawal
+
+
+async def create_withdrawal(db: AsyncSession, data: FilmWithdrawalCreate, user) -> FilmWithdrawal:
+    """
+    Registra uma saída avulsa de película: metros entregues a um funcionário
+    fora de O.S. (descontados em folha no fim do mês).
+
+    Regras:
+    - Bobina não pode estar esgotada nem lacrada (em_estoque) — precisa estar aberta
+      (em_uso). A guarda vem de consume_roll adiante.
+    - Metros não podem exceder o restante da bobina (permite zerar exatamente;
+      zerar NÃO marca esgotada — esgotamento é manual, como no consumo por O.S.).
+    - Funcionário deve existir e estar ativo (sem restrição à loja da bobina —
+      volantes e galpão retiram de qualquer estoque acessível ao usuário).
+    - Débito via consume_roll: ledger FilmConsumption e alerta de threshold já inclusos.
+    """
+    from app.modules.employees.models import Employee
+
+    # Lock da bobina antes das validações — o consume_roll adiante re-busca
+    # na mesma transação (lock já detido, sem deadlock)
+    roll = await _get_roll_with_type(db, data.film_roll_id, for_update=True)
+
+    require_resource_access(user, roll.store_id, "Bobina")
+
+    if roll.status == "esgotada":
+        raise ValidationError(detail="Esta bobina está esgotada e não pode ter saída de metros")
+
+    if data.meters > roll.remaining_meters + 1e-6:
+        raise ValidationError(
+            detail=(
+                f"A bobina possui apenas {roll.remaining_meters:.2f} m restantes — "
+                f"não é possível retirar {data.meters:.2f} m."
+            )
+        )
+
+    employee_result = await db.execute(
+        select(Employee).where(
+            Employee.id == data.employee_id,
+            Employee.is_active == True,  # noqa: E712
+        )
+    )
+    employee = employee_result.scalar_one_or_none()
+    if not employee:
+        raise ValidationError(detail="Funcionário não encontrado ou inativo")
+
+    withdrawal = FilmWithdrawal(
+        film_roll_id=roll.id,
+        store_id=roll.store_id,
+        employee_id=employee.id,
+        meters=data.meters,
+        reason=data.reason,
+        created_by_user_id=getattr(user, "id", None),
+        created_at=datetime.now(UTC),
+    )
+    db.add(withdrawal)
+    await db.flush()
+
+    await consume_roll(
+        db,
+        roll.id,
+        service_order_item_id=None,
+        meters=data.meters,
+        film_withdrawal_id=withdrawal.id,
+    )
+
+    await log_audit(
+        db=db,
+        action="create",
+        resource_type="film_withdrawal",
+        user_id=getattr(user, "id", None),
+        resource_id=withdrawal.id,
+        new_value={
+            "film_roll_id": roll.id,
+            "store_id": roll.store_id,
+            "employee_id": employee.id,
+            "meters": data.meters,
+        },
+    )
+
+    await db.commit()
+    return await _get_withdrawal(db, withdrawal.id)
+
+
+async def reverse_withdrawal(db: AsyncSession, withdrawal_id: int, user) -> FilmWithdrawal:
+    """
+    Estorna uma saída avulsa: devolve os metros à bobina (ledger negativo) e
+    marca a saída como estornada (soft — permanece na listagem, sai do resumo).
+
+    Não altera o status da bobina: uma bobina marcada como esgotada permanece
+    esgotada (restauração é manual via restore_roll).
+    """
+    withdrawal = await _get_withdrawal(db, withdrawal_id)
+
+    require_resource_access(user, withdrawal.store_id, "Saída de película")
+
+    if withdrawal.reversed_at is not None:
+        raise ValidationError(detail="Esta saída já foi estornada")
+
+    await release_roll_meters(
+        db,
+        withdrawal.film_roll_id,
+        service_order_item_id=None,
+        meters=withdrawal.meters,
+        film_withdrawal_id=withdrawal.id,
+    )
+
+    withdrawal.reversed_at = datetime.now(UTC)
+    withdrawal.reversed_by_user_id = getattr(user, "id", None)
+    await db.flush()
+
+    await log_audit(
+        db=db,
+        action="reverse",
+        resource_type="film_withdrawal",
+        user_id=getattr(user, "id", None),
+        resource_id=withdrawal.id,
+        old_value={"reversed_at": None},
+        new_value={"meters_returned": withdrawal.meters},
+    )
+
+    await db.commit()
+    return await _get_withdrawal(db, withdrawal.id)
+
+
+async def _apply_withdrawal_filters(
+    db: AsyncSession,
+    query,
+    user,
+    store_id: int | None = None,
+    employee_id: int | None = None,
+    film_type_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+):
+    """
+    Aplica filtros de permissão (loja + galpão) e de atributo às queries de
+    saída avulsa. Espelha a lógica de galpão de list_rolls sobre o store_id
+    snapshot da saída.
+    """
+    from app.modules.stores.models import Store
+
+    if is_galpon_profile_user(user):
+        galpon_result = await db.execute(
+            select(Store.id).where(Store.is_galpon_store == True).limit(1)  # noqa: E712
+        )
+        galpon_store_id = galpon_result.scalar_one_or_none()
+        if galpon_store_id is None:
+            raise NotFoundError(resource="Loja Galpão")
+        query = query.where(FilmWithdrawal.store_id == galpon_store_id)
+    else:
+        query = apply_store_filter(query, user, FilmWithdrawal.store_id)
+
+        if hide_galpon_user(user):
+            galpon_result = await db.execute(
+                select(Store.id).where(Store.is_galpon_store == True).limit(1)  # noqa: E712
+            )
+            galpon_store_id = galpon_result.scalar_one_or_none()
+            if galpon_store_id is not None:
+                query = query.where(FilmWithdrawal.store_id != galpon_store_id)
+
+        if store_id is not None:
+            query = query.where(FilmWithdrawal.store_id == store_id)
+
+    if employee_id is not None:
+        query = query.where(FilmWithdrawal.employee_id == employee_id)
+
+    if film_type_id is not None:
+        query = query.where(
+            FilmWithdrawal.film_roll_id.in_(
+                select(FilmRoll.id).where(FilmRoll.film_type_id == film_type_id)
+            )
+        )
+
+    # Período no fuso local: [date_from 00:00, date_to+1dia 00:00)
+    if date_from is not None:
+        query = query.where(
+            FilmWithdrawal.created_at >= datetime.combine(date_from, time.min, tzinfo=TZ_LOCAL)
+        )
+    if date_to is not None:
+        query = query.where(
+            FilmWithdrawal.created_at
+            < datetime.combine(date_to, time.min, tzinfo=TZ_LOCAL) + timedelta(days=1)
+        )
+
+    return query
+
+
+async def list_withdrawals(
+    db: AsyncSession,
+    user,
+    store_id: int | None = None,
+    employee_id: int | None = None,
+    film_type_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = 1,
+    limit: int = 20,
+) -> tuple[list[FilmWithdrawal], int]:
+    """Lista saídas avulsas com filtros e paginação (inclui estornadas)."""
+    query = select(FilmWithdrawal).options(*_withdrawal_load_options())
+    query = await _apply_withdrawal_filters(
+        db, query, user, store_id, employee_id, film_type_id, date_from, date_to
+    )
+    return await paginate(db, query, page, limit, order_by=FilmWithdrawal.created_at.desc())
+
+
+async def list_withdrawals_for_export(
+    db: AsyncSession,
+    user,
+    store_id: int | None = None,
+    employee_id: int | None = None,
+    film_type_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[FilmWithdrawal]:
+    """Lista saídas avulsas sem paginação para geração de Excel."""
+    query = select(FilmWithdrawal).options(*_withdrawal_load_options())
+    query = await _apply_withdrawal_filters(
+        db, query, user, store_id, employee_id, film_type_id, date_from, date_to
+    )
+    query = query.order_by(FilmWithdrawal.created_at.desc()).limit(50001)
+    result = await db.execute(query)
+    withdrawals = list(result.scalars().all())
+    if len(withdrawals) > 50000:
+        raise ValidationError(
+            detail="Export limitado a 50.000 registros. Aplique filtros para reduzir o volume."
+        )
+    return withdrawals
+
+
+async def summarize_withdrawals(
+    db: AsyncSession,
+    user,
+    store_id: int | None = None,
+    employee_id: int | None = None,
+    film_type_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
+    """
+    Total de saídas por funcionário no período (para desconto em folha).
+    Exclui saídas estornadas.
+    """
+    from app.modules.employees.models import Employee
+
+    query = (
+        select(
+            FilmWithdrawal.employee_id,
+            Employee.name.label("employee_name"),
+            func.count(FilmWithdrawal.id).label("withdrawal_count"),
+            func.sum(FilmWithdrawal.meters).label("total_meters"),
+        )
+        .join(Employee, Employee.id == FilmWithdrawal.employee_id)
+        .where(FilmWithdrawal.reversed_at.is_(None))
+        .group_by(FilmWithdrawal.employee_id, Employee.name)
+        .order_by(func.sum(FilmWithdrawal.meters).desc())
+    )
+    query = await _apply_withdrawal_filters(
+        db, query, user, store_id, employee_id, film_type_id, date_from, date_to
+    )
+    result = await db.execute(query)
+    return [
+        {
+            "employee_id": row.employee_id,
+            "employee_name": row.employee_name,
+            "withdrawal_count": row.withdrawal_count,
+            "total_meters": float(row.total_meters or 0),
+        }
+        for row in result.all()
+    ]

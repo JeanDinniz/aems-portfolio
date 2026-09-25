@@ -81,6 +81,21 @@ describe('AppointmentCard', () => {
         expect(getByText(APPOINTMENT_STATUS_CONFIG.atrasado.label)).toBeTruthy();
     });
 
+    it('renderiza status "duplicidade" sem crashar', async () => {
+        const { getByText } = await renderCard(makeAppointment({ display_status: 'duplicidade' }));
+        expect(getByText('Duplicidade')).toBeTruthy();
+        expect(getByText('ABC1D23')).toBeTruthy();
+    });
+
+    it('não crasha com um display_status desconhecido (fallback)', async () => {
+        // Regressão: backend pode introduzir um status novo depois deste build;
+        // o card deve cair no fallback em vez de acessar undefined e derrubar o app.
+        const { getByText } = await renderCard(
+            makeAppointment({ display_status: 'status_novo_do_backend' as never })
+        );
+        expect(getByText('ABC1D23')).toBeTruthy();
+    });
+
     it('renderiza chips de serviços e o consultor', async () => {
         const { getByText } = await renderCard(makeAppointment());
         expect(getByText('Película G20')).toBeTruthy();
@@ -109,6 +124,25 @@ describe('AppointmentCard', () => {
     it('sem consultor mostra "Sem consultor"', async () => {
         const { getByText } = await renderCard(makeAppointment({ consultant_name: null }));
         expect(getByText('Sem consultor')).toBeTruthy();
+    });
+
+    it('exibe o selo de agendamento combinado com "+N depto" quando há irmãos', async () => {
+        const { getByText, getByLabelText } = await renderCard(
+            makeAppointment({
+                appointment_group_id: 'grp-1',
+                group_siblings: [
+                    { id: 2, department: 'bodywork', display_status: 'agendado', service_order_id: null },
+                    { id: 3, department: 'ppf', display_status: 'em_execucao', service_order_id: 99 },
+                ],
+            })
+        );
+        expect(getByText('+2 depto')).toBeTruthy();
+        expect(getByLabelText(/Agendamento combinado, mais 2 departamentos/)).toBeTruthy();
+    });
+
+    it('não exibe o selo de combinado quando não faz parte de um grupo', async () => {
+        const { queryByText } = await renderCard(makeAppointment({ appointment_group_id: null }));
+        expect(queryByText(/depto/)).toBeNull();
     });
 
     it('chama onPress ao tocar', async () => {

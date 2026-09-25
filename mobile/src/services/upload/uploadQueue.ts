@@ -4,7 +4,7 @@
  * É a peça mais crítica do app: o lançamento de O.S. com fotos acontece em
  * loja/galpão com rede instável. Diferente do web (upload fire-and-forget), aqui
  * a foto comprimida é COPIADA para o diretório do app e enfileirada de forma
- * PERSISTENTE; o upload roda SERIAL com retry/backoff e é reprocessado quando o
+ * PERSISTENTE; o upload roda com paralelismo limitado + retry/backoff e é reprocessado quando o
  * app volta ao foreground ou a rede reconecta. A O.S. só é submetida quando todas
  * as fotos obrigatórias já têm `url` — enquanto pendente, o estado "salvando…"
  * sobrevive a fechar/reabrir o app. Doc 04 §5.
@@ -13,8 +13,9 @@
  * - Metadados da fila ficam em `appStorage` (AsyncStorage), NUNCA em SecureStore.
  * - Arquivos comprimidos são copiados para `Paths.document/aems-upload-queue/`
  *   (sobrevivem entre sessões) e removidos quando o item sai da fila.
- * - Processamento SERIAL (um upload por vez), espelhando o mutex da compressão —
- *   evita o pico de memória histórico ao enviar várias imagens grandes juntas.
+ * - Processamento com paralelismo LIMITADO (`MAX_CONCURRENT_UPLOADS`); a COMPRESSÃO
+ *   continua serial (mutex), que é o que evita o pico de memória — só POSTs de
+ *   arquivos já comprimidos correm em paralelo (ADR upload moderado 2026-08-31).
  * - Sem duplicar upload: o item em `uploading` nunca é re-disparado.
  *
  * API pública (consumida por PhotoCapture e pela tela de Criar O.S.):
@@ -40,13 +41,40 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { appStorage } from '@/lib/storage';
 import { addBreadcrumb, captureException } from '@/lib/sentry';
 import type { LocalPhotoAsset } from '@/types/photo.types';
-import { uploadPhoto } from './uploadPhoto';
+import { uploadPhoto, UploadError } from './uploadPhoto';
 
 const STORAGE_KEY = 'aems_upload_queue_v1';
 const QUEUE_DIR_NAME = 'aems-upload-queue';
 
 const BASE_BACKOFF_MS = 1_000; // 1s
 const MAX_BACKOFF_MS = 30_000; // teto de 30s
+
+/**
+ * Upload mobile "moderado" (ADR 2026-08-31): até N POSTs de foto em paralelo.
+ * Antes era 1 (serial). A COMPRESSÃO continua serial (mutex em compressPhoto.ts)
+ * — o anti-pico de memória é da manipulação nativa da imagem, não do POST; aqui
+ * só sobem arquivos JÁ comprimidos. REVERTER ao comportamento serial = setar 1.
+ */
+const MAX_CONCURRENT_UPLOADS = 3;
+
+/**
+ * Status HTTP PERMANENTES (erro do cliente): re-tentar o MESMO arquivo nunca vai
+ * passar, então não há retry automático — o item para em erro e só o retry
+ * manual (ou remover a foto) resolve. Cobre o caso do CSRF/Origin (403) que
+ * causava o "loop infinito de envio". Erros transitórios (rede, timeout, 5xx,
+ * 408, 429, sem status) continuam reprocessando com backoff — é o comportamento
+ * de fila offline esperado.
+ */
+const PERMANENT_HTTP_STATUSES = new Set([400, 401, 403, 404, 405, 409, 413, 415, 422]);
+
+/** `true` se o erro é um `UploadError` com status HTTP permanente (não reprocessa). */
+function isPermanentError(error: unknown): boolean {
+    return (
+        error instanceof UploadError &&
+        typeof error.status === 'number' &&
+        PERMANENT_HTTP_STATUSES.has(error.status)
+    );
+}
 
 /** Estado de um item da fila. */
 export type QueueItemStatus = 'queued' | 'uploading' | 'uploaded' | 'error';
@@ -70,6 +98,13 @@ export interface QueueItem {
     url?: string;
     /** Mensagem de erro do último upload falho. */
     error?: string;
+    /**
+     * `true` quando o último erro é PERMANENTE (4xx de cliente: origem/CSRF,
+     * arquivo inválido, tipo não suportado etc.). Nesse caso NÃO há retry
+     * automático — o item para no estado de erro aguardando ação manual, pois
+     * re-tentar o mesmo arquivo daria o mesmo erro (evita loop infinito).
+     */
+    permanent?: boolean;
     /** Epoch ms de criação. */
     createdAt: number;
     /** Vínculo opcional ao rascunho de O.S. (UX "salvando…" persistente). */
@@ -245,7 +280,7 @@ function clearRetryTimer(id: string): void {
     }
 }
 
-// ─── Processamento serial ────────────────────────────────────────────────────
+// ─── Processamento (paralelismo limitado) ────────────────────────────────────
 
 async function persistAndProcess(): Promise<void> {
     await persist();
@@ -260,8 +295,13 @@ function nextQueued(): QueueItem | undefined {
 }
 
 /**
- * Processa os itens pendentes SERIALMENTE. Reentrante: se chamado durante um
- * processamento, agenda um reprocesso no fim (não dispara uploads paralelos).
+ * Processa os itens pendentes com paralelismo limitado a `MAX_CONCURRENT_UPLOADS`.
+ * Reentrante: se chamado durante um processamento, agenda um reprocesso no fim.
+ *
+ * `uploadItem` marca o item como `uploading` de forma SÍNCRONA (antes do primeiro
+ * `await`), então `nextQueued()` nunca devolve um item já em voo — não há duplo
+ * disparo mesmo lançando vários em paralelo. `uploadItem` nunca rejeita (trata o
+ * erro internamente), logo o pool não precisa de try/catch por tarefa.
  */
 export async function processQueue(): Promise<void> {
     await hydrate();
@@ -271,10 +311,20 @@ export async function processQueue(): Promise<void> {
     }
     processing = true;
     try {
-        let item = nextQueued();
-        while (item) {
-            await uploadItem(item.id);
-            item = nextQueued();
+        const inFlight = new Set<Promise<void>>();
+        const pump = () => {
+            while (inFlight.size < MAX_CONCURRENT_UPLOADS) {
+                const item = nextQueued();
+                if (!item) break;
+                const p = uploadItem(item.id);
+                inFlight.add(p);
+                void p.finally(() => inFlight.delete(p));
+            }
+        };
+        pump();
+        while (inFlight.size > 0) {
+            await Promise.race(inFlight);
+            pump();
         }
     } finally {
         processing = false;
@@ -289,7 +339,7 @@ async function uploadItem(id: string): Promise<void> {
     const item = items.get(id);
     if (!item || item.status !== 'queued') return;
 
-    patch(id, { status: 'uploading', progress: 0, error: undefined });
+    patch(id, { status: 'uploading', progress: 0, error: undefined, permanent: undefined });
     notify(id);
 
     const asset: LocalPhotoAsset = {
@@ -311,23 +361,29 @@ async function uploadItem(id: string): Promise<void> {
     } catch (error) {
         const current = items.get(id);
         const attempts = (current?.attempts ?? 0) + 1;
+        const permanent = isPermanentError(error);
         patch(id, {
             status: 'error',
             attempts,
             error: error instanceof Error ? error.message : 'Falha no envio.',
+            permanent,
         });
         await persist();
         notify(id);
         // Breadcrumb de falha (sem URI/URL, só id + tentativa).
-        addBreadcrumb('upload', 'fail', { id, attempts });
+        addBreadcrumb('upload', 'fail', { id, attempts, permanent });
         // Falhas repetidas eram engolidas silenciosamente (só retry infinito).
         // A partir da 3ª tentativa, reporta ao Sentry para não perder o sinal de
         // uploads que nunca completam (rede ruim persistente / erro de servidor).
-        if (attempts >= 3) {
-            captureException(error, { context: 'uploadQueue.uploadItem', attempts });
+        // Erros permanentes reportam já na 1ª (nunca vão passar sozinhos).
+        if (permanent || attempts >= 3) {
+            captureException(error, { context: 'uploadQueue.uploadItem', attempts, permanent });
         }
-        // Reagenda com backoff exponencial (1→2→4→…→30s).
-        scheduleRetry(id);
+        // Só reagenda erros TRANSITÓRIOS. Permanentes (4xx) param aqui e aguardam
+        // retry manual — reagendar daria o mesmo erro para sempre (loop infinito).
+        if (!permanent) {
+            scheduleRetry(id);
+        }
     }
 }
 
@@ -368,7 +424,9 @@ export async function retry(id: string): Promise<void> {
     if (!item) return;
     clearRetryTimer(id);
     if (item.status === 'uploaded') return;
-    patch(id, { status: 'queued', error: undefined, progress: 0 });
+    // Retry manual: zera o backoff e o marcador de erro permanente (o usuário
+    // pediu explicitamente uma nova tentativa — ex.: config do servidor corrigida).
+    patch(id, { status: 'queued', error: undefined, progress: 0, attempts: 0, permanent: undefined });
     addBreadcrumb('upload', 'retry', { id, attempts: item.attempts });
     await persistAndProcess();
 }

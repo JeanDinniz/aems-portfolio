@@ -107,7 +107,7 @@ export function CreateConsultantDialog({ open, onOpenChange }: CreateConsultantD
                             <SelectContent>
                                 {stores?.map((store) => (
                                     <SelectItem key={store.id} value={store.id.toString()}>
-                                        {store.code} - {store.name}
+                                        {store.name}
                                     </SelectItem>
                                 ))}
                             </SelectContent>

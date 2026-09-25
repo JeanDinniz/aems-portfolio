@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useUsers } from '@/hooks/useUsers';
 import { useToast } from '@/hooks/use-toast';
-import type { UserRole } from '@/types/user.types';
+import type { User, UserRole } from '@/types/user.types';
 
 const createUserSchema = z.object({
     full_name: z.string().min(3, 'Nome deve ter no minimo 3 caracteres'),
@@ -43,9 +43,15 @@ type CreateUserForm = z.infer<typeof createUserSchema>;
 interface CreateUserDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    initialValues?: {
+        full_name?: string;
+        email?: string;
+        store_id?: number;
+    };
+    onCreated?: (user: User) => void;
 }
 
-export function CreateUserDialog({ open, onOpenChange }: CreateUserDialogProps) {
+export function CreateUserDialog({ open, onOpenChange, initialValues, onCreated }: CreateUserDialogProps) {
     const { createUser, isCreating } = useUsers();
     const { toast } = useToast();
     const [passwordFocused, setPasswordFocused] = useState(false);
@@ -62,6 +68,16 @@ export function CreateUserDialog({ open, onOpenChange }: CreateUserDialogProps) 
         resolver: zodResolver(createUserSchema),
     });
 
+    useEffect(() => {
+        if (open && initialValues) {
+            if (initialValues.full_name) setValue('full_name', initialValues.full_name);
+            if (initialValues.email) setValue('email', initialValues.email);
+        }
+        if (!open) {
+            reset();
+        }
+    }, [open, initialValues, setValue, reset]);
+
     const selectedRole = watch('role');
     const passwordValue = watch('password') ?? '';
 
@@ -71,10 +87,12 @@ export function CreateUserDialog({ open, onOpenChange }: CreateUserDialogProps) 
             email: data.email,
             role: data.role as UserRole,
             password: data.password,
+            ...(initialValues?.store_id ? { store_id: initialValues.store_id } : {}),
         }, {
-            onSuccess: () => {
+            onSuccess: (newUser) => {
                 reset();
                 onOpenChange(false);
+                onCreated?.(newUser);
             },
         });
     };

@@ -15,6 +15,13 @@ export type SubModule =
     | 'scheduling'
     | 'scheduling_os'
     | 'inventory'
+    | 'time_clock'
+    | 'time_clock_mirror'
+    | 'ebook'
+    | 'installer_performance'
+    | 'epi'
+    | 'material_requests'
+    | 'indicadores'
 
 export interface ModulePermission {
     id: string
@@ -33,6 +40,7 @@ export interface AccessProfile {
     is_active: boolean
     is_galpon_profile: boolean
     hide_galpon_option: boolean
+    scheduling_departments: string[]
     permissions: ModulePermission[]
     store_ids: string[]
     stores: { id: number; name: string }[]
@@ -47,6 +55,7 @@ export interface AccessProfileCreate {
     is_active?: boolean
     is_galpon_profile?: boolean
     hide_galpon_option?: boolean
+    scheduling_departments?: string[]
     permissions: Omit<ModulePermission, 'id' | 'profile_id'>[]
     store_ids?: string[]
     user_ids?: string[]
@@ -76,4 +85,5 @@ export interface EffectivePermissions {
     store_ids: string[]
     is_galpon_profile: boolean
     hide_galpon_option: boolean
+    scheduling_departments: string[]
 }

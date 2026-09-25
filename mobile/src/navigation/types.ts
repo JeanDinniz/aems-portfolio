@@ -3,6 +3,7 @@ import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { CompositeScreenProps } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { OSCopyPrefill } from '@/types/service-order.types';
+import type { MaterialRequestsStackParamList } from '@/screens/material-requests/navigation';
 
 /**
  * Tipagem das rotas. O RootNavigator alterna entre AuthStack (deslogado) e
@@ -49,10 +50,14 @@ export type InventoryStackParamList = {
     FilmTypeServices: { id: number };
     /** Transferência de bobina para outra loja (INV-05) — tela cheia. */
     TransferRoll: { id: number; currentStoreId: number };
+    /** Edição de metadados da bobina (INV-05) — tela cheia. */
+    EditRoll: { id: number };
     /** Bobinas em nível crítico (INV-07). */
     CriticalRolls: undefined;
     /** Previsão de consumo por tipo de película (INV-07). */
     Forecast: undefined;
+    /** Saída avulsa de película (baixa p/ instalador + resumo mensal). */
+    Withdrawals: undefined;
 };
 
 /**
@@ -73,6 +78,14 @@ export type AdminStackParamList = {
     StoresAdmin: undefined;
     AccessProfilesAdmin: undefined;
     AccessProfileDetail: { id: string };
+    /** Faltas do Dia — status presente/falta/férias/afastado por loja/dia. */
+    DayAbsencesAdmin: undefined;
+    /** Espelho de Ponto — batidas com selfie, distância e geofence. */
+    TimeClockMirrorAdmin: undefined;
+    /** Feriados — CRUD por ano/loja (escrita gated por `stores`). */
+    HolidaysAdmin: undefined;
+    /** Auditoria — trilha de ações do sistema (READ-ONLY, Owner-only). */
+    AuditAdmin: undefined;
     /** Telas da Fatia 5b (ainda não implementadas). */
     BrandsAdmin: undefined;
     VehicleModelsAdmin: undefined;
@@ -106,6 +119,22 @@ export type AppStackParamList = {
     Admin: NavigatorScreenParams<AdminStackParamList>;
     /** Configurações do app (tema, notificações, loja padrão, sobre). */
     Settings: undefined;
+    /** Ponto Eletrônico (batida de entrada/saída com selfie + geolocalização). */
+    TimeClock: undefined;
+    /** Cadastro do rosto de referência do Ponto (consentimento LGPD + enrollment). */
+    FaceEnroll: undefined;
+    /** Autoatendimento "Meu Espelho" — o funcionário consulta/exporta suas batidas. */
+    MyTimeClockMirror: undefined;
+    /** Desempenho de Instaladores (Diário + Individual, com export PDF). */
+    InstallerPerformance: undefined;
+    /** Biblioteca — documentos operacionais e apresentações da equipe. */
+    EbookList: undefined;
+    /** Biblioteca — certificados de garantia emitidos. */
+    EbookCertificates: undefined;
+    /** Controle de EPIs — ficha de entrega, cargos e pendências. */
+    Epi: undefined;
+    /** Pedidos de Material (películas, ferramentas e insumos por loja). */
+    MaterialRequests: NavigatorScreenParams<MaterialRequestsStackParamList>;
     /** Visualizador de fotos global (zoom/pan). */
     PhotoViewer: { photos: string[]; index?: number; title?: string };
 };

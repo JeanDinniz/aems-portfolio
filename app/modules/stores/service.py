@@ -147,7 +147,8 @@ async def create_store(
         new_value={"name": store.name, "code": store.code},
     )
 
-    await db.commit()
+    # C2 (auditoria): sem commit aqui — get_db faz o commit único ao fim da request
+    # (atomicidade). log_audit já flushou; refresh carrega defaults pós-flush.
     await db.refresh(store)
 
     return store

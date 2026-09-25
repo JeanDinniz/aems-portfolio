@@ -12,7 +12,7 @@ on:
 
 jobs:
   lint-typecheck:
-    name: Lint & Type Check
+    name: Lint, Type Check & Tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,3 +36,6 @@ jobs:
 
       - name: TypeScript type check
         run: npm run type-check
+
+      - name: Unit tests (vitest)
+        run: npm run test:ci

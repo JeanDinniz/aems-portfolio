@@ -100,6 +100,41 @@ jest.mock('@/lib/api-error', () => ({
     getApiErrorMessage: (_err: unknown, fallback: string) => fallback,
 }));
 
+// ─── Auth (isOwner controlável) ──────────────────────────────────────────────
+let mockIsOwner = false;
+jest.mock('@/stores/auth.store', () => ({
+    useAuthStore: (selector: (s: { isOwner: () => boolean }) => unknown) =>
+        selector({ isOwner: () => mockIsOwner }),
+}));
+
+// ─── ReturnOriginPicker (test-double) ────────────────────────────────────────
+// O real busca a O.S. de origem no backend (rede). Duplo: botão que confirma
+// uma origem (sobe id via onChange) quando Retorno está ativo.
+jest.mock('@/components/features/ReturnOriginPicker', () => {
+    const React = require('react');
+    const { Pressable, Text } = require('react-native');
+    return {
+        __esModule: true,
+        ReturnOriginPicker: ({
+            isReturn,
+            onChange,
+        }: {
+            isReturn: boolean;
+            onChange: (id: number | null) => void;
+        }) =>
+            isReturn
+                ? React.createElement(
+                      Pressable,
+                      {
+                          accessibilityLabel: 'confirm-origin',
+                          onPress: () => onChange(9999),
+                      },
+                      React.createElement(Text, null, 'confirm-origin')
+                  )
+                : null,
+    };
+});
+
 // ─── Select (test-double, igual ao Create.test) ──────────────────────────────
 jest.mock('@/components/ui/Select', () => {
     const React = require('react');
@@ -240,6 +275,7 @@ beforeEach(() => {
     mockCanEdit = true;
     mockOrderLoading = false;
     mockGalponFlags = { isGalponProfile: false, hideGalponOption: false };
+    mockIsOwner = false;
     mockServicesToInject = [];
     mockOrder = makeOrder();
 });
@@ -301,6 +337,82 @@ describe('EditServiceOrderScreen — submit', () => {
         expect(call.data.location_id).toBeUndefined();
         expect(mockToastSuccess).toHaveBeenCalled();
         expect(navigation.goBack).toHaveBeenCalled();
+    });
+});
+
+describe('EditServiceOrderScreen — retorno sem O.S. de origem', () => {
+    it('não-Owner sem origem: bloqueia com "Selecione a O.S. de origem do retorno"', async () => {
+        mockIsOwner = false;
+        mockOrder = makeOrder({ is_return: true, original_service_order_id: undefined });
+        const utils = await renderScreen();
+
+        await waitFor(() => {
+            expect((utils.getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'ABC1D23'
+            );
+        });
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar alterações'));
+        });
+
+        await waitFor(() => {
+            expect(utils.getByText('Selecione a O.S. de origem do retorno')).toBeTruthy();
+        });
+        expect(mockUpdateMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('Owner sem origem e sem observação: bloqueia exigindo o motivo', async () => {
+        mockIsOwner = true;
+        mockOrder = makeOrder({ is_return: true, original_service_order_id: undefined, notes: '' });
+        const utils = await renderScreen();
+
+        await waitFor(() => {
+            expect((utils.getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'ABC1D23'
+            );
+        });
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar alterações'));
+        });
+
+        await waitFor(() => {
+            expect(
+                utils.getByText(
+                    'Informe a observação (motivo) ao lançar um retorno sem O.S. de origem.'
+                )
+            ).toBeTruthy();
+        });
+        expect(mockUpdateMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('Owner sem origem, com observação: submit passa (origem null)', async () => {
+        mockIsOwner = true;
+        mockUpdateMutateAsync.mockResolvedValueOnce({ id: 99 });
+        mockOrder = makeOrder({
+            is_return: true,
+            original_service_order_id: undefined,
+            notes: 'Retorno sem origem — bolha na película',
+        });
+        const utils = await renderScreen();
+
+        await waitFor(() => {
+            expect((utils.getByPlaceholderText('ABC1D23').props as { value: string }).value).toBe(
+                'ABC1D23'
+            );
+        });
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar alterações'));
+        });
+
+        await waitFor(() => {
+            expect(mockUpdateMutateAsync).toHaveBeenCalledTimes(1);
+        });
+        const call = mockUpdateMutateAsync.mock.calls[0][0];
+        expect(call.data.is_return).toBe(true);
+        expect(call.data.original_service_order_id).toBeNull();
     });
 });
 

@@ -65,13 +65,15 @@ class UserResponse(BaseModel):
     store_id: int | None = None
     store_name: str | None = None
     supervised_store_ids: list[int] = Field(default_factory=list)
+    employee_id: int | None = None
+    employee_name: str | None = None
     last_login: datetime | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
     @classmethod
-    def from_user(cls, user) -> "UserResponse":
-        """Create response from User model."""
+    def from_user(cls, user, employee=None) -> "UserResponse":
+        """Create response from User model. `employee` (opcional) é o Employee vinculado."""
         supervised_ids = [s.id for s in user.supervised_stores] if user.supervised_stores else []
 
         store_id = user.store_id
@@ -85,6 +87,10 @@ class UserResponse(BaseModel):
                     store_name = profile.stores[0].name
                     break
 
+        employee_name = None
+        if employee is not None:
+            employee_name = f"{employee.name} {employee.last_name or ''}".strip()
+
         return cls(
             id=user.id,
             email=user.email,
@@ -95,6 +101,8 @@ class UserResponse(BaseModel):
             store_id=store_id,
             store_name=store_name,
             supervised_store_ids=supervised_ids,
+            employee_id=employee.id if employee is not None else None,
+            employee_name=employee_name,
             last_login=user.last_login,
             created_at=user.created_at,
             updated_at=user.updated_at,

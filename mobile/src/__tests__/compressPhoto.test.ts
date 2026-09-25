@@ -3,7 +3,7 @@ import type { LocalPhotoAsset } from '@/types/photo.types';
 
 /**
  * CAM-02 — compressPhoto (expo-image-manipulator + expo-file-system mockados em
- * jest.setup.js). Testa: resize só quando o maior lado > 1600, JPEG 0.7, mime de
+ * jest.setup.js). Testa: resize só quando o maior lado > 1280, JPEG 0.65, mime de
  * saída, serialização (mutex) e validação de 10 MB.
  *
  * `global.mockManipulatorState` e `global.mockFileSize` são definidos no setup.
@@ -31,32 +31,32 @@ function asset(over: Partial<LocalPhotoAsset> = {}): LocalPhotoAsset {
 }
 
 describe('compressPhoto — resize', () => {
-    it('redimensiona pelo maior lado quando > 1600 (paisagem → width)', async () => {
+    it('redimensiona pelo maior lado quando > 1280 (paisagem → width)', async () => {
         await compressPhoto(asset({ width: 4000, height: 3000 }));
         expect(state.resizeCalls).toHaveLength(1);
-        expect(state.resizeCalls[0]).toEqual({ width: 1600 });
+        expect(state.resizeCalls[0]).toEqual({ width: 1280 });
     });
 
     it('redimensiona pela altura quando o lado maior é vertical', async () => {
         await compressPhoto(asset({ width: 3000, height: 4000 }));
-        expect(state.resizeCalls[0]).toEqual({ height: 1600 });
+        expect(state.resizeCalls[0]).toEqual({ height: 1280 });
     });
 
-    it('NÃO redimensiona imagens já pequenas (maior lado ≤ 1600)', async () => {
+    it('NÃO redimensiona imagens já pequenas (maior lado ≤ 1280)', async () => {
         await compressPhoto(asset({ width: 1200, height: 800 }));
         expect(state.resizeCalls).toHaveLength(0);
     });
 
     it('dimensões desconhecidas → limita a largura por padrão', async () => {
         await compressPhoto(asset({ width: undefined, height: undefined }));
-        expect(state.resizeCalls[0]).toEqual({ width: 1600 });
+        expect(state.resizeCalls[0]).toEqual({ width: 1280 });
     });
 });
 
 describe('compressPhoto — saída', () => {
-    it('salva como JPEG com compress 0.7 e retorna mime image/jpeg', async () => {
+    it('salva como JPEG com compress 0.65 e retorna mime image/jpeg', async () => {
         const result = await compressPhoto(asset());
-        expect(state.saveCalls[0]).toMatchObject({ compress: 0.7, format: 'jpeg' });
+        expect(state.saveCalls[0]).toMatchObject({ compress: 0.65, format: 'jpeg' });
         expect(result.mime).toBe('image/jpeg');
         expect(result.name).toBe('photo.jpg');
         expect(result.uri).toContain('.jpg');

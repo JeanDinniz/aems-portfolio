@@ -12,6 +12,9 @@ interface AppointmentListViewProps {
   // do servidor (include_terminal), para não truncar os agendamentos ativos na paginação.
   showTerminal: boolean
   onToggleTerminal: () => void
+  // Oculta o botão de toggle quando os terminais já são exibidos incondicionalmente
+  // (ex.: durante uma busca por placa/O.S., em que o toggle seria inócuo).
+  hideToggle?: boolean
 }
 
 function getTodayString(): string {
@@ -50,6 +53,7 @@ export function AppointmentListView({
   onCardClick,
   showTerminal,
   onToggleTerminal,
+  hideToggle = false,
 }: AppointmentListViewProps) {
   // Group by delivery_date
   const groups = useMemo(() => {
@@ -134,6 +138,7 @@ export function AppointmentListView({
         )
       })}
 
+      {!hideToggle && (
       <button
         type="button"
         onClick={onToggleTerminal}
@@ -151,6 +156,7 @@ export function AppointmentListView({
           </>
         )}
       </button>
+      )}
     </div>
   )
 }

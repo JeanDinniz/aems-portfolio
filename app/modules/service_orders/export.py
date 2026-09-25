@@ -2,6 +2,10 @@
 Service Order export - Generates Excel reports from new branded templates.
 """
 
+import logging
+import re
+import tempfile
+import zipfile
 from collections.abc import Callable
 from datetime import datetime
 from io import BytesIO
@@ -12,6 +16,8 @@ import openpyxl
 
 from app.modules.service_orders.enums import OSStatus
 from app.modules.service_orders.models import ServiceOrder
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATES = Path(__file__).parent.parent.parent.parent / "templates"
 
@@ -70,6 +76,50 @@ def _format_date(value: object) -> str:
         return str(value)
 
 
+def _scrap_label(source_roll_id: int | None) -> str:
+    """Rótulo de retalho para a coluna Cód Rolo (com a bobina de origem, se houver)."""
+    return f"Retalho · #{source_roll_id}" if source_roll_id else "Retalho"
+
+
+def _item_tonality_and_roll_code(item) -> tuple[str, str]:
+    """
+    Tonalidade e código de bobina do item para as colunas do export.
+
+    Itens com tonalidades por região (film_applications) mostram o resumo
+    "G20 (região) / G05 (região)" e os códigos das bobinas separados por " | ";
+    itens legados usam as colunas simples.
+
+    Serviço feito com RETALHO entra como "Retalho" na coluna Cód Rolo (o Excel
+    da Conferência roda sobre template de colunas fixas, então a origem da
+    película é informada aqui em vez de numa coluna nova).
+    """
+    applications = getattr(item, "film_applications", None) or []
+    if applications:
+        tonality_parts: list[str] = []
+        for app in applications:
+            ton = (app.get("tonality") or "").strip()
+            region = (app.get("region") or "").strip()
+            label = f"{ton} ({region})" if ton and region else ton
+            if label and label not in tonality_parts:
+                tonality_parts.append(label)
+        codes: list[str] = []
+        for app in applications:
+            code = (
+                _scrap_label(app.get("scrap_source_roll_id"))
+                if app.get("used_scrap")
+                else app.get("roll_code")
+            )
+            if code and code not in codes:
+                codes.append(code)
+        return (
+            " / ".join(tonality_parts) or (item.tonality or ""),
+            " | ".join(codes) or (item.roll_code or ""),
+        )
+    if getattr(item, "used_scrap", False):
+        return item.tonality or "", _scrap_label(getattr(item, "scrap_source_roll_id", None))
+    return item.tonality or "", item.roll_code or ""
+
+
 def _period_str(date_from: datetime | None, date_to: datetime | None) -> str:
     if date_from and date_to:
         f, t = date_from.strftime("%m/%Y"), date_to.strftime("%m/%Y")
@@ -111,19 +161,20 @@ def _update_table_ref(ws, last_data_row: int, last_col_letter: str, start_row: i
 
 class ConferenceExcelWriter:
     """
-    Escritor incremental do Excel de Conferência — 27 colunas (A–AA).
+    Escritor incremental do Excel de Conferência — 28 colunas (A–AB).
 
     Permite alimentar as O.S. em lotes (add_orders) para não precisar manter
     todas em memória de uma vez; finish() fecha o arquivo e retorna os bytes.
 
     A: Data da O.S  B: Loja         C: Local        D: DPTO
     E: Placa/Chassi F: O.S          G: Cortesia?    H: Retorno?
-    I: Consultor    J: Modelo Veículo K: Cor         L: Observações
-    M: NFe          N: Cód Serviço  O: Desc Serviço P: Tonalidade
-    Q: Cód Rolo     R: Instalador   S: Valor        T: ✔
-    U: Obs Conferência V: Status Conf. W: Status Veículo
-    X: Data Cadastro Y: Responsável Cadastro
-    Z: Data Alteração AA: Responsável Alteração
+    I: Consultor    J: Modelo Veículo K: Cor         L: Briefing do Consultor
+    M: Relato Técnico do Instalador
+    N: NFe          O: Cód Serviço  P: Desc Serviço Q: Tonalidade
+    R: Cód Rolo     S: Instalador   T: Valor         U: ✔
+    V: Obs Conferência W: Status Conf. X: Status Veículo
+    Y: Data Cadastro Z: Responsável Cadastro
+    AA: Data Alteração AB: Responsável Alteração
     """
 
     def __init__(self) -> None:
@@ -163,12 +214,16 @@ class ConferenceExcelWriter:
             vehicle_full = f"{order.vehicle_brand or ''} {order.vehicle_model or ''}".strip()
             color = order.vehicle_color or ""
             notes = _clean_notes(order.notes or "")
+            internal_notes = (order.internal_notes or "").strip()
+            execution_notes = (order.execution_notes or "").strip()
             invoice = order.invoice_number or ""
             is_verified_mark = "✓" if order.is_verified else ""
             status_conf = _TERMINAL_STATUS_LABELS.get(
                 order.status, "Verificado" if order.is_verified else "Pendente"
             )
-            worker_names = ", ".join(w.employee.name for w in (order.workers or []) if w.employee)
+            worker_names = ", ".join(
+                dict.fromkeys(w.employee.name for w in (order.workers or []) if w.employee)
+            )
             created_at_str = _format_date(order.created_at)
             updated_at_str = _format_date(order.updated_at)
             created_by_name = order.created_by.full_name if order.created_by else ""
@@ -193,11 +248,11 @@ class ConferenceExcelWriter:
                         vehicle_full,
                         color,
                         notes,
+                        execution_notes,
                         invoice,
                         (svc.code or "") if svc else "",
                         (svc.name or "") if svc else "",
-                        item.tonality or "",
-                        item.roll_code or "",
+                        *_item_tonality_and_roll_code(item),
                         worker_names,
                         item_value,
                         is_verified_mark,
@@ -205,6 +260,7 @@ class ConferenceExcelWriter:
                         created_at_str,
                         created_by_name,
                         updated_at_str,
+                        internal_notes=internal_notes,
                     )
                     row_idx += 1
             else:
@@ -223,6 +279,7 @@ class ConferenceExcelWriter:
                     vehicle_full,
                     color,
                     notes,
+                    execution_notes,
                     invoice,
                     "",
                     "",
@@ -235,6 +292,7 @@ class ConferenceExcelWriter:
                     created_at_str,
                     created_by_name,
                     updated_at_str,
+                    internal_notes=internal_notes,
                 )
                 row_idx += 1
 
@@ -245,10 +303,10 @@ class ConferenceExcelWriter:
         start_row = self.start_row
         last_data_row = self.row_idx - 1
         if last_data_row >= start_row:
-            _update_table_ref(ws, last_data_row, "AA")
+            _update_table_ref(ws, last_data_row, "AB")
             subtotal_row = last_data_row + 1
-            sc = ws.cell(row=subtotal_row, column=19)  # S: Valor
-            sc.value = f"=SUBTOTAL(9,S{start_row}:S{last_data_row})"
+            sc = ws.cell(row=subtotal_row, column=20)  # T: Valor
+            sc.value = f"=SUBTOTAL(9,T{start_row}:T{last_data_row})"
             sc.number_format = "#,##0.00"
 
         buf = BytesIO()
@@ -262,6 +320,89 @@ def generate_conference_excel(orders: list[ServiceOrder]) -> bytes:
     writer = ConferenceExcelWriter()
     writer.add_orders(orders)
     return writer.finish()
+
+
+# ── Export de fotos (ZIP) ─────────────────────────────────────────────────────
+
+# Rótulo de cada categoria de foto no nome do arquivo dentro do ZIP.
+_PHOTO_KIND_LABELS: list[tuple[str, str]] = [
+    ("photos", "foto"),
+    ("damage_photos", "avaria"),
+    ("completion_photos", "chancela"),
+]
+
+
+def _sanitize_zip_name(value: str) -> str:
+    """Mantém apenas caracteres seguros para nome de pasta/arquivo no ZIP."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "SEM-OS"
+
+
+def _photo_extension(url: str) -> str:
+    """Extrai a extensão da URL da foto (com o ponto), com fallback .jpg."""
+    name = url.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1]
+    if "." in name:
+        ext = name.rsplit(".", 1)[-1].lower()
+        if 1 <= len(ext) <= 5 and ext.isalnum():
+            return f".{ext}"
+    return ".jpg"
+
+
+def build_photos_zip(
+    orders: list[dict[str, Any]], read_bytes: Callable[[str], bytes | None]
+) -> str:
+    """
+    Monta um ZIP com as fotos das O.S. filtradas e retorna o caminho do arquivo
+    temporário gerado (o chamador é responsável por removê-lo depois de servir).
+
+    Cada O.S. vira uma pasta nomeada pelo número de O.S. da concessionária
+    (`external_os_number`); dentro dela os arquivos recebem prefixo por
+    categoria: `foto_N`, `avaria_N`, `chancela_N`. Fotos que não puderem ser
+    lidas são apenas puladas (log warning), nunca abortam o ZIP.
+
+    `orders`: lista de dicts com chaves `id`, `external_os_number`,
+    `vehicle_plate`, `photos`, `damage_photos`, `completion_photos` (listas de URLs).
+    `read_bytes`: função URL -> bytes|None (I/O síncrono; ver upload.read_media_bytes).
+
+    ATENÇÃO: função síncrona e bloqueante (I/O de storage). Chamar dentro de
+    run_in_threadpool a partir de endpoints async.
+    """
+    tmp = tempfile.NamedTemporaryFile(prefix="fotos_conferencia_", suffix=".zip", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    used_folders: set[str] = set()
+    total_photos = 0
+
+    # ZIP_STORED: fotos JPEG já vêm comprimidas — deflate só gastaria CPU sem ganho.
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
+        for order in orders:
+            ext_os = (order.get("external_os_number") or "").strip()
+            plate = (order.get("vehicle_plate") or "").strip()
+            oid = order.get("id")
+
+            base = _sanitize_zip_name(ext_os) if ext_os else _sanitize_zip_name(f"SEM-OS_{plate}")
+            folder = base
+            # Desambigua O.S. distintas que compartilham o mesmo nº de concessionária.
+            if folder in used_folders:
+                folder = f"{base}_{oid}"
+            used_folders.add(folder)
+
+            for field, label in _PHOTO_KIND_LABELS:
+                urls = order.get(field) or []
+                for i, url in enumerate(urls, start=1):
+                    if not url:
+                        continue
+                    data = read_bytes(url)
+                    if data is None:
+                        continue
+                    arcname = f"{folder}/{label}_{i}{_photo_extension(url)}"
+                    zf.writestr(arcname, data)
+                    total_photos += 1
+
+    logger.info("Export de fotos: %d O.S., %d fotos no ZIP", len(orders), total_photos)
+    return tmp_path
 
 
 def _write_conference_row(
@@ -279,6 +420,7 @@ def _write_conference_row(
     vehicle_full: str,
     color: str,
     notes: str,
+    execution_notes: str,
     invoice: str,
     service_code: str,
     service_desc: str,
@@ -291,6 +433,7 @@ def _write_conference_row(
     created_at_str: str,
     created_by_name: str,
     updated_at_str: str,
+    internal_notes: str = "",
 ) -> None:
     ws.cell(row=row_idx, column=1).value = date_str  # A: Data da O.S
     ws.cell(row=row_idx, column=2).value = store_name  # B: Loja
@@ -303,24 +446,27 @@ def _write_conference_row(
     ws.cell(row=row_idx, column=9).value = consultant_name  # I: Consultor
     ws.cell(row=row_idx, column=10).value = vehicle_full  # J: Modelo Veículo
     ws.cell(row=row_idx, column=11).value = color  # K: Cor
-    ws.cell(row=row_idx, column=12).value = notes  # L: Observações
-    ws.cell(row=row_idx, column=13).value = invoice  # M: NFe
-    ws.cell(row=row_idx, column=14).value = service_code  # N: Cód Serviço
-    ws.cell(row=row_idx, column=15).value = service_desc  # O: Descrição Serviço
-    ws.cell(row=row_idx, column=16).value = tonality  # P: Tonalidade
-    ws.cell(row=row_idx, column=17).value = roll_code  # Q: Cód Rolo
-    ws.cell(row=row_idx, column=18).value = worker_names  # R: Instalador
-    vc = ws.cell(row=row_idx, column=19)  # S: Valor
+    ws.cell(row=row_idx, column=12).value = notes  # L: Briefing do Consultor
+    ws.cell(row=row_idx, column=13).value = execution_notes  # M: Relato Técnico do Instalador
+    ws.cell(row=row_idx, column=14).value = invoice  # N: NFe
+    ws.cell(row=row_idx, column=15).value = service_code  # O: Cód Serviço
+    ws.cell(row=row_idx, column=16).value = service_desc  # P: Descrição Serviço
+    ws.cell(row=row_idx, column=17).value = tonality  # Q: Tonalidade
+    ws.cell(row=row_idx, column=18).value = roll_code  # R: Cód Rolo
+    ws.cell(row=row_idx, column=19).value = worker_names  # S: Instalador
+    vc = ws.cell(row=row_idx, column=20)  # T: Valor
     vc.value = item_value
     vc.number_format = "#,##0.00"
-    ws.cell(row=row_idx, column=20).value = is_verified_mark  # T: ✔
-    ws.cell(row=row_idx, column=21).value = ""  # U: Obs Conferência
-    ws.cell(row=row_idx, column=22).value = status_conf  # V: Status Conf.
-    ws.cell(row=row_idx, column=23).value = ""  # W: Status Veículo
-    ws.cell(row=row_idx, column=24).value = created_at_str  # X: Data Cadastro
-    ws.cell(row=row_idx, column=25).value = created_by_name  # Y: Responsável Cadastro
-    ws.cell(row=row_idx, column=26).value = updated_at_str  # Z: Data Alteração
-    ws.cell(row=row_idx, column=27).value = ""  # AA: Responsável Alteração
+    ws.cell(row=row_idx, column=21).value = is_verified_mark  # U: ✔
+    ws.cell(
+        row=row_idx, column=22
+    ).value = internal_notes  # V: Obs Conferência (obs. internas da O.S.)
+    ws.cell(row=row_idx, column=23).value = status_conf  # W: Status Conf.
+    ws.cell(row=row_idx, column=24).value = ""  # X: Status Veículo
+    ws.cell(row=row_idx, column=25).value = created_at_str  # Y: Data Cadastro
+    ws.cell(row=row_idx, column=26).value = created_by_name  # Z: Responsável Cadastro
+    ws.cell(row=row_idx, column=27).value = updated_at_str  # AA: Data Alteração
+    ws.cell(row=row_idx, column=28).value = ""  # AB: Responsável Alteração
 
 
 # ── Fechamento tabular ────────────────────────────────────────────────────────
@@ -593,6 +739,11 @@ _VU_SLOTS: list[tuple] = [
     (42, 5, 43, 5, 6),
 ]
 
+# Departamentos cuja O.S. de cortesia é agregada no grupo "Oficina Cortesia"
+# (workshop_courtesy). Manter em sincronia com COURTESY_EXTRA_DEPTS no frontend
+# (frontend/src/pages/fechamento/FechamentoPage.tsx).
+COURTESY_BUCKET_DEPARTMENTS = frozenset({"workshop", "film", "security_film", "ppf"})
+
 _SECTION_ROWS: dict[str, tuple[int, int]] = {
     "workshop_courtesy": (2, 16),
     "workshop_lavagem": (2, 16),
@@ -645,35 +796,40 @@ def _svc_agg(orders: list[ServiceOrder], dept_key: str) -> dict[str, dict]:
         dept = (order.department or "").lower()
         items = order.items or []
 
-        if dept_key in ("workshop_courtesy", "workshop_lavagem", "workshop_other"):
+        if dept_key == "workshop_courtesy":
+            # D3: O.S. cortesia inteira → agrega todos os itens aqui.
+            # Além de Oficina, migram as cortesias de Película/Segurança/PPF.
+            if dept not in COURTESY_BUCKET_DEPARTMENTS:
+                continue
+            if not order.is_courtesy:
+                continue
+            for item in items:
+                svc_name = (item.service.name if item.service else None) or "Serviço sem nome"
+                svc_code = (item.service.code if item.service else None) or ""
+                value = float(item.unit_price or 0) * int(item.quantity or 1)
+                _add(svc_name, svc_code, value)
+        elif dept_key in ("workshop_lavagem", "workshop_other"):
+            # workshop_lavagem / workshop_other — classificação por item (D1),
+            # exclusivos de Oficina e sempre não-cortesia.
             if dept != "workshop":
                 continue
-
-            if dept_key == "workshop_courtesy":
-                # D3: O.S. cortesia inteira → agrega todos os itens aqui
-                if not order.is_courtesy:
+            if order.is_courtesy:
+                continue
+            for item in items:
+                is_lav = item.service and "lavagem simples" in (item.service.name or "").lower()
+                if dept_key == "workshop_lavagem" and not is_lav:
                     continue
-                for item in items:
-                    svc_name = (item.service.name if item.service else None) or "Serviço sem nome"
-                    svc_code = (item.service.code if item.service else None) or ""
-                    value = float(item.unit_price or 0) * int(item.quantity or 1)
-                    _add(svc_name, svc_code, value)
-            else:
-                # workshop_lavagem / workshop_other — classificação por item (D1)
-                if order.is_courtesy:
+                if dept_key == "workshop_other" and is_lav:
                     continue
-                for item in items:
-                    is_lav = item.service and "lavagem simples" in (item.service.name or "").lower()
-                    if dept_key == "workshop_lavagem" and not is_lav:
-                        continue
-                    if dept_key == "workshop_other" and is_lav:
-                        continue
-                    svc_name = (item.service.name if item.service else None) or "Serviço sem nome"
-                    svc_code = (item.service.code if item.service else None) or ""
-                    value = float(item.unit_price or 0) * int(item.quantity or 1)
-                    _add(svc_name, svc_code, value)
+                svc_name = (item.service.name if item.service else None) or "Serviço sem nome"
+                svc_code = (item.service.code if item.service else None) or ""
+                value = float(item.unit_price or 0) * int(item.quantity or 1)
+                _add(svc_name, svc_code, value)
         else:
             if dept != dept_key:
+                continue
+            # Cortesia de Película/Segurança/PPF migrou para workshop_courtesy
+            if order.is_courtesy and dept in COURTESY_BUCKET_DEPARTMENTS:
                 continue
             for item in items:
                 svc_name = (item.service.name if item.service else None) or "Serviço sem nome"
@@ -742,7 +898,9 @@ def _fill_oficina(ws, orders: list[ServiceOrder], extra_cortesias: dict | None =
     for i, (svc_name, svc_data) in enumerate(list(ws_cort_display.items())[:15]):
         nr, nc, dr, qc, tc = _CORTESIA_SLOTS[i]
         code = svc_data.get("code", "")
-        display = code if svc_name.count(" ") > 2 else svc_name
+        # Sempre exibe o CÓDIGO do serviço (ex.: POLI1), não a descrição.
+        # Fallback para o nome só quando o serviço não tem código cadastrado.
+        display = code or svc_name
         _write_cell(ws, nr, nc, display)
         _write_cell(ws, dr, qc, svc_data["count"])
         _write_cell(ws, dr, tc, svc_data["total"], "#,##0.00")
@@ -948,9 +1106,12 @@ def generate_section_fechamento_excel(
 # ── Estoque de Película ───────────────────────────────────────────────────────
 
 
-def generate_inventory_excel(rolls: list) -> bytes:
+def generate_inventory_excel(rolls: list, visual_ids: dict[int, str] | None = None) -> bytes:
     """
     Relatório de Estoque de Película — 17 colunas (A–Q).
+
+    `visual_ids` mapeia roll.id → ID_Bobina computado (evita mutar o ORM no
+    router). Ausente/sem entrada → fallback "#{id}".
 
     A: Loja             B: Origem (vazio)   C: Tipo de Película D: Ton
     E: Data_Entrada      F: ID_Bobina        G: Fornecedor       H: NFE
@@ -962,6 +1123,7 @@ def generate_inventory_excel(rolls: list) -> bytes:
     _reset_view(wb)
     ws = wb.active
 
+    visual_ids = visual_ids or {}
     start_row = 2
     row_idx = start_row
 
@@ -970,7 +1132,7 @@ def generate_inventory_excel(rolls: list) -> bytes:
         film_type_nm = roll.film_type.name if roll.film_type else ""
         tonality = roll.tonality or ""
         receipt_date_str = _format_date(roll.receipt_date)
-        visual_id = getattr(roll, "visual_id", None) or f"#{roll.id}"
+        visual_id = visual_ids.get(roll.id) or f"#{roll.id}"
         supplier = roll.supplier or ""
         nfe = roll.nfe_number or ""
         total_meters = float(roll.total_meters or 0)
@@ -1012,9 +1174,12 @@ def generate_inventory_excel(rolls: list) -> bytes:
 # ── Película por Bobina ───────────────────────────────────────────────────────
 
 
-def generate_roll_excel(roll, items_with_orders: list) -> bytes:
+def generate_roll_excel(roll, items_with_orders: list, visual_id: str | None = None) -> bytes:
     """
     Relatório de Película por Bobina — 26 colunas (A–Z).
+
+    `visual_id` é o ID_Bobina computado (passado pelo router p/ não mutar o ORM);
+    ausente → fallback "#{id}".
 
     A: Data da O.S  B: Loja         C: Local        D: DPTO
     E: Placa/Chassi F: O.S          G: Cortesia?    H: Retorno?
@@ -1028,7 +1193,7 @@ def generate_roll_excel(roll, items_with_orders: list) -> bytes:
     _reset_view(wb)
     ws = wb.active
 
-    roll_visual_id = getattr(roll, "visual_id", None) or f"#{roll.id}"
+    roll_visual_id = visual_id or f"#{roll.id}"
 
     start_row = 2
     row_idx = start_row
@@ -1066,12 +1231,17 @@ def generate_roll_excel(roll, items_with_orders: list) -> bytes:
         svc = item.service
         service_code = (svc.code or "") if svc else ""
         service_desc = (svc.name or "") if svc else ""
-        tonality = roll.tonality or item.tonality or ""
-        roll_code = item.roll_code or ""
+        if getattr(item, "film_applications", None):
+            tonality, roll_code = _item_tonality_and_roll_code(item)
+        else:
+            tonality = roll.tonality or item.tonality or ""
+            roll_code = item.roll_code or ""
         item_value = float(item.unit_price or 0) * int(item.quantity or 1)
 
         is_verified_mark = "✓" if order.is_verified else ""
-        worker_names = ", ".join(w.employee.name for w in (order.workers or []) if w.employee)
+        worker_names = ", ".join(
+            dict.fromkeys(w.employee.name for w in (order.workers or []) if w.employee)
+        )
         created_at_str = _format_date(order.created_at)
         updated_at_str = _format_date(order.updated_at)
         created_by_name = order.created_by.full_name if order.created_by else ""

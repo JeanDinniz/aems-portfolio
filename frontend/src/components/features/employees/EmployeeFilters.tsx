@@ -41,7 +41,7 @@ export function EmployeeFilters({ filters, onFiltersChange }: Props) {
                         <SelectItem value="all" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Todas as lojas</SelectItem>
                         {stores?.map((store) => (
                             <SelectItem key={store.id} value={store.id.toString()} className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">
-                                {store.code} - {store.name}
+                                {store.name}
                             </SelectItem>
                         ))}
                     </SelectContent>
@@ -84,6 +84,28 @@ export function EmployeeFilters({ filters, onFiltersChange }: Props) {
                                 {opt.label}
                             </SelectItem>
                         ))}
+                    </SelectContent>
+                </Select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Vínculo</span>
+                <Select
+                    value={filters.has_user === true ? 'with' : filters.has_user === false ? 'without' : 'all'}
+                    onValueChange={(v) =>
+                        onFiltersChange({
+                            ...filters,
+                            has_user: v === 'with' ? true : v === 'without' ? false : undefined,
+                        })
+                    }
+                >
+                    <SelectTrigger className="w-[160px] bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white focus:ring-[#F5A800]">
+                        <SelectValue placeholder="Vínculo" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white">
+                        <SelectItem value="all" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Todos</SelectItem>
+                        <SelectItem value="with" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Com usuário</SelectItem>
+                        <SelectItem value="without" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Sem usuário</SelectItem>
                     </SelectContent>
                 </Select>
             </div>

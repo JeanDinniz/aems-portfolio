@@ -7,4 +7,10 @@ const { withNativeWind } = require('nativewind/metro');
 
 const config = getSentryExpoConfig(__dirname);
 
+// react-native-fast-tflite: os modelos `.tflite` são embarcados como ASSET (via
+// `require`), não como código. O Metro precisa reconhecer a extensão, senão o
+// `require('assets/models/mobilefacenet.tflite')` falha no bundle. Ver doc do reconhecimento
+// facial do Ponto (Fase 1).
+config.resolver.assetExts.push('tflite');
+
 module.exports = withNativeWind(config, { input: './global.css' });

@@ -10,16 +10,30 @@ interface KpiCardProps {
   deltaValue?: number | null;
   badgeText?: string;
   subLabel?: string;
+  /**
+   * Quando true, delta negativo é exibido em verde (indicador "quanto menor, melhor").
+   * Usado nos KPIs de tempo de espera e execução.
+   */
+  invertDeltaColor?: boolean;
+  /**
+   * Classe CSS adicional aplicada ao elemento do valor.
+   * Use para sobrescrever o tamanho de fonte padrão (text-2xl) em contextos
+   * com cards mais estreitos onde o valor numérico longo colidiria com o ícone.
+   * Ex.: valueClassName="text-xl" na InstallerSummaryPage (5 cards na linha).
+   */
+  valueClassName?: string;
 }
 
 function DeltaBadge({
   delta,
   deltaValue,
   badgeText,
+  invertDeltaColor = false,
 }: {
   delta: number | null;
   deltaValue?: number | null;
   badgeText?: string;
+  invertDeltaColor?: boolean;
 }) {
   if (badgeText !== undefined) {
     return (
@@ -32,12 +46,14 @@ function DeltaBadge({
   if (deltaValue !== undefined && deltaValue !== null) {
     const isPositive = deltaValue > 0;
     const isNegative = deltaValue < 0;
+    const isGood = invertDeltaColor ? isNegative : isPositive;
+    const isBad = invertDeltaColor ? isPositive : isNegative;
     return (
       <span
         className={cn(
           'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
-          isPositive && 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
-          isNegative && 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400',
+          isGood && 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
+          isBad && 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400',
           !isPositive && !isNegative && 'bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
         )}
       >
@@ -56,13 +72,15 @@ function DeltaBadge({
 
   const isPositive = delta > 0;
   const isNegative = delta < 0;
+  const isGood = invertDeltaColor ? isNegative : isPositive;
+  const isBad = invertDeltaColor ? isPositive : isNegative;
 
   return (
     <span
       className={cn(
         'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
-        isPositive && 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
-        isNegative && 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400',
+        isGood && 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400',
+        isBad && 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400',
         !isPositive && !isNegative && 'bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
       )}
     >
@@ -71,7 +89,17 @@ function DeltaBadge({
   );
 }
 
-export function KpiCard({ label, value, icon: Icon, delta, deltaValue, badgeText, subLabel }: KpiCardProps) {
+export function KpiCard({
+  label,
+  value,
+  icon: Icon,
+  delta,
+  deltaValue,
+  badgeText,
+  subLabel,
+  invertDeltaColor = false,
+  valueClassName,
+}: KpiCardProps) {
   return (
     <Card className="bg-white dark:bg-[#161616] border-gray-200 dark:border-[#1E1E1E]">
       <CardContent className="pt-5 pb-4">
@@ -80,11 +108,16 @@ export function KpiCard({ label, value, icon: Icon, delta, deltaValue, badgeText
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide truncate">
               {label}
             </p>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white leading-tight">
+            <p className={cn('text-2xl font-bold text-gray-900 dark:text-white leading-tight', valueClassName)}>
               {value}
             </p>
             <div className="flex items-center gap-2 flex-wrap">
-              <DeltaBadge delta={delta} deltaValue={deltaValue} badgeText={badgeText} />
+              <DeltaBadge
+                delta={delta}
+                deltaValue={deltaValue}
+                badgeText={badgeText}
+                invertDeltaColor={invertDeltaColor}
+              />
               {subLabel && (
                 <span className="text-xs text-gray-500">{subLabel}</span>
               )}

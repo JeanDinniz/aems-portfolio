@@ -3,6 +3,7 @@ Consultant service - Business logic for consultant management.
 """
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import log_audit
@@ -12,7 +13,51 @@ from app.core.permissions import apply_store_filter, require_resource_access
 from app.modules.auth.models import User
 from app.modules.consultants.models import Consultant
 from app.modules.consultants.schemas import ConsultantCreate, ConsultantUpdate
+from app.modules.dealerships.models import Dealership
 from app.modules.dealerships.service import get_dealership
+from app.modules.stores.service import get_store_by_id
+
+
+async def _get_or_create_default_dealership(db: AsyncSession, store_id: int) -> Dealership:
+    """Retorna uma concessionária ativa da loja; se não houver, cria a "Geral".
+
+    A criação é resiliente a corrida: a UNIQUE parcial `uq_dealership_geral_per_store`
+    garante no máximo uma "Geral" por loja. Se outra transação criou primeiro, o
+    IntegrityError é absorvido (via savepoint) e a "Geral" existente é reusada —
+    evitando as concessionárias "Geral" fantasma duplicadas.
+    """
+    result = await db.execute(
+        select(Dealership)
+        .where(Dealership.store_id == store_id, Dealership.is_active.is_(True))
+        .limit(1)
+    )
+    dealership = result.scalar_one_or_none()
+    if dealership is not None:
+        return dealership
+
+    store = await get_store_by_id(db, store_id)
+    name = store.name if store else f"Loja {store_id}"
+    try:
+        async with db.begin_nested():
+            dealership = Dealership(name=name, brand="Geral", store_id=store_id, is_active=True)
+            db.add(dealership)
+            await db.flush()
+        return dealership
+    except IntegrityError:
+        # Corrida OU já existe uma "Geral" (o índice parcial conta inclusive as
+        # inativas). Reusa a existente; se estiver inativa, reativa — a "Geral" é
+        # o encaixe genérico e deve estar ativa para não vincular consultor a
+        # concessionária inativa.
+        result = await db.execute(
+            select(Dealership)
+            .where(Dealership.store_id == store_id, Dealership.brand == "Geral")
+            .limit(1)
+        )
+        existing = result.scalar_one()
+        if not existing.is_active:
+            existing.is_active = True
+            await db.flush()
+        return existing
 
 
 async def get_consultant_by_id(db: AsyncSession, consultant_id: int) -> Consultant | None:
@@ -49,8 +94,6 @@ async def list_consultants(
     """
     from sqlalchemy import or_
     from sqlalchemy.orm import selectinload
-
-    from app.modules.dealerships.models import Dealership
 
     query = select(Consultant).join(Consultant.dealership).options(selectinload(Consultant.store))
 
@@ -133,13 +176,13 @@ async def create_consultant(db: AsyncSession, data: ConsultantCreate, user: User
     Raises:
         NotFoundError: Concessionária ou loja não encontrada
     """
-    from app.modules.dealerships.models import Dealership
-    from app.modules.stores.service import get_store_by_id
-
     # Verificar se a loja existe
     store = await get_store_by_id(db, data.store_id)
     if not store:
         raise NotFoundError(resource="Loja")
+
+    # Escopo de loja: usuário só cria consultor em loja à qual tem acesso
+    require_resource_access(user, data.store_id, "Consultor")
 
     # Se dealership_id não foi fornecido, usa a primeira dealership ativa da loja
     if data.dealership_id is not None:
@@ -152,22 +195,7 @@ async def create_consultant(db: AsyncSession, data: ConsultantCreate, user: User
                 f"não à loja {data.store_id}"
             )
     else:
-        result = await db.execute(
-            select(Dealership)
-            .where(Dealership.store_id == data.store_id, Dealership.is_active.is_(True))
-            .limit(1)
-        )
-        dealership = result.scalar_one_or_none()
-        if not dealership:
-            # Cria concessionária padrão para a loja se não existir nenhuma
-            dealership = Dealership(
-                name=store.name,
-                brand="Geral",
-                store_id=data.store_id,
-                is_active=True,
-            )
-            db.add(dealership)
-            await db.flush()
+        dealership = await _get_or_create_default_dealership(db, data.store_id)
 
     # Verificar duplicidade de nome + loja
     dup = await db.scalar(
@@ -194,6 +222,10 @@ async def create_consultant(db: AsyncSession, data: ConsultantCreate, user: User
         resource_id=consultant.id,
         new_value={"name": data.name, "store_id": data.store_id, "email": data.email},
     )
+
+    # Catálogo de consultores é cacheado no editor de O.S. — invalida pós-commit
+    # (get_db lê a flag e bumpa depois que o dado persistir).
+    db.info["bump_catalogs"] = True
 
     # Reload with relationships to avoid lazy-load in async context
     result = await db.execute(
@@ -254,11 +286,14 @@ async def update_consultant(
     """
     from sqlalchemy.orm import selectinload
 
-    from app.modules.dealerships.models import Dealership
-
     consultant = await get_consultant(db, consultant_id, user)
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # Ao mover de loja, exigir acesso também à loja de destino (não escapar do
+    # escopo) — simetria com update_employee (C3, auditoria).
+    if "store_id" in update_data:
+        require_resource_access(user, update_data["store_id"], "Loja")
 
     # Verificar duplicidade de nome + loja (ignorando o próprio registro)
     new_name = update_data.get("name", consultant.name)
@@ -276,25 +311,7 @@ async def update_consultant(
 
     # Se store_id está sendo alterado, atualiza dealership_id para a loja nova
     if "store_id" in update_data:
-        from app.modules.stores.service import get_store_by_id
-
-        new_store_id = update_data["store_id"]
-        result = await db.execute(
-            select(Dealership)
-            .where(Dealership.store_id == new_store_id, Dealership.is_active.is_(True))
-            .limit(1)
-        )
-        new_dealership = result.scalar_one_or_none()
-        if not new_dealership:
-            new_store = await get_store_by_id(db, new_store_id)
-            new_dealership = Dealership(
-                name=new_store.name if new_store else f"Loja {new_store_id}",
-                brand="Geral",
-                store_id=new_store_id,
-                is_active=True,
-            )
-            db.add(new_dealership)
-            await db.flush()
+        new_dealership = await _get_or_create_default_dealership(db, update_data["store_id"])
         consultant.dealership_id = new_dealership.id
 
     old_values = {k: getattr(consultant, k, None) for k in update_data}
@@ -312,6 +329,8 @@ async def update_consultant(
         old_value=old_values,
         new_value=update_data,
     )
+
+    db.info["bump_catalogs"] = True
 
     # Recarrega com relacionamentos para evitar lazy-load em contexto async
     result = await db.execute(
@@ -368,45 +387,6 @@ async def delete_consultant(db: AsyncSession, consultant_id: int, user: User) ->
     await db.delete(consultant)
     await db.flush()
 
+    db.info["bump_catalogs"] = True
+
     return deleted_info
-
-
-async def deactivate_consultant(db: AsyncSession, consultant_id: int, user: User) -> Consultant:
-    """
-    Desativa um consultor.
-
-    Args:
-        db: Sessão do banco de dados
-        consultant_id: ID do consultor
-        user: Usuário que está desativando
-
-    Returns:
-        Consultant desativado
-
-    Raises:
-        NotFoundError: Consultor não encontrado
-    """
-    from sqlalchemy.orm import selectinload
-
-    consultant = await get_consultant(db, consultant_id, user)
-
-    consultant.is_active = False
-
-    await log_audit(
-        db=db,
-        action="deactivate",
-        resource_type="consultant",
-        user_id=user.id,
-        resource_id=consultant.id,
-        old_value={"is_active": True},
-        new_value={"is_active": False},
-    )
-
-    await db.flush()
-
-    result = await db.execute(
-        select(Consultant)
-        .options(selectinload(Consultant.store), selectinload(Consultant.dealership))
-        .where(Consultant.id == consultant.id)
-    )
-    return result.scalar_one()

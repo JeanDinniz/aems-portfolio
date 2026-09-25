@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
     Plus,
@@ -14,8 +15,13 @@ import {
     Eye,
     EyeOff,
     AlertCircle,
+    Scissors,
+    PackageOpen,
+    ArrowLeftRight,
+    Pencil,
 } from 'lucide-react';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { formatFilmRollName } from '@/utils/filmRoll';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -52,8 +58,14 @@ import {
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
+import { useCanEdit } from '@/hooks/useMyPermissions';
+import { useOpenRoll } from '@/hooks/useOpenRoll';
+import { useAdjustRollMeters } from '@/hooks/useAdjustRollMeters';
+import { useUpdateRoll } from '@/hooks/useUpdateRoll';
 import { useStoreStore } from '@/stores/store.store';
 import { useAuthStore } from '@/stores/auth.store';
+import { WithdrawalModal } from '@/pages/inventory/WithdrawalModal';
+import { WithdrawalsSection } from '@/pages/inventory/WithdrawalsSection';
 import { inventoryService } from '@/services/api/inventory.service';
 import { storesService, type Store as StoreData } from '@/services/api/stores.service';
 import { useSuppliers } from '@/hooks/useSuppliers';
@@ -346,7 +358,7 @@ function RollRow({ roll, onDetailClick }: {
             <span className={`w-2 h-2 rounded-full flex-shrink-0 ${config.dot}`} />
             <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-medium truncate">{roll.visual_id}</span>
+                    <span className="text-xs font-medium truncate">{formatFilmRollName(roll)}</span>
                     <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full whitespace-nowrap flex-shrink-0 ${config.badgeCls}`}>
                         {config.badge}
                     </span>
@@ -467,7 +479,7 @@ function FilmTypeRow({ group, onDetailClick, onForecastClick, storeId }: {
             </div>
             {expanded && (
                 <div className="p-2 space-y-0.5">
-                    {group.isPPF || group.department === 'security_film'
+                    {group.isPPF
                         ? group.tonalities.flatMap((tg) =>
                             tg.rolls.map((roll) => (
                                 <RollRow key={roll.id} roll={roll} onDetailClick={onDetailClick} />
@@ -870,7 +882,40 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
     onDelete?: (roll: FilmRoll) => void;
 }) {
     const [isExportingRoll, setIsExportingRoll] = useState(false);
+
+    // ── Adjust meters state ──────────────────────────────────────────────────
+    const [adjustOpen, setAdjustOpen] = useState(false);
+    const [adjustMeters, setAdjustMeters] = useState<number>(0);
+    const [adjustNote, setAdjustNote] = useState('');
+
     const { toast } = useToast();
+    const canEditInventory = useCanEdit('inventory');
+    const openRoll = useOpenRoll();
+    const adjustRollMutation = useAdjustRollMeters();
+    const updateRollMutation = useUpdateRoll();
+
+    // ── Edit roll state ──────────────────────────────────────────────────────
+    const [editOpen, setEditOpen] = useState(false);
+    const [editFilmTypeId, setEditFilmTypeId] = useState<number | null>(null);
+    const [editTonality, setEditTonality] = useState('');
+    const [editTotalMeters, setEditTotalMeters] = useState<number>(0);
+    const [editSupplierId, setEditSupplierId] = useState<number | null>(null);
+    const [editNfe, setEditNfe] = useState('');
+    const [editCost, setEditCost] = useState('');
+    const [editLot, setEditLot] = useState('');
+    const [editReceipt, setEditReceipt] = useState('');
+
+    const { data: editFilmTypesData } = useQuery({
+        queryKey: ['film-types', 'all', 200],
+        queryFn: () => inventoryService.listFilmTypes({ limit: 200 }),
+        enabled: roll !== null,
+        staleTime: 1000 * 60 * 10,
+    });
+    // Fornecedores só alimentam o <Select> do formulário de edição. Sem o gate,
+    // esta query (mesma queryKey ['suppliers', undefined] do modal de Entrada)
+    // dispararia no mount do RollDetailModal — que fica sempre montado — anulando
+    // o carregamento sob demanda. Só busca quando a edição abre.
+    const { data: editSuppliersData } = useSuppliers(undefined, { enabled: editOpen });
 
     const { data: consumptions, isLoading: loadingConsumptions } = useQuery({
         queryKey: ['roll-consumptions', roll?.id],
@@ -880,6 +925,52 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
     });
 
     if (!roll) return null;
+
+    const editFilmTypes = editFilmTypesData?.items ?? [];
+    const editSuppliers = editSuppliersData?.items ?? [];
+    const editSelectedType = editFilmTypes.find((ft) => ft.id === editFilmTypeId);
+    const editTonalities = editSelectedType?.available_tonalities ?? [];
+
+    const handleOpenEdit = () => {
+        setEditFilmTypeId(roll.film_type_id);
+        setEditTonality(roll.tonality ?? '');
+        setEditTotalMeters(roll.total_meters);
+        setEditSupplierId(roll.supplier_id ?? null);
+        setEditNfe(roll.nfe_number ?? '');
+        setEditCost(roll.cost != null ? String(roll.cost) : '');
+        setEditLot(roll.lot_number ?? '');
+        setEditReceipt(roll.receipt_date);
+        setAdjustOpen(false);
+        setEditOpen(true);
+    };
+
+    const handleConfirmEdit = () => {
+        updateRollMutation.mutate(
+            {
+                id: roll.id,
+                payload: {
+                    film_type_id: editFilmTypeId ?? undefined,
+                    tonality: editTonality || null,
+                    total_meters: editTotalMeters,
+                    receipt_date: editReceipt || undefined,
+                    supplier_id: editSupplierId ?? undefined,
+                    clear_supplier: editSupplierId == null,
+                    nfe_number: editNfe.trim() || undefined,
+                    clear_nfe: !editNfe.trim(),
+                    cost: editCost ? Number(editCost) : undefined,
+                    clear_cost: !editCost,
+                    lot_number: editLot.trim() || undefined,
+                    clear_lot: !editLot.trim(),
+                },
+            },
+            {
+                onSuccess: () => {
+                    setEditOpen(false);
+                    onClose();
+                },
+            }
+        );
+    };
 
     const handleExportRoll = async () => {
         setIsExportingRoll(true);
@@ -898,6 +989,24 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
         }
     };
 
+    const handleOpenAdjust = () => {
+        setAdjustMeters(roll.remaining_meters);
+        setAdjustNote('');
+        setAdjustOpen(true);
+    };
+
+    const handleConfirmAdjust = () => {
+        adjustRollMutation.mutate(
+            { id: roll.id, remaining_meters: adjustMeters, note: adjustNote.trim() },
+            {
+                onSuccess: () => {
+                    setAdjustOpen(false);
+                    setAdjustNote('');
+                },
+            }
+        );
+    };
+
     const config = COLOR_CONFIG[roll.color];
     const usedMeters = roll.total_meters - roll.remaining_meters;
     const pctUsed = roll.total_meters > 0
@@ -910,7 +1019,7 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
                 <DialogHeader className="shrink-0">
                     <DialogTitle className="flex items-center gap-2">
                         <span className={`w-3 h-3 rounded-full ${config.dot}`} />
-                        {roll.visual_id}
+                        {formatFilmRollName(roll)}
                     </DialogTitle>
                 </DialogHeader>
 
@@ -967,10 +1076,77 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
                                 style={{ width: `${pctUsed}%` }}
                             />
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                            {formatMeters(roll.remaining_meters)}m restantes
-                        </p>
+                        <div className="flex items-center justify-between">
+                            <p className="text-xs text-muted-foreground">
+                                {formatMeters(roll.remaining_meters)}m restantes
+                            </p>
+                            {canEditInventory && roll.status !== 'esgotada' && (
+                                <button
+                                    type="button"
+                                    onClick={handleOpenAdjust}
+                                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                                    title="Ajustar metros restantes"
+                                >
+                                    <Pencil className="h-3 w-3" />
+                                    Ajustar
+                                </button>
+                            )}
+                        </div>
                     </div>
+
+                    {/* Adjust meters inline dialog */}
+                    {adjustOpen && (
+                        <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                Ajustar metros restantes
+                            </p>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Metros restantes</Label>
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    max={roll.total_meters}
+                                    step={0.5}
+                                    value={adjustMeters}
+                                    onChange={(e) => setAdjustMeters(Number(e.target.value))}
+                                    className="h-8 text-sm"
+                                />
+                                <p className="text-[10px] text-muted-foreground">
+                                    Mínimo: 0m · Máximo: {formatMeters(roll.total_meters)}m
+                                </p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Motivo <span className="font-normal text-destructive">(obrigatório)</span></Label>
+                                <Input
+                                    placeholder="Ex: conferência física 27/07"
+                                    value={adjustNote}
+                                    onChange={(e) => setAdjustNote(e.target.value)}
+                                    className="h-8 text-sm"
+                                />
+                                <p className="text-[10px] text-muted-foreground">
+                                    O ajuste vira um movimento no histórico da bobina.
+                                </p>
+                            </div>
+                            <div className="flex justify-end gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setAdjustOpen(false)}
+                                    disabled={adjustRollMutation.isPending}
+                                >
+                                    Cancelar
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={handleConfirmAdjust}
+                                    disabled={adjustRollMutation.isPending || adjustMeters < 0 || adjustMeters > roll.total_meters || !adjustNote.trim()}
+                                >
+                                    {adjustRollMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1.5" />}
+                                    Confirmar
+                                </Button>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Consumptions table */}
                     <div>
@@ -999,9 +1175,27 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
                                     <tbody className="divide-y divide-border">
                                         {(consumptions as FilmConsumption[]).map((c) => (
                                             <tr key={c.id} className="hover:bg-muted/30">
-                                                <td className="px-3 py-2">{c.vehicle_model ?? '—'}</td>
-                                                <td className="px-3 py-2">{c.plate ?? '—'}</td>
-                                                <td className="px-3 py-2 text-right">{c.meters_consumed}m</td>
+                                                <td className="px-3 py-2">
+                                                    {c.kind === 'ajuste'
+                                                        ? `Ajuste de estoque${c.adjustment_reason ? ` — ${c.adjustment_reason}` : ''}`
+                                                        : c.kind === 'reconciliacao'
+                                                            ? 'Reconciliação de saldo'
+                                                            : c.kind === 'retalho'
+                                                                // Serviço que aproveitou sobra desta bobina — não debitou metros,
+                                                                // mas fica registrado aqui para explicar por que aparece com 0m.
+                                                                ? `Retalho — ${c.vehicle_model ?? '—'}`
+                                                                : c.film_withdrawal_id != null
+                                                                    ? `${c.meters_consumed < 0 ? 'Estorno de saída' : 'Saída avulsa'} — ${c.withdrawal_employee_name ?? '—'}`
+                                                                    : (c.vehicle_model ?? '—')}
+                                                </td>
+                                                <td className="px-3 py-2">{c.film_withdrawal_id != null ? '—' : (c.plate ?? '—')}</td>
+                                                <td className="px-3 py-2 text-right">
+                                                    {c.kind === 'ajuste' || c.kind === 'reconciliacao'
+                                                        ? `${-c.meters_consumed > 0 ? '+' : ''}${-c.meters_consumed}m`
+                                                        : c.kind === 'retalho'
+                                                            ? '0m (retalho)'
+                                                            : `${c.meters_consumed}m`}
+                                                </td>
                                                 <td className="px-3 py-2 text-right text-muted-foreground">
                                                     {new Date(c.created_at).toLocaleDateString('pt-BR')}
                                                 </td>
@@ -1015,75 +1209,215 @@ function RollDetailModal({ roll, onClose, onExhaust, isExhausting, onRestore, is
                 </div>
 
                 <div className="border-t border-border pt-4 mt-2 flex flex-col gap-3 shrink-0">
-                    {/* Linha 1: Excluir (esquerda) | Fechar + Exportar (direita) */}
-                    <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 w-full">
-                        <div>
-                            {onDelete && (
+                    {/* Ação principal do estado — destaque (o X do cabeçalho fecha o modal) */}
+                    {roll.status === 'em_estoque' && canEditInventory && (
+                        <Button
+                            className="w-full bg-amber-500 hover:bg-amber-600 text-white dark:bg-amber-500 dark:hover:bg-amber-600"
+                            onClick={() => openRoll.mutate(roll.id, { onSuccess: onClose })}
+                            disabled={openRoll.isPending}
+                        >
+                            {openRoll.isPending
+                                ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                : <PackageOpen className="h-4 w-4 mr-2" />}
+                            Colocar em uso
+                        </Button>
+                    )}
+                    {roll.status === 'esgotada' && (
+                        <Button
+                            className="w-full bg-orange-500 hover:bg-orange-600 text-white dark:bg-orange-500 dark:hover:bg-orange-600"
+                            onClick={() => { onRestore(roll); onClose(); }}
+                            disabled={isRestoring}
+                        >
+                            {isRestoring && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                            Restaurar Bobina
+                        </Button>
+                    )}
+
+                    {/* Utilitários: Exportar + Transferir */}
+                    <div
+                        className={`grid gap-2 ${
+                            roll.status !== 'esgotada' && onTransfer ? 'grid-cols-2' : 'grid-cols-1'
+                        }`}
+                    >
+                        <Button
+                            variant="outline"
+                            onClick={handleExportRoll}
+                            disabled={isExportingRoll}
+                            className="border-green-600 text-green-700 hover:bg-green-50 dark:border-green-500 dark:text-green-400 dark:hover:bg-green-900/20"
+                        >
+                            {isExportingRoll
+                                ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                : <Download className="h-4 w-4 mr-2" />}
+                            Exportar
+                        </Button>
+                        {roll.status !== 'esgotada' && onTransfer && (
+                            <Button
+                                variant="outline"
+                                title="Transferir para outra loja"
+                                className="border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                                onClick={() => { onTransfer(roll); onClose(); }}
+                            >
+                                <ArrowLeftRight className="h-4 w-4 mr-2" />
+                                Transferir
+                            </Button>
+                        )}
+                    </div>
+
+                    {/* Editar bobina (inline) */}
+                    {editOpen && (
+                        <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                Editar bobina
+                            </p>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                                    <Label className="text-xs">Tipo *</Label>
+                                    <Select
+                                        value={editFilmTypeId ? String(editFilmTypeId) : ''}
+                                        onValueChange={(v) => { setEditFilmTypeId(Number(v)); setEditTonality(''); }}
+                                    >
+                                        <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                                        <SelectContent>
+                                            {editFilmTypes.map((ft) => (
+                                                <SelectItem key={ft.id} value={String(ft.id)}>{ft.name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                                    <Label className="text-xs">Tonalidade{editTonalities.length > 0 ? ' *' : ''}</Label>
+                                    <Select
+                                        value={editTonality || ''}
+                                        onValueChange={setEditTonality}
+                                        disabled={editTonalities.length === 0}
+                                    >
+                                        <SelectTrigger className="h-8 text-sm">
+                                            <SelectValue placeholder={editTonalities.length === 0 ? 'N/A (PPF)' : 'Selecione...'} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {editTonalities.map((t) => (
+                                                <SelectItem key={t} value={t}>{t}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs">Metros totais *</Label>
+                                    <Input
+                                        type="number"
+                                        min={0.1}
+                                        step={0.5}
+                                        value={editTotalMeters}
+                                        onChange={(e) => setEditTotalMeters(Number(e.target.value))}
+                                        className="h-8 text-sm"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs">Recebimento</Label>
+                                    <Input
+                                        type="date"
+                                        value={editReceipt}
+                                        onChange={(e) => setEditReceipt(e.target.value)}
+                                        className="h-8 text-sm"
+                                    />
+                                </div>
+                                <div className="space-y-1.5 col-span-2">
+                                    <Label className="text-xs">Fornecedor</Label>
+                                    <Select
+                                        value={editSupplierId ? String(editSupplierId) : '__none__'}
+                                        onValueChange={(v) => setEditSupplierId(v === '__none__' ? null : Number(v))}
+                                    >
+                                        <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="__none__">— Nenhum —</SelectItem>
+                                            {editSuppliers.map((s) => (
+                                                <SelectItem key={s.id} value={String(s.id)}>{s.company_name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs">Nota Fiscal</Label>
+                                    <Input value={editNfe} onChange={(e) => setEditNfe(e.target.value)} className="h-8 text-sm" />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs">Custo (R$)</Label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        min={0}
+                                        value={editCost}
+                                        onChange={(e) => setEditCost(e.target.value)}
+                                        className="h-8 text-sm"
+                                    />
+                                </div>
+                                <div className="space-y-1.5 col-span-2">
+                                    <Label className="text-xs">Lote</Label>
+                                    <Input value={editLot} onChange={(e) => setEditLot(e.target.value)} className="h-8 text-sm" />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2">
+                                <Button variant="outline" size="sm" onClick={() => setEditOpen(false)} disabled={updateRollMutation.isPending}>
+                                    Cancelar
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={handleConfirmEdit}
+                                    disabled={
+                                        updateRollMutation.isPending ||
+                                        !editFilmTypeId ||
+                                        editTotalMeters <= 0 ||
+                                        (editTonalities.length > 0 && !editTonality)
+                                    }
+                                >
+                                    {updateRollMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1.5" />}
+                                    Salvar
+                                </Button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Zona de finalização/exclusão, separada do resto */}
+                    {(onDelete || roll.status !== 'esgotada' || canEditInventory) && (
+                        <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-3">
+                            {onDelete ? (
                                 <Button
                                     variant="outline"
                                     size="sm"
-                                    className="w-full sm:w-auto border-destructive text-destructive hover:bg-destructive/10"
+                                    className="border-destructive text-destructive hover:bg-destructive/10"
                                     onClick={() => { onDelete(roll); onClose(); }}
                                 >
                                     <Trash2 className="h-4 w-4 mr-1.5" />
                                     Excluir
                                 </Button>
+                            ) : (
+                                <span />
                             )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <Button variant="outline" className="flex-1 sm:flex-none" onClick={onClose}>Fechar</Button>
-                            <Button
-                                variant="outline"
-                                onClick={handleExportRoll}
-                                disabled={isExportingRoll}
-                                className="flex-1 sm:flex-none border-green-600 text-green-700 hover:bg-green-50 dark:border-green-500 dark:text-green-400 dark:hover:bg-green-900/20"
-                            >
-                                {isExportingRoll
-                                    ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                    : <Download className="h-4 w-4 mr-2" />
-                                }
-                                Exportar
-                            </Button>
-                        </div>
-                    </div>
-                    {/* Linha 2: Transferir (esquerda) | Ação principal (direita) */}
-                    {(roll.status === 'em_estoque' || roll.status !== 'esgotada' || roll.status === 'esgotada') && (
-                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 w-full">
-                            <div className="w-full sm:w-auto">
-                                {roll.status === 'em_estoque' && onTransfer && (
-                                    <Button
-                                        variant="outline"
-                                        className="w-full sm:w-auto border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                                        onClick={() => { onTransfer(roll); onClose(); }}
-                                    >
-                                        Transferir para outra loja
-                                    </Button>
-                                )}
-                            </div>
-                            <div className="w-full sm:w-auto">
-                                {roll.status !== 'esgotada' && (
-                                    <Button
-                                        variant="destructive"
-                                        className="w-full sm:w-auto"
-                                        onClick={() => { onExhaust(roll); onClose(); }}
-                                        disabled={isExhausting}
-                                    >
-                                        {isExhausting && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                                        Confirmar Esgotamento
-                                    </Button>
-                                )}
-                                {roll.status === 'esgotada' && (
-                                    <Button
-                                        variant="outline"
-                                        className="w-full sm:w-auto border-orange-500 text-orange-600 hover:bg-orange-50 dark:border-orange-400 dark:text-orange-400 dark:hover:bg-orange-900/20"
-                                        onClick={() => { onRestore(roll); onClose(); }}
-                                        disabled={isRestoring}
-                                    >
-                                        {isRestoring && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                                        Restaurar Bobina
-                                    </Button>
-                                )}
-                            </div>
+                            {canEditInventory ? (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={handleOpenEdit}
+                                    className="border-primary/40 text-foreground hover:bg-primary/10"
+                                >
+                                    <Pencil className="h-4 w-4 mr-1.5" />
+                                    Editar
+                                </Button>
+                            ) : (
+                                <span />
+                            )}
+                            {roll.status !== 'esgotada' ? (
+                                <Button
+                                    variant="destructive"
+                                    onClick={() => { onExhaust(roll); onClose(); }}
+                                    disabled={isExhausting}
+                                >
+                                    {isExhausting && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                                    Confirmar Esgotamento
+                                </Button>
+                            ) : (
+                                <span />
+                            )}
                         </div>
                     )}
                 </div>
@@ -1174,12 +1508,21 @@ function MultiSelectFilter({
 
 export default function InventoryPage() {
     const { toast } = useToast();
+    const [searchParams, setSearchParams] = useSearchParams();
     const queryClient = useQueryClient();
-    const { selectedStoreId, availableStores } = useStoreStore();
+    const { availableStores } = useStoreStore();
     const user = useAuthStore((s) => s.user);
+    const canEditInventory = useCanEdit('inventory');
+
+    // ── View (Estoque | Saídas) ──────────────────────────────────────────────
+    const [view, setView] = useState<'estoque' | 'saidas'>('estoque');
+    const [withdrawalOpen, setWithdrawalOpen] = useState(false);
 
     // ── Filters (client-side) ────────────────────────────────────────────────
     const [filterStoreId, setFilterStoreId] = useState<number | 'all'>('all');
+    // Loja efetiva para alertas/etiquetas/forms — deriva do filtro "LOJA" local
+    // ('all' = todas as lojas). Substitui a antiga loja global.
+    const storeIdFilter = filterStoreId !== 'all' ? filterStoreId : undefined;
     const [filterFilmTypeId, setFilterFilmTypeId] = useState<number | 'all'>('all');
     const [filterTonalities, setFilterTonalities] = useState<string[]>([]);
     const [filterStatuses, setFilterStatuses] = useState<string[]>([]);
@@ -1202,11 +1545,12 @@ export default function InventoryPage() {
     const [deleteRollTarget, setDeleteRollTarget] = useState<FilmRoll | null>(null);
     const [forecastTarget, setForecastTarget] = useState<{ filmTypeId: number; storeId: number; filmTypeName: string } | null>(null);
     const criticalShownRef = useRef(false);
+    const deepLinkHandledRef = useRef<number | null>(null);
 
     // ── Entrada form state ───────────────────────────────────────────────────
     const [entradaDept, setEntradaDept] = useState<'film' | 'ppf' | 'security_film'>('film');
     const [form, setForm] = useState<CreateFilmRollPayload>({
-        store_id: selectedStoreId ?? (user?.store_id ?? 0),
+        store_id: storeIdFilter ?? (user?.store_id ?? 0),
         film_type_id: 0,
         tonality: '',
         supplier: '',
@@ -1220,11 +1564,16 @@ export default function InventoryPage() {
 
     // ── Queries ───────────────────────────────────────────────────────────────
 
-    // All film types for lookup map and filter dropdown
+    // All film types for lookup map and filter dropdown.
+    // Dado quase estático (tipos de película) → cache longo (60 min) para não
+    // re-buscar 200 itens a cada reabertura da tela (reduz a rajada no backend).
+    // queryKey ['film-types','all',200] (mesma do RollDetailModal): (a) deduplica
+    // a busca e (b) é invalidada pelo CRUD de tipos via invalidateQueries(['film-types'])
+    // (match por prefixo) — a key antiga ['film-types-all'] nunca era invalidada.
     const { data: filmTypesAll } = useQuery({
-        queryKey: ['film-types-all'],
+        queryKey: ['film-types', 'all', 200],
         queryFn: () => inventoryService.listFilmTypes({ limit: 200 }),
-        staleTime: 1000 * 60 * 5,
+        staleTime: 1000 * 60 * 60,
     });
 
     // Film types for entrada modal filtered by entradaDept
@@ -1236,27 +1585,35 @@ export default function InventoryPage() {
     });
 
     // Busca todas as bobinas sem filtro de loja — filtragem feita 100% no cliente
-    // para garantir que bobinas criadas em qualquer loja apareçam imediatamente
+    // para garantir que bobinas criadas em qualquer loja apareçam imediatamente.
+    // staleTime de 30s evita re-buscar as ~500 bobinas a cada navegação/refocus;
+    // toda mutação de estoque invalida ['inventory-rolls'], então a lista continua
+    // fresca após ações (a imediatez no mount é preservada).
     const { data: rollsData, isLoading, isError, refetch } = useQuery({
         queryKey: ['inventory-rolls'],
         queryFn: () => inventoryService.listRolls({ limit: 500 }),
-        staleTime: 0,
+        staleTime: 1000 * 30,
     });
 
-    const selectedStoreIdForCritical = selectedStoreId ?? undefined;
+    const selectedStoreIdForCritical = storeIdFilter;
     const { data: criticalRolls } = useQuery({
         queryKey: ['inventory-critical', selectedStoreIdForCritical],
         queryFn: () => inventoryService.listCriticalRolls(selectedStoreIdForCritical),
         enabled: true,
-        staleTime: 0,
+        staleTime: 1000 * 30,
     });
 
-    const { data: suppliersData } = useSuppliers();
+    // Este uso de fornecedores alimenta o select do modal de Entrada → carrega sob
+    // demanda (não no mount), tirando uma requisição da rajada de abertura da tela.
+    // (O formulário de edição do RollDetailModal usa outra query, gateada em editOpen.)
+    const { data: suppliersData } = useSuppliers(undefined, { enabled: entradaOpen });
 
+    // Lojas quase nunca mudam. Alinha ao cache do hook useStores (1h) — a mesma
+    // queryKey ['stores'] era encurtada para 5 min aqui, forçando refetches.
     const { data: storesForSharing = [] } = useQuery({
         queryKey: ['stores'],
         queryFn: () => storesService.list(),
-        staleTime: 1000 * 60 * 5,
+        staleTime: 1000 * 60 * 60,
     });
 
     // Auto-open critical modal once on mount
@@ -1266,6 +1623,63 @@ export default function InventoryPage() {
             setTimeout(() => setCriticalOpen(true), 300);
         }
     }, [criticalRolls]);
+
+    // Deep-link vindo da notificação (?roll=<id>) — abre o modal de detalhes da bobina.
+    // Espera a lista principal carregar; se a bobina não estiver nela (ex.: fora do
+    // limite de 500 itens), tenta um fetch dedicado via include_roll_ids (que ignora
+    // os filtros de status/tipo, então acha a bobina mesmo esgotada). Se ainda assim
+    // não achar, avisa por toast e permanece na tela sem quebrar.
+    useEffect(() => {
+        const rollParam = searchParams.get('roll');
+        if (!rollParam) return;
+        if (isLoading) return;
+
+        const rollId = Number(rollParam);
+        if (deepLinkHandledRef.current === rollId) return;
+
+        if (!Number.isInteger(rollId) || rollId <= 0) {
+            deepLinkHandledRef.current = rollId;
+            setSearchParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.delete('roll');
+                return next;
+            }, { replace: true });
+            return;
+        }
+
+        const clearRollParam = () => {
+            setSearchParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.delete('roll');
+                return next;
+            }, { replace: true });
+        };
+
+        const found = rollsData?.items.find((r) => r.id === rollId);
+        if (found) {
+            deepLinkHandledRef.current = rollId;
+            setDetailRoll(found);
+            clearRollParam();
+            return;
+        }
+
+        deepLinkHandledRef.current = rollId;
+        (async () => {
+            try {
+                const fallback = await inventoryService.listRolls({ include_roll_ids: [rollId], limit: 1 });
+                const fallbackRoll = fallback.items.find((r) => r.id === rollId);
+                if (fallbackRoll) {
+                    setDetailRoll(fallbackRoll);
+                } else {
+                    toast({ title: 'Bobina não encontrada na lista atual', variant: 'destructive' });
+                }
+            } catch {
+                toast({ title: 'Bobina não encontrada na lista atual', variant: 'destructive' });
+            } finally {
+                clearRollParam();
+            }
+        })();
+    }, [searchParams, rollsData, isLoading, setSearchParams, toast]);
 
     // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -1279,7 +1693,7 @@ export default function InventoryPage() {
             setPendingPayload(null);
             setEntradaDept('film');
             setForm({
-                store_id: selectedStoreId ?? (user?.store_id ?? 0),
+                store_id: storeIdFilter ?? (user?.store_id ?? 0),
                 film_type_id: 0,
                 tonality: '',
                 supplier: '',
@@ -1543,22 +1957,34 @@ export default function InventoryPage() {
                     </div>
                 )}
                 <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:shrink-0">
-                    <Button
-                        variant="outline"
-                        className="w-full sm:w-auto"
-                        onClick={handleExportRolls}
-                        disabled={isExportingRolls}
-                    >
-                        {isExportingRolls
-                            ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                            : <Download className="h-4 w-4 mr-2" />
-                        }
-                        Exportar Excel
-                    </Button>
+                    {view === 'estoque' && (
+                        <Button
+                            variant="outline"
+                            className="w-full sm:w-auto"
+                            onClick={handleExportRolls}
+                            disabled={isExportingRolls}
+                        >
+                            {isExportingRolls
+                                ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                : <Download className="h-4 w-4 mr-2" />
+                            }
+                            Exportar Excel
+                        </Button>
+                    )}
+                    {canEditInventory && (
+                        <Button
+                            variant="outline"
+                            className="w-full sm:w-auto"
+                            onClick={() => setWithdrawalOpen(true)}
+                        >
+                            <Scissors className="h-4 w-4 mr-2" />
+                            Registrar Saída
+                        </Button>
+                    )}
                     <Button
                         className="w-full sm:w-auto"
                         onClick={() => {
-                        setForm(f => ({ ...f, store_id: selectedStoreId ?? (user?.store_id ?? 0) }));
+                        setForm(f => ({ ...f, store_id: storeIdFilter ?? (user?.store_id ?? 0) }));
                         setEntradaOpen(true);
                     }}>
                         <Plus className="h-4 w-4 mr-2" />
@@ -1567,7 +1993,29 @@ export default function InventoryPage() {
                 </div>
             </div>
 
+            {/* View toggle: Estoque | Saídas */}
+            <div className="flex gap-1.5">
+                {([
+                    { key: 'estoque', label: 'Estoque', icon: Package },
+                    { key: 'saidas', label: 'Saídas', icon: Scissors },
+                ] as const).map(({ key, label, icon: Icon }) => (
+                    <button
+                        key={key}
+                        onClick={() => setView(key)}
+                        className={`flex items-center gap-1.5 px-3 h-9 rounded-md text-sm font-medium border transition-colors ${
+                            view === key
+                                ? 'bg-primary text-primary-foreground border-primary'
+                                : 'border-border hover:bg-muted'
+                        }`}
+                    >
+                        <Icon className="h-4 w-4" />
+                        {label}
+                    </button>
+                ))}
+            </div>
+
             {/* Filters */}
+            {view === 'estoque' && (
             <div className="bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-4">
                 <div className="flex flex-wrap gap-4 items-end">
                     {/* Dept toggle */}
@@ -1623,7 +2071,7 @@ export default function InventoryPage() {
                         </Select>
                     </div>
 
-                    {filterDept !== 'ppf' && filterDept !== 'security_film' && distinctTonalities.length > 0 && (
+                    {filterDept !== 'ppf' && distinctTonalities.length > 0 && (
                         <div className="flex flex-col gap-1.5">
                             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tonalidade</span>
                             <MultiSelectFilter
@@ -1666,9 +2114,16 @@ export default function InventoryPage() {
                     </div>
                 </div>
             </div>
+            )}
             </div>
 
+            {/* Saídas avulsas */}
+            {view === 'saidas' && (
+                <WithdrawalsSection filmTypes={filmTypesForDropdown} />
+            )}
+
             {/* Legend */}
+            {view === 'estoque' && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
                 {(Object.entries(COLOR_CONFIG) as [FilmRollColor, typeof COLOR_CONFIG[FilmRollColor]][]).map(([color, cfg]) => (
                     <span key={color} className="flex items-center gap-1.5">
@@ -1677,9 +2132,10 @@ export default function InventoryPage() {
                     </span>
                 ))}
             </div>
+            )}
 
             {/* Main content */}
-            {isLoading ? (
+            {view !== 'estoque' ? null : isLoading ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {Array.from({ length: 3 }).map((_, i) => (
                         <div key={i} className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-4 space-y-3">
@@ -1724,6 +2180,15 @@ export default function InventoryPage() {
                 </>
             )}
 
+            {/* Modal de Saída Avulsa */}
+            <WithdrawalModal
+                open={withdrawalOpen}
+                onClose={() => setWithdrawalOpen(false)}
+                rolls={rollsData?.items ?? []}
+                filmTypes={filmTypesForDropdown}
+                defaultStoreId={storeIdFilter ?? null}
+            />
+
             {/* Forecast Modal */}
             <ForecastModal
                 filmTypeId={forecastTarget?.filmTypeId ?? null}
@@ -1732,9 +2197,10 @@ export default function InventoryPage() {
                 onClose={() => setForecastTarget(null)}
             />
 
-            {/* Roll Detail Modal */}
+            {/* Roll Detail Modal — usa a versão FRESCA da lista (invalidada pelo ajuste)
+                para a barra de saldo refletir na hora; cai no snapshot se não achar. */}
             <RollDetailModal
-                roll={detailRoll}
+                roll={detailRoll ? (rollsData?.items?.find((r) => r.id === detailRoll.id) ?? detailRoll) : null}
                 onClose={() => setDetailRoll(null)}
                 onExhaust={handleExhaust}
                 isExhausting={detailRoll !== null && exhaustingId === detailRoll.id && exhaustRoll.isPending}
@@ -1749,7 +2215,7 @@ export default function InventoryPage() {
                 if (!o) {
                     setEntradaDept('film');
                     setForm({
-                        store_id: selectedStoreId ?? (user?.store_id ?? 0),
+                        store_id: storeIdFilter ?? (user?.store_id ?? 0),
                         film_type_id: 0,
                         tonality: '',
                         supplier: '',
@@ -1965,7 +2431,7 @@ export default function InventoryPage() {
                                 >
                                     <div className="min-w-0 mr-3">
                                         <p className={`text-sm font-medium truncate ${isRed ? 'text-red-800 dark:text-red-300' : 'text-yellow-800 dark:text-yellow-300'}`}>
-                                            {roll.visual_id}
+                                            {formatFilmRollName(roll)}
                                         </p>
                                         <p className={`text-xs ${isRed ? 'text-red-600 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'}`}>
                                             {roll.remaining_meters.toFixed(1)}m restantes
@@ -2013,8 +2479,14 @@ export default function InventoryPage() {
                         <DialogTitle>Transferir Bobina</DialogTitle>
                     </DialogHeader>
                     <p className="text-sm text-muted-foreground">
-                        Selecione a loja de destino para a bobina <strong>{transferTarget?.visual_id}</strong>.
+                        Selecione a loja de destino para a bobina <strong>{transferTarget ? formatFilmRollName(transferTarget) : ''}</strong>.
                     </p>
+                    {transferTarget && transferTarget.status !== 'em_estoque' && (
+                        <p className="text-xs rounded-lg px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-700/40 dark:text-amber-400">
+                            Esta bobina já foi usada: os <strong>{transferTarget.remaining_meters}m restantes</strong> passam
+                            a contar no estoque da loja de destino, e o histórico de consumo vai junto.
+                        </p>
+                    )}
                     <Select value={transferStoreId} onValueChange={setTransferStoreId}>
                         <SelectTrigger>
                             <SelectValue placeholder="Selecionar loja..." />
@@ -2064,7 +2536,7 @@ export default function InventoryPage() {
                     <AlertDialogHeader>
                         <AlertDialogTitle>Excluir bobina?</AlertDialogTitle>
                         <AlertDialogDescription>
-                            <strong>{deleteRollTarget?.visual_id}</strong> será excluída permanentemente. Esta ação não pode ser desfeita.
+                            <strong>{deleteRollTarget ? formatFilmRollName(deleteRollTarget) : ''}</strong> será excluída permanentemente. Esta ação não pode ser desfeita.
                             {'\n'}Não é possível excluir bobinas que já foram utilizadas em ordens de serviço.
                         </AlertDialogDescription>
                     </AlertDialogHeader>

@@ -1,8 +1,8 @@
 import '../global.css';
 
 import { useEffect } from 'react';
-import { Alert } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { NavigationContainer } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
@@ -18,7 +18,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { setSessionEndedHandler } from '@/services/api/client';
 import { ThemeProvider } from '@/theme';
 import { useAppFonts } from '@/theme/fonts';
-import { ToastProvider } from '@/components/ui';
+import { ToastProvider, ConfirmProvider, alertDialog } from '@/components/ui';
 import { BiometricGate } from '@/components/BiometricGate';
 import { WebSocketProvider } from '@/providers/WebSocketProvider';
 import { PushProvider } from '@/providers/PushProvider';
@@ -43,12 +43,13 @@ function App() {
     })();
 
     // Alerta de "sessão encerrada em outro aparelho" disparado pelo apiClient.
-    setSessionEndedHandler((reason) =>
-      Alert.alert(
-        'Sessão encerrada',
-        reason || 'Sua sessão foi encerrada (login em outro aparelho).'
-      )
-    );
+    // Usa o bridge imperativo do ConfirmProvider (fora da árvore React aqui).
+    setSessionEndedHandler((reason) => {
+      void alertDialog({
+        title: 'Sessão encerrada',
+        message: reason || 'Sua sessão foi encerrada (login em outro aparelho).',
+      });
+    });
 
     return () => {
       active = false;
@@ -62,30 +63,34 @@ function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <ThemeProvider>
-          <QueryClientProvider client={queryClient}>
-            <WebSocketProvider>
-              <PushProvider>
-                <BottomSheetModalProvider>
-                  <ToastProvider>
-                    <NavigationContainer
-                      ref={navigationRef}
-                      linking={linking}
-                      fallback={<SplashScreen />}
-                    >
-                      <StatusBar style="light" />
-                      <BiometricGate>
-                        <RootNavigator />
-                      </BiometricGate>
-                    </NavigationContainer>
-                  </ToastProvider>
-                </BottomSheetModalProvider>
-              </PushProvider>
-            </WebSocketProvider>
-          </QueryClientProvider>
-        </ThemeProvider>
-      </SafeAreaProvider>
+      <KeyboardProvider>
+        <SafeAreaProvider>
+          <ThemeProvider>
+            <QueryClientProvider client={queryClient}>
+              <WebSocketProvider>
+                <PushProvider>
+                  <BottomSheetModalProvider>
+                    <ToastProvider>
+                      <ConfirmProvider>
+                        <NavigationContainer
+                          ref={navigationRef}
+                          linking={linking}
+                          fallback={<SplashScreen />}
+                        >
+                          <StatusBar style="light" />
+                          <BiometricGate>
+                            <RootNavigator />
+                          </BiometricGate>
+                        </NavigationContainer>
+                      </ConfirmProvider>
+                    </ToastProvider>
+                  </BottomSheetModalProvider>
+                </PushProvider>
+              </WebSocketProvider>
+            </QueryClientProvider>
+          </ThemeProvider>
+        </SafeAreaProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

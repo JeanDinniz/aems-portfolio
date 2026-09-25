@@ -30,7 +30,7 @@ import {
 import brandsService from '@/services/api/brands.service';
 import type { BrandItem } from '@/services/api/brands.service';
 import { useToast } from '@/hooks/use-toast';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 
 interface CreateForm {
     name: string;
@@ -46,8 +46,9 @@ const INITIAL_CREATE_FORM: CreateForm = { name: '', code: '' };
 const INITIAL_EDIT_FORM: EditForm = { name: '', is_active: true };
 
 export function BrandsManagementPage() {
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('brands', 'edit');
+    const canDelete = hasPermission('brands', 'delete');
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
@@ -244,6 +245,7 @@ export function BrandsManagementPage() {
                                 </div>
 
                                 <div className="w-12 flex items-center justify-center">
+                                    {(canEdit || canDelete) && (
                                     <DropdownMenu>
                                         <DropdownMenuTrigger asChild>
                                             <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
@@ -251,11 +253,13 @@ export function BrandsManagementPage() {
                                             </Button>
                                         </DropdownMenuTrigger>
                                         <DropdownMenuContent align="end">
-                                            <DropdownMenuItem onClick={() => handleEdit(brand)}>
-                                                <Edit className="h-4 w-4 mr-2" />
-                                                Editar
-                                            </DropdownMenuItem>
-                                            {brand.is_active ? (
+                                            {canEdit && (
+                                                <DropdownMenuItem onClick={() => handleEdit(brand)}>
+                                                    <Edit className="h-4 w-4 mr-2" />
+                                                    Editar
+                                                </DropdownMenuItem>
+                                            )}
+                                            {canEdit && (brand.is_active ? (
                                                 <DropdownMenuItem onClick={() => setConfirmDeactivateId(brand.id)} className="ring-1 ring-[#F5A800] ring-inset rounded-sm">
                                                     <Eye className="h-4 w-4 mr-2" />
                                                     Desativar
@@ -265,13 +269,16 @@ export function BrandsManagementPage() {
                                                     <Eye className="h-4 w-4 mr-2 text-green-600" />
                                                     <span className="text-green-600">Ativar</span>
                                                 </DropdownMenuItem>
+                                            ))}
+                                            {canDelete && (
+                                                <DropdownMenuItem onClick={() => setConfirmDeleteId(brand.id)} className="text-red-600 focus:text-red-600">
+                                                    <Trash2 className="h-4 w-4 mr-2" />
+                                                    Excluir
+                                                </DropdownMenuItem>
                                             )}
-                                            <DropdownMenuItem onClick={() => setConfirmDeleteId(brand.id)} className="text-red-600 focus:text-red-600">
-                                                <Trash2 className="h-4 w-4 mr-2" />
-                                                Excluir
-                                            </DropdownMenuItem>
                                         </DropdownMenuContent>
                                     </DropdownMenu>
+                                    )}
                                 </div>
                             </div>
                         ))}

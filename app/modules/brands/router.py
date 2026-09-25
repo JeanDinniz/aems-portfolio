@@ -5,7 +5,7 @@ Brand router - API endpoints for brand management.
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import UserRole, require_roles
+from app.core.permissions import check_profile_permission
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse
@@ -62,7 +62,7 @@ async def get_brand(
     "",
     response_model=BrandResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("brands", "can_edit"))],
 )
 async def create_brand(
     data: BrandCreate,
@@ -80,7 +80,7 @@ async def create_brand(
 @router.patch(
     "/{brand_id}",
     response_model=BrandResponse,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("brands", "can_edit"))],
 )
 async def update_brand(
     brand_id: int,
@@ -99,7 +99,7 @@ async def update_brand(
 @router.delete(
     "/{brand_id}",
     response_model=BrandResponse,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("brands", "can_delete"))],
 )
 async def deactivate_brand(
     brand_id: int,
@@ -118,7 +118,7 @@ async def deactivate_brand(
 @router.delete(
     "/{brand_id}/permanent",
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("brands", "can_delete"))],
 )
 async def hard_delete_brand(
     brand_id: int,

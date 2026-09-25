@@ -6,8 +6,6 @@ these tests focus on authentication/authorization logic and the /ws/status endpo
 Full WebSocket connection behavior is validated through the manager unit tests.
 """
 
-from datetime import UTC
-
 import pytest
 from httpx import AsyncClient
 
@@ -184,9 +182,7 @@ class TestWebSocketPermissions:
         assert payload is None
 
     @pytest.mark.asyncio
-    async def test_user_can_access_store_unknown_role(
-        self, test_user: User, test_store: Store
-    ):
+    async def test_user_can_access_store_unknown_role(self, test_user: User, test_store: Store):
         """Unknown role should be denied access."""
         from app.websocket.router import user_can_access_store
 
@@ -196,6 +192,29 @@ class TestWebSocketPermissions:
         can_access = await user_can_access_store(test_user, test_store.id)
         assert can_access is False
         test_user.role = original_role
+
+    @pytest.mark.asyncio
+    async def test_profile_store_grants_ws_access_without_direct_store_id(
+        self, db_session, test_user: User, test_store: Store
+    ):
+        """
+        Usuário de perfil (users.store_id NULL) conecta ao canal da loja DO PERFIL.
+        Sem isso o WS recusava com 4003 e o frontend ficava em loop de reconexão.
+        """
+        from app.modules.access_profiles.models import AccessProfile
+        from app.websocket.router import user_can_access_store
+
+        profile = AccessProfile(name="Perfil WS Loja", is_active=True)
+        profile.stores.append(test_store)
+        db_session.add(profile)
+        test_user.role = "user"
+        test_user.store_id = None
+        test_user.access_profiles.append(profile)
+        await db_session.commit()
+        await db_session.refresh(test_user)
+
+        assert await user_can_access_store(test_user, test_store.id) is True
+        assert await user_can_access_store(test_user, test_store.id + 999) is False
 
 
 class TestGetUserFromToken:
@@ -271,42 +290,17 @@ class TestGetUserFromToken:
             user = await get_user_from_token(token)
         assert user is None
 
-    @pytest.mark.asyncio
-    async def test_locked_user_returns_none(self, test_user: User):
-        """Locked user should return None."""
-        from datetime import datetime, timedelta
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from app.websocket.router import get_user_from_token
-
-        token, _ = create_access_token({"sub": str(test_user.id)})
-
-        # Set user as locked
-        test_user.locked_until = datetime.now(UTC) + timedelta(hours=1)
-
-        mock_session = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = test_user
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.websocket.router.AsyncSessionLocal", return_value=mock_session):
-            user = await get_user_from_token(token)
-        assert user is None
-
-        # Reset
-        test_user.locked_until = None
-
 
 class TestWebSocketEndpoints:
     """Tests for WebSocket endpoint connections via mocked get_user_from_token."""
 
     @pytest.mark.asyncio
     async def test_ws_store_invalid_token(self, client: AsyncClient):
-        """WebSocket with invalid token should be closed with 4001."""
+        """Token inválido → conexão ACEITA e fechada com code=4001 (não HTTP 403),
+        para o navegador receber o código e o guard anti-loop parar a reconexão."""
         from unittest.mock import AsyncMock, patch
 
+        from fastapi import WebSocketDisconnect
         from starlette.testclient import TestClient
 
         from app.main import app as fastapi_app
@@ -317,15 +311,17 @@ class TestWebSocketEndpoints:
             return_value=None,
         ):
             test_client = TestClient(fastapi_app)
-            with pytest.raises(Exception):
-                with test_client.websocket_connect("/ws/1?token=bad"):
-                    pass  # Should fail on connect
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with test_client.websocket_connect("/ws/1?token=bad") as ws:
+                    ws.receive_text()
+            assert exc.value.code == 4001
 
     @pytest.mark.asyncio
     async def test_ws_all_invalid_token(self, client: AsyncClient):
-        """WebSocket /ws/all with invalid token should be closed."""
+        """WebSocket /ws/all com token inválido → fechado com code=4001."""
         from unittest.mock import AsyncMock, patch
 
+        from fastapi import WebSocketDisconnect
         from starlette.testclient import TestClient
 
         from app.main import app as fastapi_app
@@ -336,15 +332,17 @@ class TestWebSocketEndpoints:
             return_value=None,
         ):
             test_client = TestClient(fastapi_app)
-            with pytest.raises(Exception):
-                with test_client.websocket_connect("/ws/all?token=bad"):
-                    pass
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with test_client.websocket_connect("/ws/all?token=bad") as ws:
+                    ws.receive_text()
+            assert exc.value.code == 4001
 
     @pytest.mark.asyncio
     async def test_ws_all_non_owner_rejected(self, test_user: User):
-        """Non-owner should be rejected from /ws/all."""
+        """Não-owner rejeitado de /ws/all → fechado com code=4003 (não HTTP 403)."""
         from unittest.mock import AsyncMock, patch
 
+        from fastapi import WebSocketDisconnect
         from starlette.testclient import TestClient
 
         from app.main import app as fastapi_app
@@ -355,15 +353,18 @@ class TestWebSocketEndpoints:
             return_value=test_user,
         ):
             test_client = TestClient(fastapi_app)
-            with pytest.raises(Exception):
-                with test_client.websocket_connect("/ws/all?token=fake"):
-                    pass
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with test_client.websocket_connect("/ws/all?token=fake") as ws:
+                    ws.receive_text()
+            assert exc.value.code == 4003
 
     @pytest.mark.asyncio
     async def test_ws_store_access_denied(self, test_user: User, second_store: Store):
-        """Operator should be denied access to a store they don't belong to."""
+        """Usuário sem acesso à loja → fechado com code=4003 (não HTTP 403), para o
+        cliente receber o código e PARAR de reconectar (bug do loop em /ws/<loja>)."""
         from unittest.mock import AsyncMock, patch
 
+        from fastapi import WebSocketDisconnect
         from starlette.testclient import TestClient
 
         from app.main import app as fastapi_app
@@ -374,11 +375,10 @@ class TestWebSocketEndpoints:
             return_value=test_user,
         ):
             test_client = TestClient(fastapi_app)
-            with pytest.raises(Exception):
-                with test_client.websocket_connect(
-                    f"/ws/{second_store.id}?token=fake"
-                ):
-                    pass
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with test_client.websocket_connect(f"/ws/{second_store.id}?token=fake") as ws:
+                    ws.receive_text()
+            assert exc.value.code == 4003
 
     @pytest.mark.asyncio
     async def test_ws_store_success_and_ping(self, test_user: User, test_store: Store):
@@ -396,9 +396,7 @@ class TestWebSocketEndpoints:
             return_value=test_user,
         ):
             test_client = TestClient(fastapi_app)
-            with test_client.websocket_connect(
-                f"/ws/{test_store.id}?token=fake"
-            ) as ws:
+            with test_client.websocket_connect(f"/ws/{test_store.id}?token=fake") as ws:
                 # Send ping
                 ws.send_text(json.dumps({"type": "ping", "timestamp": "123"}))
                 response = ws.receive_text()
@@ -487,3 +485,177 @@ class TestWebSocketManagerIntegration:
         assert message["data"] == data
         assert message["store_id"] is None
         assert "timestamp" in message
+
+
+class TestSendToUser:
+    """
+    Testes para send_to_user — entrega pessoal sem vazamento para owners.
+
+    F1: notificação pessoal deve chegar à conexão do usuário destinatário.
+    F2: notificação pessoal NÃO deve vazar para a room 'all' (owners).
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_to_user_delivers_to_target_user(self):
+        """
+        F1 — send_to_user entrega a mensagem à conexão registrada
+        sob o user_id do destinatário.
+        """
+        import json
+        from unittest.mock import AsyncMock
+
+        from app.websocket.manager import manager as ws_manager
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+        mock_ws = AsyncMock()
+        user_id = 42
+        ws_manager.user_connections[user_id] = {mock_ws}
+
+        await ws_manager.send_to_user(
+            user_id, "notification", {"id": 1, "title": "Olá", "body": "Teste"}
+        )
+
+        mock_ws.send_text.assert_called_once()
+        payload = json.loads(mock_ws.send_text.call_args[0][0])
+        assert payload["event"] == "notification"
+        assert payload["data"]["id"] == 1
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+    @pytest.mark.asyncio
+    async def test_send_to_user_does_not_leak_to_all_room(self):
+        """
+        F2 — send_to_user NÃO repassa a mensagem para a room 'all' (owners),
+        mesmo quando o user_id não tem conexões ativas.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.websocket.manager import manager as ws_manager
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+        # Simulamos um owner conectado na room 'all'
+        owner_ws = AsyncMock()
+        ws_manager.active_connections["all"] = {owner_ws}
+
+        # user_id 99 não tem conexão ativa
+        await ws_manager.send_to_user(99, "notification", {"id": 2, "title": "Privado"})
+
+        # Owner NÃO deve receber esta mensagem pessoal
+        owner_ws.send_text.assert_not_called()
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+    @pytest.mark.asyncio
+    async def test_send_to_user_no_delivery_when_no_connection(self):
+        """
+        F1/F2 — quando o destinatário não tem conexão WebSocket ativa,
+        send_to_user não levanta exceção (a notificação já está no banco).
+        """
+        from app.websocket.manager import manager as ws_manager
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+        # Não deve levantar exceção mesmo sem conexão
+        await ws_manager.send_to_user(999, "notification", {"id": 3, "title": "Sem conexão"})
+
+        ws_manager.active_connections.clear()
+        ws_manager.user_connections.clear()
+
+    @pytest.mark.asyncio
+    async def test_create_notification_calls_send_to_user_not_send_to_store(
+        self, db_session, test_user
+    ):
+        """
+        F1 — create_notification deve chamar ws_manager.send_to_user (não
+        send_to_store com 'user:{id}'), garantindo que a mensagem chegue
+        à conexão pessoal do destinatário.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from app.modules.notifications.schemas import NotificationType
+        from app.modules.notifications.service import create_notification
+
+        # O ws_manager é importado via import local dentro de create_notification.
+        # Patchamos o objeto singleton em app.websocket.manager.
+        with patch("app.websocket.manager.manager") as mock_ws_manager:
+            mock_ws_manager.send_to_user = AsyncMock()
+            mock_ws_manager.send_to_store = AsyncMock()
+
+            await create_notification(
+                db_session,
+                user_id=test_user.id,
+                type=NotificationType.ORDER_CREATED,
+                title="Teste F1",
+                body="Corpo da notificação",
+            )
+
+        # send_to_user deve ter sido chamado com o user_id correto
+        mock_ws_manager.send_to_user.assert_called_once()
+        call_args = mock_ws_manager.send_to_user.call_args[0]
+        assert call_args[0] == test_user.id
+        assert call_args[1] == "notification"
+        assert call_args[2]["title"] == "Teste F1"
+        assert call_args[2]["body"] == "Corpo da notificação"
+        assert call_args[2]["type"] == NotificationType.ORDER_CREATED.value
+
+        # send_to_store NÃO deve ter sido chamado
+        mock_ws_manager.send_to_store.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_registers_user_connection(self):
+        """
+        Ao conectar via manager.connect(ws, store_id, user_id=...), a conexão
+        deve ser registrada também em user_connections[user_id].
+        """
+        from unittest.mock import AsyncMock
+
+        from app.websocket.manager import ConnectionManager
+
+        m = ConnectionManager()
+        mock_ws = AsyncMock()  # AsyncMock para suportar await ws.accept()
+
+        await m.connect(mock_ws, 1, user_id=7)
+
+        assert 7 in m.user_connections
+        assert mock_ws in m.user_connections[7]
+
+    @pytest.mark.asyncio
+    async def test_disconnect_removes_user_connection(self):
+        """
+        manager.disconnect deve remover a conexão de user_connections.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.websocket.manager import ConnectionManager
+
+        m = ConnectionManager()
+        mock_ws = AsyncMock()  # AsyncMock para suportar await ws.accept()
+
+        await m.connect(mock_ws, 1, user_id=8)
+        m.disconnect(mock_ws, 1, user_id=8)
+
+        assert 8 not in m.user_connections
+
+    @pytest.mark.asyncio
+    async def test_disconnect_one_tab_keeps_other(self):
+        """Duas abas do mesmo usuário: desconectar uma NÃO derruba a outra."""
+        from unittest.mock import AsyncMock
+
+        from app.websocket.manager import ConnectionManager
+
+        m = ConnectionManager()
+        ws_a = AsyncMock()
+        ws_b = AsyncMock()
+
+        await m.connect(ws_a, 1, user_id=8)
+        await m.connect(ws_b, 1, user_id=8)
+        m.disconnect(ws_a, 1, user_id=8)
+
+        assert m.user_connections[8] == {ws_b}

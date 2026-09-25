@@ -11,7 +11,9 @@ dependencies = [
     "python-multipart>=0.0.6",
 
     # Database
-    "sqlalchemy[asyncio]>=2.0.25",
+    # Teto <2.1: a 2.1.0 (set/2026) mudou a tipagem de scalars() e quebrou o mypy
+    # no CI; subir de minor do ORM deve ser decisão explícita, não upgrade silencioso.
+    "sqlalchemy[asyncio]>=2.0.25,<2.1",
     "asyncpg>=0.29.0",
     "alembic>=1.13.0",
 
@@ -38,9 +40,11 @@ dependencies = [
     # Reports
     "openpyxl>=3.1.0",
     "jinja2>=3.1.0",
+    "fpdf2>=2.8.0",
 
     # Notifications
     "sendgrid>=6.11.0",
+    "pywebpush>=2.0.0",
 
     # Monitoring
     "structlog>=24.1.0",
@@ -67,6 +71,7 @@ dev = [
     "mypy>=1.8.0",
     "pre-commit>=3.6.0",
     "aiosqlite>=0.19.0",
+    "jsonschema>=4.0.0",
 ]
 
 [build-system]

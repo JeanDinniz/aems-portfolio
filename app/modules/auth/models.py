@@ -33,7 +33,7 @@ class User(Base, TimestampMixin):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Store relationship (for operators - single store)
+    # Loja direta do usuário (vínculo a uma única loja; acesso amplo vem dos perfis)
     store_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("stores.id"), nullable=True)
     store: Mapped["Store"] = relationship(  # noqa: F821
         "Store", back_populates="users", foreign_keys=[store_id]

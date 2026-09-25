@@ -1,9 +1,10 @@
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ProfileScreen } from '@/screens/ProfileScreen';
+import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import { useAuthStore } from '@/stores/auth.store';
 import type { User } from '@/types/auth.types';
 
@@ -38,12 +39,16 @@ async function renderScreen() {
     const qc = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } });
     const utils = await render(
         <SafeAreaProvider initialMetrics={metrics}>
-            <QueryClientProvider client={qc}>
-                <ProfileScreen
-                    navigation={navigation as never}
-                    route={{ key: 'Profile', name: 'Profile' } as never}
-                />
-            </QueryClientProvider>
+            <ThemeProvider>
+                <ConfirmProvider>
+                    <QueryClientProvider client={qc}>
+                        <ProfileScreen
+                            navigation={navigation as never}
+                            route={{ key: 'Profile', name: 'Profile' } as never}
+                        />
+                    </QueryClientProvider>
+                </ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
     return { ...utils, navigation };
@@ -58,10 +63,6 @@ describe('ProfileScreen', () => {
             isAuthenticated: true,
             isLoading: false,
             effectivePermissions: null,
-        });
-        jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
-            const btn = buttons?.find((b) => b.onPress && b.style !== 'cancel');
-            btn?.onPress?.();
         });
     });
 
@@ -101,9 +102,13 @@ describe('ProfileScreen', () => {
     });
 
     it('logout pede confirmação e dispara o logout', async () => {
-        const { getByText } = await renderScreen();
-        await fireEvent.press(getByText('Sair'));
-        expect(Alert.alert).toHaveBeenCalledWith('Sair', expect.any(String), expect.anything());
-        expect(mockLogout).toHaveBeenCalled();
+        const { getByText, findByText, getAllByText } = await renderScreen();
+        // Botão "Sair" do card abre o diálogo de confirmação.
+        fireEvent.press(getByText('Sair'));
+        // O diálogo mostra a mensagem e um botão "Sair" (o 2º "Sair" da árvore).
+        await findByText('Deseja encerrar a sessão?');
+        const sairButtons = getAllByText('Sair');
+        fireEvent.press(sairButtons[sairButtons.length - 1]);
+        await waitFor(() => expect(mockLogout).toHaveBeenCalled());
     });
 });

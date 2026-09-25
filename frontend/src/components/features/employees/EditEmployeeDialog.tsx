@@ -3,6 +3,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertTriangle } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { getApiErrorStatus } from '@/lib/api-error';
 import {
     Dialog,
     DialogContent,
@@ -17,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { useEmployees } from '@/hooks/useEmployees';
 import { useStores } from '@/hooks/useStores';
+import { UserCombobox } from './UserCombobox';
 import type { Employee } from '@/types/employee.types';
 import { EMPLOYEE_POSITIONS, positionToDepartment } from '@/constants/employees';
 
@@ -45,6 +48,7 @@ const schema = z.object({
     entry_date: z.string().optional(),
     phone: z.string().max(20, 'Máximo 20 caracteres').optional().or(z.literal('')),
     email: z.string().email('E-mail inválido').optional().or(z.literal('')),
+    cpf: z.string().max(14).optional().or(z.literal('')),
     address: z.string().optional().or(z.literal('')),
     // Financial
     pix_key: z.string().optional().or(z.literal('')),
@@ -55,6 +59,10 @@ const schema = z.object({
     dismissal_date: z.string().optional().or(z.literal('')),
     dismissal_reason: z.string().optional().or(z.literal('')),
     would_rehire: z.enum(['true', 'false', '__none__']).optional(),
+    // Ponto Eletrônico
+    user_id: z.number().nullable().optional(),
+    work_start_time: z.string().regex(/^\d{2}:\d{2}$/).optional().or(z.literal('')),
+    work_end_time: z.string().regex(/^\d{2}:\d{2}$/).optional().or(z.literal('')),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -76,6 +84,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
     const { updateEmployee, isUpdating } = useEmployees();
     const { allStores } = useStores();
+    const { toast } = useToast();
     const [showTransfer, setShowTransfer] = useState(false);
 
     const {
@@ -99,6 +108,7 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                 entry_date: employee.entry_date ?? '',
                 phone: employee.phone ? formatPhone(employee.phone) : '',
                 email: employee.email ?? '',
+                cpf: employee.cpf ?? '',
                 address: employee.address ?? '',
                 pix_key: employee.pix_key ?? '',
                 bank_account: employee.bank_account ?? '',
@@ -112,6 +122,9 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                         : employee.would_rehire === false
                         ? 'false'
                         : '__none__',
+                user_id: employee.user_id ?? null,
+                work_start_time: employee.work_start_time ?? '',
+                work_end_time: employee.work_end_time ?? '',
             });
         }
     }, [open, employee, reset]);
@@ -120,6 +133,7 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
     const isVolante = watch('is_volante');
     const worksInGalpon = watch('works_in_galpon');
     const newStoreId = watch('new_store_id');
+    const currentUserId = watch('user_id') ?? null;
 
     const onSubmit = (data: FormData) => {
         const payload = {
@@ -132,6 +146,7 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
             entry_date: data.entry_date || null,
             phone: data.phone || null,
             email: data.email || null,
+            cpf: data.cpf || null,
             address: data.address || null,
             pix_key: data.pix_key || null,
             bank_account: data.bank_account || null,
@@ -147,11 +162,30 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                         ? false
                         : null,
             } : {}),
+            // Ponto Eletrônico — desvincular quando havia vínculo e agora é null
+            ...(data.user_id == null && employee.user_id != null
+                ? { clear_user: true }
+                : data.user_id != null
+                ? { user_id: data.user_id }
+                : {}),
+            work_start_time: data.work_start_time || null,
+            work_end_time: data.work_end_time || null,
         };
 
         updateEmployee(
             { id: employee.id, payload },
-            { onSuccess: () => onOpenChange(false) }
+            {
+                onSuccess: () => onOpenChange(false),
+                onError: (err) => {
+                    if (getApiErrorStatus(err as Error) === 409) {
+                        toast({
+                            variant: 'destructive',
+                            title: 'Usuário já vinculado',
+                            description: 'Usuário já vinculado a outro funcionário.',
+                        });
+                    }
+                },
+            }
         );
     };
 
@@ -275,7 +309,7 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                                             .filter((s) => s.id !== employee.store_id)
                                             .map((store) => (
                                                 <SelectItem key={store.id} value={store.id.toString()}>
-                                                    {store.code} - {store.name}
+                                                    {store.name}
                                                 </SelectItem>
                                             ))}
                                     </SelectContent>
@@ -322,6 +356,24 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                             <Input id="ee-email" type="email" {...register('email')} placeholder="funcionario@email.com" />
                             {errors.email && (
                                 <p className="text-sm text-red-500">{errors.email.message}</p>
+                            )}
+                        </div>
+
+                        <div className="space-y-2 sm:max-w-[50%]">
+                            <label htmlFor="ee-cpf" className="text-sm font-medium">
+                                CPF
+                                <span className="ml-1.5 text-xs text-muted-foreground font-normal">
+                                    (necessário para arquivos fiscais do ponto)
+                                </span>
+                            </label>
+                            <Input
+                                id="ee-cpf"
+                                {...register('cpf')}
+                                placeholder="000.000.000-00"
+                                inputMode="numeric"
+                            />
+                            {errors.cpf && (
+                                <p className="text-sm text-red-500">{errors.cpf.message}</p>
                             )}
                         </div>
 
@@ -425,6 +477,44 @@ export function EditEmployeeDialog({ employee, open, onOpenChange }: Props) {
                                 </div>
                             </div>
                         )}
+                    </div>
+
+                    {/* ── Ponto Eletrônico ── */}
+                    <div className="space-y-3">
+                        <SectionLabel>Ponto Eletrônico</SectionLabel>
+
+                        <div className="space-y-2">
+                            <p className="text-sm font-medium">Usuário do Sistema</p>
+                            <UserCombobox
+                                value={currentUserId}
+                                onChange={(userId) => setValue('user_id', userId)}
+                                currentUserLabel={employee.user_name}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Vincula o funcionário a um usuário para que ele possa bater ponto.
+                            </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                                <label htmlFor="ee-work-start" className="text-sm font-medium">Hora de Entrada</label>
+                                <Input
+                                    id="ee-work-start"
+                                    type="time"
+                                    {...register('work_start_time')}
+                                    placeholder="08:00"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label htmlFor="ee-work-end" className="text-sm font-medium">Hora de Saída</label>
+                                <Input
+                                    id="ee-work-end"
+                                    type="time"
+                                    {...register('work_end_time')}
+                                    placeholder="18:00"
+                                />
+                            </div>
+                        </div>
                     </div>
 
                     <DialogFooter>

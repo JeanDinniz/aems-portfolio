@@ -30,6 +30,9 @@ interface BackendWorker {
     employee_id?: number;
     employee_name?: string;
     name?: string;
+    // Vínculo opcional com o item específico (instalador por serviço); null =
+    // funcionário da O.S. inteira (não amarrado a um item de película).
+    service_order_item_id?: number | null;
 }
 
 interface BackendService {
@@ -72,14 +75,16 @@ interface BackendServiceOrder {
     consultant_name?: string;
     external_os_number?: string;
     notes?: string;
+    execution_notes?: string | null;
     damage_map?: string;
     invoice_number?: string;
-    items?: Array<{ service_id: number; quantity: number; unit_price?: number; notes?: string; tonality?: string; roll_code?: string; service_name?: string | null; service_code?: string | null; film_roll_id?: number | null }>;
+    items?: Array<{ id?: number; service_id: number; quantity: number; unit_price?: number; notes?: string; tonality?: string; roll_code?: string; service_name?: string | null; service_code?: string | null; service_department?: string | null; film_roll_id?: number | null; used_scrap?: boolean; scrap_source_roll_id?: number | null; linear_meters?: number | string | null }>;
     services?: BackendService[];
     service_date?: string | null;
     is_verified?: boolean;
     verified_at?: string | null;
     completion_photos?: string | string[] | null;
+    original_service_order_id?: number | null;
     [key: string]: unknown;
 }
 
@@ -131,9 +136,11 @@ function mapServiceOrder(raw: BackendServiceOrder): ServiceOrder {
         employee_id: Number(w.employee_id ?? w.id ?? 0),
         name: w.employee_name || `Funcionário ${w.employee_id}`,
         isPrimary: idx === 0,
+        service_order_item_id: w.service_order_item_id ?? null,
     }));
 
     const items = (raw.items || []).map(item => ({
+        id: item.id,
         service_id: item.service_id,
         quantity: item.quantity,
         unit_price: item.unit_price ?? 0,
@@ -142,8 +149,13 @@ function mapServiceOrder(raw: BackendServiceOrder): ServiceOrder {
         roll_code: item.roll_code,
         service_name: item.service_name ?? null,
         service_code: item.service_code ?? null,
+        service_department: item.service_department ?? null,
         film_roll_id: (item as any).film_roll_id ?? null,
         film_type_id: (item as any).film_type_id ?? null,
+        used_scrap: item.used_scrap ?? false,
+        scrap_source_roll_id: item.scrap_source_roll_id ?? null,
+        film_applications: (item as any).film_applications ?? null,
+        linear_meters: item.linear_meters ?? null,
     }));
 
     return {
@@ -173,6 +185,7 @@ function mapServiceOrder(raw: BackendServiceOrder): ServiceOrder {
         service_date: raw.service_date ?? null,
         is_verified: raw.is_verified ?? false,
         verified_at: raw.verified_at ?? null,
+        original_service_order_id: raw.original_service_order_id ?? null,
     } as unknown as ServiceOrder;
 }
 
@@ -236,8 +249,20 @@ export const serviceOrdersService = {
 
     finalize: async (id: number, payload: {
         completion_photos: string[]
-        film_roll_assignments: Array<{ service_id: number; film_roll_id: number }>
+        // film_roll_id fica ausente/nulo quando used_scrap é true — bobina de
+        // retalho não é debitada, então não é obrigatória (backend rejeita a
+        // entrada só se film_roll_id for nulo E used_scrap for false).
+        film_roll_assignments: Array<{
+            service_id: number
+            film_roll_id?: number | null
+            tonality?: string
+            used_scrap?: boolean
+            scrap_source_roll_id?: number | null
+        }>
         employee_ids: number[]
+        employee_assignments?: Array<{ service_id: number; employee_ids: number[] }>
+        // Relato técnico do instalador (opcional, máx. 2000) — visível na Conferência.
+        execution_notes?: string | null
     }): Promise<ServiceOrder> => {
         const { data } = await apiClient.post<BackendServiceOrder>(`/service-orders/${id}/finalize`, payload)
         return mapServiceOrder(data)
@@ -260,6 +285,13 @@ export const serviceOrdersService = {
 
     unverify: async (id: number): Promise<ServiceOrder> => {
         const response = await apiClient.patch<BackendServiceOrder>(`/service-orders/${id}/verify`, { verified: false });
+        return mapServiceOrder(response.data);
+    },
+
+    // Desfaz "Lançado Errado" restaurando o status anterior (tipicamente Finalizado),
+    // em vez de reabrir para Aguardando — evita a O.S. ressurgir como "Atrasado".
+    undoWrong: async (id: number): Promise<ServiceOrder> => {
+        const response = await apiClient.post<BackendServiceOrder>(`/service-orders/${id}/undo-wrong`, {});
         return mapServiceOrder(response.data);
     },
 
@@ -376,17 +408,37 @@ export const serviceOrdersService = {
         return response.data;
     },
 
+    suggestReturnOrigin: async (
+        plate: string,
+        excludeOsId?: number,
+        storeId?: number,
+        department?: string
+    ): Promise<{ id: number; order_number: string | null; external_os_number: string | null; service_date: string | null; services: string[] } | null> => {
+        const { data } = await apiClient.get('/service-orders/return-origin-suggestion', {
+            params: { plate, exclude_os_id: excludeOsId, store_id: storeId, department },
+        });
+        return data.suggestion ?? null;
+    },
+
     checkDuplicate: async (params: {
         plate: string;
         service_date: string;
         department: string;
         service_ids: number[];
+        exclude_appointment_id?: number | null;
+        exclude_service_order_id?: number | null;
     }): Promise<DuplicateCheckResult> => {
         const sp = new URLSearchParams();
         sp.append('plate', params.plate);
         sp.append('service_date', params.service_date);
         sp.append('department', params.department);
         params.service_ids.forEach((id) => sp.append('service_ids', String(id)));
+        if (params.exclude_appointment_id != null) {
+            sp.append('exclude_appointment_id', String(params.exclude_appointment_id));
+        }
+        if (params.exclude_service_order_id != null) {
+            sp.append('exclude_service_order_id', String(params.exclude_service_order_id));
+        }
         const response = await apiClient.get(`/service-orders/duplicate-check?${sp.toString()}`);
         return response.data as DuplicateCheckResult;
     },

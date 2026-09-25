@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, Modal, Platform, Pressable, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useForm, Controller } from 'react-hook-form';
@@ -14,12 +15,14 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useToast } from '@/components/ui/Toast';
 import { ServiceItemPicker, type ServiceItemSelection } from '@/components/features/ServiceItemPicker';
+import { ReturnOriginPicker } from '@/components/features/ReturnOriginPicker';
 import { useServiceOrder, useUpdateServiceOrder } from '@/hooks/useServiceOrders';
 import { useStores } from '@/hooks/useStores';
 import { useVehicleModels } from '@/hooks/useVehicleModels';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useCanEdit } from '@/hooks/useMyPermissions';
 import { useGalponFlags } from '@/navigation/guards';
+import { useAuthStore } from '@/stores/auth.store';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { DEPARTMENTS } from '@/constants/service-orders';
 import type { CreateServiceOrderData, Department, ServiceOrder } from '@/types/service-order.types';
@@ -58,7 +61,10 @@ function isValidPlateOrChassi(value: string): boolean {
 const DEPT_VALUES = DEPARTMENTS.map((d) => d.value) as [Department, ...Department[]];
 
 // ─── Schema Zod (espelha o Create, sem fotos/tipo-de-rascunho) ────────────────
-const schema = z
+// Factory: o schema precisa enxergar `isOwner` para a trava de "retorno sem
+// O.S. de origem" (o backend enforça — 403/422; aqui espelhamos client-side).
+function makeSchema(isOwner: boolean) {
+    return z
     .object({
         is_courtesy: z.boolean(),
         is_return: z.boolean(),
@@ -77,6 +83,8 @@ const schema = z
         vehicle_model_id: z.number().optional(),
         vehicle_color: z.string().min(1, 'Cor obrigatória'),
         consultant_id: z.number().optional(),
+        // Vínculo da O.S. de origem (quando Retorno). Preenchido pelo ReturnOriginPicker.
+        original_service_order_id: z.number().optional(),
         items: z
             .array(z.object({ service_id: z.number(), quantity: z.number() }))
             .min(1, 'Selecione pelo menos 1 serviço'),
@@ -104,9 +112,28 @@ const schema = z
                 path: ['consultant_id'],
             });
         }
+        // Retorno SEM O.S. de origem (espelha a trava do backend — 403/422).
+        //   • não-Owner → é OBRIGADO a vincular a O.S. de origem;
+        //   • Owner → pode deixar vazio, MAS a Observação (motivo) vira obrigatória.
+        if (data.is_return && !data.original_service_order_id) {
+            if (!isOwner) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Selecione a O.S. de origem do retorno',
+                    path: ['original_service_order_id'],
+                });
+            } else if (!data.notes?.trim()) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Informe a observação (motivo) ao lançar um retorno sem O.S. de origem.',
+                    path: ['notes'],
+                });
+            }
+        }
     });
+}
 
-type EditOSForm = z.infer<typeof schema>;
+type EditOSForm = z.infer<ReturnType<typeof makeSchema>>;
 
 /** Opções de Cortesia/Retorno (espelha o Create). */
 type CourtesyReturnValue = 'normal' | 'courtesy' | 'return';
@@ -168,6 +195,10 @@ export function EditServiceOrderScreen({
     const updateServiceOrder = useUpdateServiceOrder();
     const { stores } = useStores();
     const { isGalponProfile, hideGalponOption } = useGalponFlags();
+    const isOwner = useAuthStore((s) => s.isOwner)();
+
+    // Schema depende de isOwner (trava de retorno sem O.S. de origem).
+    const schema = useMemo(() => makeSchema(isOwner), [isOwner]);
 
     const { data: order, isLoading, isError, refetch } = useServiceOrder(id);
 
@@ -192,6 +223,7 @@ export function EditServiceOrderScreen({
             vehicle_model_id: undefined,
             vehicle_color: '',
             consultant_id: undefined,
+            original_service_order_id: undefined,
             items: [],
             notes: '',
         },
@@ -212,6 +244,7 @@ export function EditServiceOrderScreen({
             vehicle_model_id: order.vehicle_model_id ?? undefined,
             vehicle_color: order.vehicle_color ?? '',
             consultant_id: order.consultant_id ?? undefined,
+            original_service_order_id: order.original_service_order_id ?? undefined,
             items: (order.items ?? []).map((it) => ({
                 service_id: it.service_id,
                 quantity: it.quantity,
@@ -229,6 +262,11 @@ export function EditServiceOrderScreen({
     const consultantId = watch('consultant_id');
     const vehicleModelId = watch('vehicle_model_id');
     const serviceDate = watch('service_date');
+    const plate = watch('plate');
+    const originServiceOrderId = watch('original_service_order_id');
+
+    // Observação vira obrigatória: Owner lançando retorno SEM O.S. de origem.
+    const notesRequired = isReturn && isOwner && !originServiceOrderId;
 
     // Loja da O.S. é READ-ONLY no Edit (espelha o web): resolve para exibição e
     // deriva a marca (filtra modelo/serviços).
@@ -296,6 +334,11 @@ export function EditServiceOrderScreen({
                 is_galpon: data.is_galpon,
                 is_return: data.is_return,
                 is_courtesy: data.is_courtesy,
+                // Vínculo da O.S. de origem só quando Retorno; caso contrário null
+                // (o backend zera o vínculo) — espelha o web QuickCreateModal.
+                original_service_order_id: data.is_return
+                    ? (data.original_service_order_id ?? null)
+                    : null,
                 service_date: data.service_date,
             };
         },
@@ -348,11 +391,15 @@ export function EditServiceOrderScreen({
         <View className="flex-1 bg-neutral-50 dark:bg-dark-bg">
             <ScreenHeader title="Editar O.S" onBack={() => navigation.goBack()} />
 
-            <ScrollView
-                className="flex-1"
+            <KeyboardAwareScrollView
+                // style (não className): componente de terceiro; o NativeWind não
+                // remapeia className nele como faz no ScrollView nativo.
+                style={{ flex: 1 }}
                 contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
                 keyboardShouldPersistTaps="handled"
-                automaticallyAdjustKeyboardInsets
+                // Rola o campo focado para acima do teclado em iOS E Android (o
+                // automaticallyAdjustKeyboardInsets só valia no iOS). Itens 1/2.
+                bottomOffset={24}
                 keyboardDismissMode="interactive"
             >
                 {/* Aviso de bloqueio (verificada / >7 dias / sem permissão) */}
@@ -405,6 +452,36 @@ export function EditServiceOrderScreen({
                         />
                     ) : null}
                 </View>
+
+                {/* ─── O.S. de origem (visível só quando Retorno) ───────── */}
+                <ReturnOriginPicker
+                    isReturn={isReturn}
+                    plateOrChassi={plate ?? ''}
+                    isValidPlateOrChassi={isValidPlateOrChassi}
+                    onChange={(originId) =>
+                        setValue('original_service_order_id', originId ?? undefined, {
+                            shouldValidate: true,
+                        })
+                    }
+                    disabled={locked}
+                    excludeOsId={order.id}
+                    initialSelectedId={originServiceOrderId ?? null}
+                    storeId={order.location_id}
+                    department={department}
+                />
+                {/* Owner pode lançar sem origem, informando o motivo na Observação. */}
+                {isReturn && isOwner ? (
+                    <Text className="mb-2 -mt-2 font-sans text-xs text-neutral-500 dark:text-dark-text-muted">
+                        Como Proprietário, você pode lançar sem O.S. de origem — informe o motivo na
+                        Observação.
+                    </Text>
+                ) : null}
+                {/* Erro da trava (não-Owner sem origem) — o picker não exibe erro do form. */}
+                {isReturn && errors.original_service_order_id ? (
+                    <Text className="mb-2 -mt-2 font-sans text-sm text-error">
+                        {errors.original_service_order_id.message}
+                    </Text>
+                ) : null}
 
                 {/* ─── Departamento ─────────────────────────────────────── */}
                 <FieldLabel>Departamento *</FieldLabel>
@@ -621,14 +698,19 @@ export function EditServiceOrderScreen({
                     name="notes"
                     render={({ field: { onChange, onBlur, value } }) => (
                         <TextField
-                            label="Observações"
-                            placeholder="Notas adicionais..."
+                            label={notesRequired ? 'Observações *' : 'Observações'}
+                            placeholder={
+                                notesRequired
+                                    ? 'Motivo do retorno sem O.S. de origem...'
+                                    : 'Notas adicionais...'
+                            }
                             multiline
                             numberOfLines={3}
                             style={{ minHeight: 80, textAlignVertical: 'top' }}
                             value={value}
                             onChangeText={onChange}
                             onBlur={onBlur}
+                            error={errors.notes?.message}
                             editable={!locked && !isBusy}
                         />
                     )}
@@ -650,7 +732,7 @@ export function EditServiceOrderScreen({
                         onPress={() => navigation.goBack()}
                     />
                 </View>
-            </ScrollView>
+            </KeyboardAwareScrollView>
 
             {/* ─── Sheets de seleção ───────────────────────────────────── */}
             <Select<number>
@@ -710,7 +792,11 @@ function PickerField({ placeholder, value, onPress, error, disabled }: PickerFie
                 accessibilityRole="button"
                 accessibilityLabel={value ?? placeholder}
                 disabled={disabled}
-                onPress={onPress}
+                // Item 2 — fecha o teclado antes de abrir o sheet (não o cobre).
+                onPress={() => {
+                    Keyboard.dismiss();
+                    onPress();
+                }}
                 className={[
                     'min-h-[48px] flex-row items-center justify-between rounded-lg border px-4 py-3 active:opacity-80',
                     error ? 'border-error' : 'border-neutral-200 dark:border-dark-border-strong',

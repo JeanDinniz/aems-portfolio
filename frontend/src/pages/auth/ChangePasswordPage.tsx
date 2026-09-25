@@ -114,7 +114,7 @@ export default function ChangePasswordPage() {
                 <div className="flex flex-col items-center mb-8">
                     <img
                         src="/brand/logo-white.png"
-                        alt="AEMS AEMS"
+                        alt="AEMS"
                         className="h-12 w-auto mb-4 object-contain"
                     />
                     <div className="w-16 h-0.5 bg-[#F5A800]" />

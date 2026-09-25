@@ -53,18 +53,6 @@ describe('authService', () => {
             expect(response.tokens.accessToken).toBe('mock-access-token');
         });
 
-        it('should return supervisor user data for supervisor login', async () => {
-            const credentials = {
-                email: 'supervisor@example.com',
-                password: 'password123',
-            };
-
-            const response = await authService.login(credentials);
-
-            expect(response.user.role).toBe('supervisor');
-            expect(response.user.supervised_store_ids).toEqual([1, 2]);
-        });
-
         it('should throw error with invalid credentials', async () => {
             const credentials = {
                 email: 'wrong@example.com',

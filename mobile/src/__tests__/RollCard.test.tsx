@@ -43,7 +43,7 @@ function makeRoll(over: Partial<FilmRoll> = {}): FilmRoll {
         visual_id: 'PS4-G20-202606-001',
         color: 'blue',
         created_at: '2026-06-01T10:00:00Z',
-        cost: 500,
+        cost: '500.00',
         lot_number: 'L1',
         ...over,
     };

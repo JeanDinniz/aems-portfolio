@@ -123,12 +123,13 @@ export const InventoryFilterSheet = forwardRef<InventoryFilterSheetRef, Inventor
             <BottomSheetModal
                 ref={modalRef}
                 enableDynamicSizing
-                maxDynamicContentSize={680}
+                maxDynamicContentSize={760}
+                bottomInset={insets.bottom}
                 backdropComponent={renderBackdrop}
                 handleIndicatorStyle={{ backgroundColor: isDark ? '#555555' : '#D0D5DD' }}
                 backgroundStyle={{ backgroundColor: colors.surface }}
             >
-                <BottomSheetView style={{ paddingBottom: insets.bottom + 16 }}>
+                <BottomSheetView>
                     <View className="flex-row items-center justify-between border-b border-neutral-100 px-5 pb-3 pt-1 dark:border-dark-border-soft">
                         <Text className="font-display text-lg text-neutral-900 dark:text-dark-text">
                             Filtros
@@ -147,7 +148,7 @@ export const InventoryFilterSheet = forwardRef<InventoryFilterSheetRef, Inventor
 
                     <ScrollView
                         className="px-5"
-                        contentContainerStyle={{ paddingTop: 16, paddingBottom: 8 }}
+                        contentContainerStyle={{ paddingTop: 16, paddingBottom: 24 }}
                         keyboardShouldPersistTaps="handled"
                     >
                         {/* Departamento (único) — trocar limpa o tipo de película */}
@@ -251,11 +252,12 @@ export const InventoryFilterSheet = forwardRef<InventoryFilterSheetRef, Inventor
                                 </View>
                             </>
                         ) : null}
-                    </ScrollView>
 
-                    <View className="px-5 pt-2">
-                        <Button title="Aplicar filtros" icon="checkmark" onPress={apply} />
-                    </View>
+                        {/* Ação dentro do scroll → nunca fica atrás da barra do Android. */}
+                        <View className="mt-3">
+                            <Button title="Aplicar filtros" icon="checkmark" onPress={apply} />
+                        </View>
+                    </ScrollView>
                 </BottomSheetView>
             </BottomSheetModal>
         );

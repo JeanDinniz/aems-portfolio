@@ -10,10 +10,13 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { CHART_COLORS } from '@/constants/chartColors';
+import { formatDateTick, type ChartGranularity } from './chartAxis';
 import type { TimeSeriesByTypePoint } from '@/types/dashboard.types';
 
 interface RevenueTrendChartProps {
   data: TimeSeriesByTypePoint[];
+  granularity: ChartGranularity;
 }
 
 function useIsDark() {
@@ -36,14 +39,14 @@ const EMPTY_STATE = (
   </div>
 );
 
-export function RevenueTrendChart({ data }: RevenueTrendChartProps) {
+export function RevenueTrendChart({ data, granularity }: RevenueTrendChartProps) {
   const isDark = useIsDark();
 
   return (
     <Card className="bg-white dark:bg-[#161616] border-gray-200 dark:border-[#1E1E1E]">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-          Evolução por Tipo — Película, PPF e Estética
+          Volume por Tipo de Serviço — Película, PPF e Estética
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -61,6 +64,7 @@ export function RevenueTrendChart({ data }: RevenueTrendChartProps) {
               />
               <XAxis
                 dataKey="date"
+                tickFormatter={(v) => formatDateTick(v as string, granularity)}
                 tick={{ fontSize: 11, fill: isDark ? '#6b7280' : '#4b5563' }}
                 axisLine={false}
                 tickLine={false}
@@ -91,7 +95,7 @@ export function RevenueTrendChart({ data }: RevenueTrendChartProps) {
                 type="monotone"
                 dataKey="film_count"
                 name="Película"
-                stroke="#3b82f6"
+                stroke={CHART_COLORS.blue}
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -100,7 +104,7 @@ export function RevenueTrendChart({ data }: RevenueTrendChartProps) {
                 type="monotone"
                 dataKey="ppf_count"
                 name="PPF"
-                stroke="#F5A800"
+                stroke={CHART_COLORS.brand}
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -109,7 +113,7 @@ export function RevenueTrendChart({ data }: RevenueTrendChartProps) {
                 type="monotone"
                 dataKey="estetica_count"
                 name="Estética"
-                stroke="#10b981"
+                stroke={CHART_COLORS.green}
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}

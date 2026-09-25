@@ -2,25 +2,36 @@ import { ScrollView, View } from 'react-native';
 
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { AppointmentFormFields } from '@/components/features/scheduling/AppointmentFormFields';
-import { useCreateAppointment } from '@/hooks/useScheduling';
-import type { CreateAppointmentPayload } from '@/types/scheduling.types';
+import { useCreateAppointment, useCreateCombinedAppointment } from '@/hooks/useScheduling';
+import type {
+    CombinedAppointmentPayload,
+    CreateAppointmentPayload,
+} from '@/types/scheduling.types';
 import type { SchedulingStackScreenProps } from '@/navigation/types';
 
 /**
  * AGD-03 — Novo Agendamento.
  *
  * Tela fina: cabeçalho + form compartilhado (AppointmentFormFields). O form
- * monta o payload e delega aqui via `onSubmit`; a mutation
- * (`useCreateAppointment`) cuida do toast de sucesso/erro e da invalidação em
- * cascata da lista. Ao concluir, volta para a lista.
+ * monta o payload e delega aqui via `onSubmit` (1 depto) ou `onSubmitCombined`
+ * (múltiplos departamentos → POST /scheduling/combined); as mutations
+ * (`useCreateAppointment` / `useCreateCombinedAppointment`) cuidam do toast de
+ * sucesso/erro e da invalidação em cascata da lista. Ao concluir, volta.
  */
 export function CreateAppointmentScreen({
     navigation,
 }: SchedulingStackScreenProps<'CreateAppointment'>) {
     const createAppointment = useCreateAppointment();
+    const createCombined = useCreateCombinedAppointment();
 
     const handleSubmit = (payload: CreateAppointmentPayload) => {
         createAppointment.mutate(payload, {
+            onSuccess: () => navigation.goBack(),
+        });
+    };
+
+    const handleSubmitCombined = (payload: CombinedAppointmentPayload) => {
+        createCombined.mutate(payload, {
             onSuccess: () => navigation.goBack(),
         });
     };
@@ -38,7 +49,8 @@ export function CreateAppointmentScreen({
                 <AppointmentFormFields
                     mode="create"
                     onSubmit={handleSubmit}
-                    submitting={createAppointment.isPending}
+                    onSubmitCombined={handleSubmitCombined}
+                    submitting={createAppointment.isPending || createCombined.isPending}
                 />
             </ScrollView>
         </View>

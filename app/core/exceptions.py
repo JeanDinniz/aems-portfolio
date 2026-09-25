@@ -59,16 +59,6 @@ class ValidationError(AEMSException):
         )
 
 
-class AccountLockedError(AEMSException):
-    """Conta bloqueada por excesso de tentativas de login."""
-
-    def __init__(self, minutes_remaining: int):
-        super().__init__(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Conta bloqueada. Tente novamente em {minutes_remaining} minutos.",
-        )
-
-
 class ConflictError(AEMSException):
     """Conflito - recurso já existe ou operação inválida."""
 

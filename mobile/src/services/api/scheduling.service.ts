@@ -8,6 +8,9 @@ import type {
     SchedulingStoreSummary,
     CreateAppointmentPayload,
     UpdateAppointmentPayload,
+    CombinedAppointmentPayload,
+    CombinedAppointmentResponse,
+    AddDepartmentsPayload,
 } from '@/types/scheduling.types';
 
 /**
@@ -32,6 +35,7 @@ export const schedulingService = {
         if (filters.date_to) params.date_to = filters.date_to;
         if (filters.search) params.search = filters.search;
         if (filters.include_cancelled) params.include_cancelled = true;
+        if (filters.include_terminal) params.include_terminal = true;
         const { data } = await apiClient.get<AppointmentListResponse>('/scheduling', { params });
         return data;
     },
@@ -76,8 +80,29 @@ export const schedulingService = {
         return data;
     },
 
+    async createCombined(
+        payload: CombinedAppointmentPayload
+    ): Promise<CombinedAppointmentResponse> {
+        const { data } = await apiClient.post<CombinedAppointmentResponse>(
+            '/scheduling/combined',
+            payload
+        );
+        return data;
+    },
+
     async update(id: number, payload: UpdateAppointmentPayload): Promise<Appointment> {
         const { data } = await apiClient.patch<Appointment>(`/scheduling/${id}`, payload);
+        return data;
+    },
+
+    async addDepartments(
+        id: number,
+        payload: AddDepartmentsPayload
+    ): Promise<CombinedAppointmentResponse> {
+        const { data } = await apiClient.post<CombinedAppointmentResponse>(
+            `/scheduling/${id}/add-departments`,
+            payload
+        );
         return data;
     },
 

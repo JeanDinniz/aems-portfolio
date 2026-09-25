@@ -14,6 +14,7 @@
  */
 import * as ImagePicker from 'expo-image-picker';
 
+import { suppressAppLock, releaseAppLock } from '@/services/biometrics';
 import type { LocalPhotoAsset } from '@/types/photo.types';
 
 /** O usuário cancelou a captura/seleção. Não é erro de verdade — fluxo normal. */
@@ -58,26 +59,44 @@ function toLocalAsset(asset: ImagePicker.ImagePickerAsset): LocalPhotoAsset {
     };
 }
 
+/** Câmera do dispositivo a usar na captura. Default: traseira. */
+export type CameraType = 'front' | 'back';
+
 /**
  * Abre a câmera e devolve o asset capturado (sem compressão).
+ *
+ * @param cameraType câmera a abrir — `'front'` (selfie, usado no Ponto
+ *        Eletrônico) ou `'back'` (padrão das fotos de O.S.). Omitido = traseira,
+ *        preservando o comportamento dos usos existentes.
  * @throws {CaptureCancelled} se o usuário cancelar.
  * @throws {PermissionDeniedError} se a permissão de câmera for negada.
  */
-export async function captureFromCamera(): Promise<LocalPhotoAsset> {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-        throw new PermissionDeniedError('camera', permission.canAskAgain);
+export async function captureFromCamera(cameraType: CameraType = 'back'): Promise<LocalPhotoAsset> {
+    // A câmera é uma activity nativa que backgrounda o app; suprime o re-bloqueio
+    // biométrico no vaivém (senão a tela de digital reaparece ao confirmar a foto).
+    suppressAppLock();
+    try {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+            throw new PermissionDeniedError('camera', permission.canAskAgain);
+        }
+
+        const result = await ImagePicker.launchCameraAsync({
+            mediaTypes: ['images'],
+            quality: 1,
+            exif: false,
+            allowsMultipleSelection: false,
+            cameraType:
+                cameraType === 'front'
+                    ? ImagePicker.CameraType.front
+                    : ImagePicker.CameraType.back,
+        });
+
+        if (result.canceled) throw new CaptureCancelled();
+        return toLocalAsset(result.assets[0]);
+    } finally {
+        releaseAppLock();
     }
-
-    const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'],
-        quality: 1,
-        exif: false,
-        allowsMultipleSelection: false,
-    });
-
-    if (result.canceled) throw new CaptureCancelled();
-    return toLocalAsset(result.assets[0]);
 }
 
 /**
@@ -86,20 +105,26 @@ export async function captureFromCamera(): Promise<LocalPhotoAsset> {
  * @throws {PermissionDeniedError} se a permissão de galeria for negada.
  */
 export async function pickFromLibrary(): Promise<LocalPhotoAsset> {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-        throw new PermissionDeniedError('library', permission.canAskAgain);
+    // A galeria também abre uma activity nativa — mesma supressão do re-bloqueio.
+    suppressAppLock();
+    try {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+            throw new PermissionDeniedError('library', permission.canAskAgain);
+        }
+
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            quality: 1,
+            exif: false,
+            allowsMultipleSelection: false,
+        });
+
+        if (result.canceled) throw new CaptureCancelled();
+        return toLocalAsset(result.assets[0]);
+    } finally {
+        releaseAppLock();
     }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 1,
-        exif: false,
-        allowsMultipleSelection: false,
-    });
-
-    if (result.canceled) throw new CaptureCancelled();
-    return toLocalAsset(result.assets[0]);
 }
 
 export { isCancelled };

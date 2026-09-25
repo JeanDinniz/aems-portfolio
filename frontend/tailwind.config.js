@@ -58,6 +58,26 @@ module.exports = {
                     DEFAULT: "hsl(var(--card))",
                     foreground: "hsl(var(--card-foreground))",
                 },
+                // Estruturais do shell — tematizáveis por modelo de design
+                shell: "var(--shell)",
+                header: {
+                    DEFAULT: "var(--header)",
+                    border: "var(--header-border)",
+                },
+                sidebar: {
+                    DEFAULT: "var(--sidebar)",
+                    border: "var(--sidebar-border)",
+                    hover: "var(--sidebar-hover)",
+                    fg: "var(--sidebar-fg)",
+                    "fg-hover": "var(--sidebar-fg-hover)",
+                    muted: "var(--sidebar-muted)",
+                    dim: "var(--sidebar-dim)",
+                    active: "var(--sidebar-active)",
+                    "active-strong": "var(--sidebar-active-strong)",
+                    "active-fg": "var(--sidebar-active-fg)",
+                    accent: "var(--sidebar-accent)",
+                    "accent-fg": "var(--sidebar-accent-fg)",
+                },
                 // AEMS Colors
                 aems: {
                     primary: {
@@ -113,6 +133,7 @@ module.exports = {
                 lg: "var(--radius)",
                 md: "calc(var(--radius) - 2px)",
                 sm: "calc(var(--radius) - 4px)",
+                card: "var(--r-card)",
                 'aems-sm': "var(--aems-radius-sm)",
                 'aems': "var(--aems-radius)",
                 'aems-lg': "var(--aems-radius-lg)",

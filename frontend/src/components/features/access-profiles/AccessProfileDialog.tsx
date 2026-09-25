@@ -22,6 +22,18 @@ import { useCreateAccessProfile, useUpdateAccessProfile } from '@/hooks/useAcces
 import { ProfileUsersTab } from './ProfileUsersTab';
 import type { AccessProfile, AccessProfileCreate, ModulePermission, SubModule, ModuleGroup } from '@/types/accessProfile.types';
 
+// Todos os departamentos disponíveis para restringir a visibilidade no Agendamento.
+const SCHEDULING_DEPARTMENT_OPTIONS: [string, string][] = [
+    ['film', 'Película'],
+    ['security_film', 'Película de Segurança'],
+    ['ppf', 'PPF'],
+    ['vn', 'VN'],
+    ['vu', 'VU'],
+    ['vd', 'Venda Direta'],
+    ['bodywork', 'Funilaria'],
+    ['workshop', 'Oficina'],
+];
+
 // ------ Schema and definitions ------
 
 const SUB_MODULE_LABELS: Record<SubModule, string> = {
@@ -39,6 +51,13 @@ const SUB_MODULE_LABELS: Record<SubModule, string> = {
     scheduling: 'Agendamentos',
     scheduling_os: 'Gerar O.S. (Agendamento)',
     inventory: 'Estoque',
+    time_clock: 'Ponto — Bater',
+    time_clock_mirror: 'Ponto — Espelho',
+    ebook: 'E-book',
+    installer_performance: 'Desempenho de Instaladores',
+    epi: 'Controle de EPIs',
+    material_requests: 'Pedidos de Material',
+    indicadores: 'Películas',
 };
 
 interface PermissionRow {
@@ -56,6 +75,7 @@ const ADM_PERMISSIONS: PermissionRow[] = [
     { module_group: 'ADM', sub_module: 'models', label: 'Modelos' },
     { module_group: 'ADM', sub_module: 'services', label: 'Serviços' },
     { module_group: 'ADM', sub_module: 'profiles', label: 'Perfis de Acesso' },
+    { module_group: 'ADM', sub_module: 'epi', label: 'Controle de EPIs' },
 ];
 
 const OPERACIONAL_PERMISSIONS: PermissionRow[] = [
@@ -65,6 +85,11 @@ const OPERACIONAL_PERMISSIONS: PermissionRow[] = [
     { module_group: 'OPERACIONAL', sub_module: 'scheduling', label: 'Agendamentos' },
     { module_group: 'OPERACIONAL', sub_module: 'scheduling_os', label: 'Gerar O.S. (Agendamento)' },
     { module_group: 'OPERACIONAL', sub_module: 'inventory', label: 'Estoque' },
+    { module_group: 'OPERACIONAL', sub_module: 'time_clock', label: 'Ponto — Bater' },
+    { module_group: 'ADM', sub_module: 'time_clock_mirror', label: 'Ponto — Espelho' },
+    { module_group: 'OPERACIONAL', sub_module: 'installer_performance', label: 'Desempenho de Instaladores' },
+    { module_group: 'OPERACIONAL', sub_module: 'material_requests', label: 'Pedidos de Material' },
+    { module_group: 'OPERACIONAL', sub_module: 'indicadores', label: 'Películas' },
 ];
 
 const ALL_PERMISSIONS: PermissionRow[] = [...ADM_PERMISSIONS, ...OPERACIONAL_PERMISSIONS];
@@ -109,6 +134,7 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
     const [permState, setPermState] = useState<PermState>(defaultPermState);
     const [selectedStoreIds, setSelectedStoreIds] = useState<Set<string>>(new Set());
     const [userIds, setUserIds] = useState<string[]>([]);
+    const [schedulingDepartments, setSchedulingDepartments] = useState<string[]>([]);
 
     const { data: stores = [], isLoading: storesLoading } = useQuery({
         queryKey: ['stores'],
@@ -157,6 +183,7 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
             setPermState(newPerms);
             setSelectedStoreIds(new Set(profile.store_ids.map(String)));
             setUserIds(profile.user_ids?.map(String) ?? []);
+            setSchedulingDepartments(profile.scheduling_departments ?? []);
         } else {
             reset({
                 name: '',
@@ -168,6 +195,7 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
             setPermState(defaultPermState());
             setSelectedStoreIds(new Set());
             setUserIds([]);
+            setSchedulingDepartments([]);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
@@ -181,6 +209,12 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
             ...prev,
             [sub_module]: { ...prev[sub_module], [field]: value },
         }));
+    };
+
+    const toggleSchedulingDepartment = (dept: string) => {
+        setSchedulingDepartments((prev) =>
+            prev.includes(dept) ? prev.filter((d) => d !== dept) : [...prev, dept]
+        );
     };
 
     const toggleStore = (storeId: string) => {
@@ -209,6 +243,7 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
             is_active: data.is_active,
             is_galpon_profile: data.is_galpon_profile,
             hide_galpon_option: data.is_galpon_profile ? false : data.hide_galpon_option,
+            scheduling_departments: schedulingDepartments,
             permissions: buildPermissions(),
             store_ids: Array.from(selectedStoreIds),
             user_ids: userIds,
@@ -241,6 +276,7 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
                             <TabsTrigger value="geral" className="data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:text-foreground data-[state=active]:shadow-sm text-gray-500 dark:text-zinc-400">Geral</TabsTrigger>
                             <TabsTrigger value="permissions" className="data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:text-foreground data-[state=active]:shadow-sm text-gray-500 dark:text-zinc-400">Permissoes</TabsTrigger>
                             <TabsTrigger value="stores" className="data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:text-foreground data-[state=active]:shadow-sm text-gray-500 dark:text-zinc-400">Lojas</TabsTrigger>
+                            <TabsTrigger value="departments" className="data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:text-foreground data-[state=active]:shadow-sm text-gray-500 dark:text-zinc-400">Departamentos</TabsTrigger>
                             <TabsTrigger value="users" className="data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:text-foreground data-[state=active]:shadow-sm text-gray-500 dark:text-zinc-400">Usuários</TabsTrigger>
                         </TabsList>
 
@@ -370,6 +406,30 @@ export function AccessProfileDialog({ open, onOpenChange, profile }: AccessProfi
                                     ))}
                                 </div>
                             )}
+                        </TabsContent>
+
+                        {/* Tab: Departamentos (visíveis no Agendamento) */}
+                        <TabsContent value="departments" className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+                            <p className="text-xs text-muted-foreground">
+                                Selecione os departamentos que este perfil enxerga no módulo de Agendamentos.
+                                Nenhum selecionado = vê todos.
+                            </p>
+                            <div className="border rounded-lg divide-y">
+                                {SCHEDULING_DEPARTMENT_OPTIONS.map(([value, label]) => (
+                                    <label
+                                        key={value}
+                                        htmlFor={`ap-dept-${value}`}
+                                        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/40 transition-colors"
+                                    >
+                                        <Checkbox
+                                            id={`ap-dept-${value}`}
+                                            checked={schedulingDepartments.includes(value)}
+                                            onCheckedChange={() => toggleSchedulingDepartment(value)}
+                                        />
+                                        <span className="text-sm font-medium">{label}</span>
+                                    </label>
+                                ))}
+                            </div>
                         </TabsContent>
                     </Tabs>
 

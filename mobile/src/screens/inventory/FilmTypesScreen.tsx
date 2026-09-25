@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { useConfirm } from '@/components/ui';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -36,6 +37,7 @@ const DEPT_FILTERS: ({ value: FilmDepartment | 'all'; label: string })[] = [
 
 export function FilmTypesScreen({ navigation }: InventoryStackScreenProps<'FilmTypes'>) {
     const canEdit = useCanEdit('inventory');
+    const { confirm } = useConfirm();
     const formSheetRef = useRef<FilmTypeFormSheetRef>(null);
     const deleteFilmType = useDeleteFilmType();
 
@@ -47,19 +49,14 @@ export function FilmTypesScreen({ navigation }: InventoryStackScreenProps<'FilmT
 
     const items = useMemo<FilmType[]>(() => types ?? [], [types]);
 
-    const confirmDelete = (ft: FilmType) => {
-        Alert.alert(
-            'Excluir tipo de película',
-            `"${ft.name}" será excluído permanentemente. Esta ação não pode ser desfeita.`,
-            [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: 'Excluir',
-                    style: 'destructive',
-                    onPress: () => deleteFilmType.mutate(ft.id),
-                },
-            ]
-        );
+    const confirmDelete = async (ft: FilmType) => {
+        const ok = await confirm({
+            title: 'Excluir tipo de película',
+            message: `"${ft.name}" será excluído permanentemente. Esta ação não pode ser desfeita.`,
+            confirmLabel: 'Excluir',
+            destructive: true,
+        });
+        if (ok) deleteFilmType.mutate(ft.id);
     };
 
     const openServices = (ft: FilmType) => navigation.navigate('FilmTypeServices', { id: ft.id });

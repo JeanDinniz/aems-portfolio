@@ -30,9 +30,32 @@ export const APPOINTMENT_STATUS_CONFIG: Record<
     atencao: { label: 'Atenção', color: '#F59E0B', border: '#F59E0B', dot: '#F59E0B', cardBg: '#FFFBEB' },
     agendado: { label: 'Agendado', color: '#3B82F6', border: '#3B82F6', dot: '#3B82F6', cardBg: '#EFF6FF' },
     em_execucao: { label: 'Em execução', color: '#22C55E', border: '#22C55E', dot: '#22C55E', cardBg: '#F0FDF4' },
+    duplicidade: { label: 'Duplicidade', color: '#C4761A', border: '#C4761A', dot: '#C4761A', cardBg: '#FEF6EC' },
     finalizado: { label: 'Finalizado', color: '#A855F7', border: '#A855F7', dot: '#A855F7', cardBg: '#FAF5FF' },
     cancelado: { label: 'Cancelado', color: '#9CA3AF', border: '#9CA3AF', dot: '#9CA3AF', cardBg: '#F3F4F6' },
 };
+
+/**
+ * Config de fallback para um `display_status` que o app ainda não conhece (ex.:
+ * um status novo introduzido pelo backend depois deste build). Evita crash por
+ * acesso a `undefined` no card/telas — usar SEMPRE via `getAppointmentStatusConfig`.
+ */
+const APPOINTMENT_STATUS_FALLBACK = {
+    label: 'Status',
+    color: '#6B7280',
+    border: '#9CA3AF',
+    dot: '#9CA3AF',
+    cardBg: '#F3F4F6',
+} as const;
+
+/** Retorna a config do status com fallback seguro (nunca `undefined`). */
+export function getAppointmentStatusConfig(status: string | null | undefined) {
+    if (status && status in APPOINTMENT_STATUS_CONFIG) {
+        return APPOINTMENT_STATUS_CONFIG[status as AppointmentDisplayStatus];
+    }
+    // Usa o rótulo cru do backend quando houver, para não esconder informação.
+    return { ...APPOINTMENT_STATUS_FALLBACK, label: status ?? APPOINTMENT_STATUS_FALLBACK.label };
+}
 
 export const DEPARTMENT_LABELS: Record<string, string> = {
     film: 'Película',
@@ -50,8 +73,9 @@ export const STATUS_PRIORITY: Record<AppointmentDisplayStatus, number> = {
     atencao: 1,
     agendado: 2,
     em_execucao: 3,
-    finalizado: 4,
-    cancelado: 5,
+    duplicidade: 4,
+    finalizado: 5,
+    cancelado: 6,
 };
 
 export const FILM_TONALITY_OPTIONS = [
@@ -66,6 +90,17 @@ export const FILM_TONALITY_OPTIONS = [
 // Serviços de Película Transparente: apenas G75 e Incolor são válidos
 export const TRANSPARENT_FILM_CODES = ['WB'];
 export const TRANSPARENT_FILM_TONALITIES = ['G75', 'Incolor'];
+
+// Sugestões de região do carro para tonalidades por região (texto livre curto).
+// Copiado 1:1 do web (frontend/src/constants/scheduling.ts).
+export const FILM_REGION_SUGGESTIONS = [
+    'Portas dianteiras',
+    'Portas traseiras',
+    'Vidro traseiro',
+    'Para-brisa',
+    'Quebra-ventos',
+    'Teto',
+];
 
 export function getTonalityOptions(serviceCode: string | null | undefined) {
     if (serviceCode && TRANSPARENT_FILM_CODES.some((c) => serviceCode.startsWith(c))) {

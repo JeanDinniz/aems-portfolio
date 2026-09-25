@@ -5,7 +5,7 @@ Store router - API endpoints for store management.
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import UserRole, require_roles
+from app.core.permissions import check_profile_permission
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse, get_pagination_params
@@ -30,8 +30,7 @@ async def list_stores(
     """
     Lista todas as lojas.
     - Owner: vê todas as lojas
-    - Supervisor: vê apenas lojas sob sua supervisão
-    - Operator: vê apenas sua loja
+    - Demais: veem as lojas do seu perfil de acesso (apply_store_filter)
     """
     stores, total = await service.list_stores(
         db=db,
@@ -64,7 +63,7 @@ async def get_store(
     "",
     response_model=StoreResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("stores", "can_edit"))],
 )
 async def create_store(
     data: StoreCreate,
@@ -82,7 +81,7 @@ async def create_store(
 @router.patch(
     "/{store_id}",
     response_model=StoreResponse,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("stores", "can_edit"))],
 )
 async def update_store(
     store_id: int,
@@ -103,7 +102,7 @@ async def update_store(
 @router.delete(
     "/{store_id}",
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_roles(UserRole.OWNER))],
+    dependencies=[Depends(check_profile_permission("stores", "can_delete"))],
 )
 async def delete_store(
     store_id: int,

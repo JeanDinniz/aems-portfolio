@@ -1,9 +1,10 @@
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ChangePasswordScreen } from '@/screens/auth/ChangePasswordScreen';
+import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import { useAuthStore } from '@/stores/auth.store';
 import type { User } from '@/types/auth.types';
 
@@ -48,12 +49,16 @@ async function renderScreen() {
     const qc = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } });
     const utils = await render(
         <SafeAreaProvider initialMetrics={metrics}>
-            <QueryClientProvider client={qc}>
-                <ChangePasswordScreen
-                    navigation={navigation as never}
-                    route={{ key: 'ChangePassword', name: 'ChangePassword' } as never}
-                />
-            </QueryClientProvider>
+            <ThemeProvider>
+                <ConfirmProvider>
+                    <QueryClientProvider client={qc}>
+                        <ChangePasswordScreen
+                            navigation={navigation as never}
+                            route={{ key: 'ChangePassword', name: 'ChangePassword' } as never}
+                        />
+                    </QueryClientProvider>
+                </ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
     return { ...utils, navigation };
@@ -73,17 +78,12 @@ async function fillForm(
 describe('ChangePasswordScreen', () => {
     beforeEach(() => {
         jest.clearAllMocks();
-        // Auto-confirma o Alert pressionando o botão de ação (não-cancel).
-        jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
-            const btn = buttons?.find((b) => b.onPress && b.style !== 'cancel');
-            btn?.onPress?.();
-        });
     });
 
-    it('1º acesso: troca com sucesso → alerta "Senha definida" e logout', async () => {
+    it('1º acesso: troca com sucesso → aviso "Senha definida" e logout', async () => {
         setUser(true);
         mockChangePassword.mockResolvedValueOnce(undefined);
-        const { getByText, getAllByPlaceholderText } = await renderScreen();
+        const { getByText, findByText, getAllByPlaceholderText } = await renderScreen();
 
         expect(getByText('Defina sua senha')).toBeTruthy();
         await fillForm(getAllByPlaceholderText, {
@@ -91,19 +91,22 @@ describe('ChangePasswordScreen', () => {
             next: 'newpass1',
             confirm: 'newpass1',
         });
-        await fireEvent.press(getByText('Salvar nova senha'));
+        // Sem await: o handler fica suspenso no alert() até o OK ser pressionado.
+        fireEvent.press(getByText('Salvar nova senha'));
 
         await waitFor(() => {
             expect(mockChangePassword).toHaveBeenCalledWith('oldpass1', 'newpass1');
         });
-        expect(Alert.alert).toHaveBeenCalledWith('Senha definida', expect.any(String), expect.anything());
-        expect(mockLogout).toHaveBeenCalled();
+        // O aviso "Senha definida" aparece; ao confirmar (OK), dispara o logout.
+        await findByText('Senha definida');
+        fireEvent.press(getByText('OK'));
+        await waitFor(() => expect(mockLogout).toHaveBeenCalled());
     });
 
-    it('logado: troca com sucesso → alerta "Senha alterada" e volta', async () => {
+    it('logado: troca com sucesso → aviso "Senha alterada" e volta', async () => {
         setUser(false);
         mockChangePassword.mockResolvedValueOnce(undefined);
-        const { getByText, getAllByPlaceholderText, navigation } = await renderScreen();
+        const { getByText, findByText, getAllByPlaceholderText, navigation } = await renderScreen();
 
         expect(getByText('Alterar senha')).toBeTruthy();
         await fillForm(getAllByPlaceholderText, {
@@ -111,12 +114,16 @@ describe('ChangePasswordScreen', () => {
             next: 'newpass1',
             confirm: 'newpass1',
         });
-        await fireEvent.press(getByText('Salvar nova senha'));
+        // Sem await: o handler fica suspenso no alert() até o OK ser pressionado.
+        fireEvent.press(getByText('Salvar nova senha'));
 
         await waitFor(() => {
             expect(mockChangePassword).toHaveBeenCalled();
         });
-        expect(navigation.goBack).toHaveBeenCalled();
+        // O aviso "Senha alterada" aparece; ao confirmar (OK), volta.
+        await findByText('Senha alterada');
+        fireEvent.press(getByText('OK'));
+        await waitFor(() => expect(navigation.goBack).toHaveBeenCalled());
         expect(mockLogout).not.toHaveBeenCalled();
     });
 
@@ -141,17 +148,18 @@ describe('ChangePasswordScreen', () => {
                 response: { status: 400, data: { detail: 'Senha atual incorreta' } },
             })
         );
-        const { getByText, getAllByPlaceholderText } = await renderScreen();
+        const { getByText, findByText, getAllByPlaceholderText } = await renderScreen();
 
         await fillForm(getAllByPlaceholderText, {
             current: 'wrongpass1',
             next: 'newpass1',
             confirm: 'newpass1',
         });
-        await fireEvent.press(getByText('Salvar nova senha'));
+        // Sem await: o handler fica suspenso no alert() de erro até o OK.
+        fireEvent.press(getByText('Salvar nova senha'));
 
-        await waitFor(() => {
-            expect(Alert.alert).toHaveBeenCalledWith('Erro', expect.any(String));
-        });
+        // Aviso de erro exibido no ConfirmDialog (título "Erro" + mensagem do backend).
+        await findByText('Erro');
+        expect(getByText('Senha atual incorreta')).toBeTruthy();
     });
 });

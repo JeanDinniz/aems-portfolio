@@ -55,6 +55,52 @@ THUMBNAIL_QUALITY = 80
 # Cache agressivo: o nome do arquivo é um UUID e nunca é sobrescrito (imutável).
 IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
+# --- Documentos da Biblioteca (PDF / apresentações / office) ---
+# Extensão → content-type usado ao servir (browsers mandam content-types
+# inconsistentes para office; a validação real é por extensão + magic bytes).
+DOC_EXTENSION_TYPES = {
+    "pdf": "application/pdf",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+# Magic bytes por família de formato de documento.
+_DOC_MAGIC = {
+    "pdf": (b"%PDF-",),  # PDF
+    "zip": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),  # docx/xlsx/pptx (OOXML = zip)
+    "ole2": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),  # doc/xls/ppt antigos (OLE2)
+}
+
+MAX_DOC_SIZE_MB = 50
+MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_MB * 1024 * 1024
+
+# --- Vídeos da vistoria (1 por O.S., anexo opcional) ---
+ALLOWED_VIDEO_CONTENT_TYPES = {"video/mp4", "video/quicktime"}
+ALLOWED_VIDEO_EXTENSIONS = {"mp4", "mov"}
+MAX_VIDEO_SIZE_MB = 50
+MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+
+
+def _validate_video_magic(content: bytes) -> bool:
+    """MP4 e MOV são contêineres ISO-BMFF: têm o box 'ftyp' logo no início
+    (offset 4). Content-Type/extensão podem ser forjados; isto confere o miolo."""
+    return b"ftyp" in content[4:16]
+
+
+def _validate_doc_magic(content: bytes, extension: str) -> bool:
+    """Confere se o conteúdo bate com a família esperada da extensão."""
+    if extension == "pdf":
+        return content.startswith(_DOC_MAGIC["pdf"])
+    if extension in ("pptx", "docx", "xlsx"):
+        return content.startswith(_DOC_MAGIC["zip"])
+    if extension in ("ppt", "doc", "xls"):
+        return content.startswith(_DOC_MAGIC["ole2"])
+    return False
+
 
 def _validate_magic_bytes(content: bytes, declared_type: str) -> bool:
     """Validate file content matches declared content type via magic bytes."""
@@ -205,6 +251,76 @@ async def _save_locally(file_content: bytes, filename: str) -> str:
     return _get_local_url(filename)
 
 
+def build_s3_client():
+    """Cria um cliente boto3 S3/MinIO a partir das settings (ou None em modo local).
+
+    Reutilizável: passe o mesmo cliente para várias chamadas de ``read_media_bytes``
+    (ex.: ZIP de fotos) em vez de recriar um cliente por foto.
+    """
+    if not settings.S3_ACCESS_KEY:
+        return None
+    import boto3  # type: ignore[import]
+
+    kwargs: dict = {
+        "aws_access_key_id": settings.S3_ACCESS_KEY,
+        "aws_secret_access_key": settings.S3_SECRET_KEY,
+    }
+    if settings.S3_ENDPOINT:
+        kwargs["endpoint_url"] = settings.S3_ENDPOINT
+    return boto3.client("s3", **kwargs)
+
+
+def read_media_bytes(url: str, s3_client=None) -> bytes | None:
+    """
+    Lê os bytes de uma foto a partir da sua URL pública, agnóstico ao storage.
+
+    - S3/MinIO (settings.S3_ACCESS_KEY): extrai a key após "/{S3_BUCKET}/" e usa
+      boto3 get_object.
+    - Filesystem (dev): extrai o nome após "/uploads/" e lê de LOCAL_UPLOADS_DIR.
+
+    Best-effort: retorna None em qualquer falha (foto ausente, URL inesperada,
+    erro de I/O) — o chamador (ex.: export de fotos em ZIP) apenas pula a foto,
+    nunca aborta por causa de uma imagem.
+
+    I/O SÍNCRONO (boto3 / disco): chamar dentro de run_in_threadpool quando
+    invocado a partir de um endpoint async.
+    """
+    if not url:
+        return None
+
+    try:
+        if settings.S3_ACCESS_KEY:
+            marker = f"/{settings.S3_BUCKET}/"
+            idx = url.find(marker)
+            if idx == -1:
+                logger.warning("URL de mídia sem bucket esperado: %s", url)
+                return None
+            key = url[idx + len(marker) :].split("?", 1)[0]
+
+            # Reutiliza o cliente passado (ZIP de fotos) ou cria um pontual.
+            client = s3_client if s3_client is not None else build_s3_client()
+            obj = client.get_object(Bucket=settings.S3_BUCKET, Key=key)
+            return obj["Body"].read()
+
+        marker = "/uploads/"
+        idx = url.find(marker)
+        if idx == -1:
+            logger.warning("URL de mídia local sem /uploads/: %s", url)
+            return None
+        filename = url[idx + len(marker) :].split("?", 1)[0]
+        # Defesa em profundidade contra path traversal: resolve o caminho e exige
+        # que fique contido em LOCAL_UPLOADS_DIR (ex.: "/uploads/../../etc/passwd"
+        # já é barrado no validador, mas o leitor não confia na URL de entrada).
+        base = LOCAL_UPLOADS_DIR.resolve()
+        file_path = (LOCAL_UPLOADS_DIR / filename).resolve()
+        if not file_path.is_relative_to(base) or not file_path.is_file():
+            return None
+        return file_path.read_bytes()
+    except Exception as exc:  # noqa: BLE001 — best-effort, foto ausente não quebra o export
+        logger.warning("Falha ao ler mídia %s: %s", url, exc)
+        return None
+
+
 @router.post("/photo", summary="Upload de foto")
 async def upload_photo(
     request: Request,
@@ -312,6 +428,168 @@ async def upload_photo(
     return JSONResponse(
         content={"url": url, "thumb_url": thumb_url}, status_code=status.HTTP_200_OK
     )
+
+
+@router.post("/document", summary="Upload de documento (biblioteca)")
+async def upload_document(
+    request: Request,
+    file: UploadFile,
+    current_user=Depends(get_current_user),
+) -> JSONResponse:
+    """
+    Faz upload de um documento da biblioteca.
+
+    - Aceita multipart/form-data com campo 'file'
+    - Tipos aceitos: PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX
+    - Tamanho máximo: 50 MB
+    - Storage: S3/MinIO se configurado, senão uploads/ (modo dev)
+
+    Returns:
+        { "url": str, "file_name": str, "file_type": str, "file_size": int }
+    """
+    # Valida e normaliza a extensão (fonte da verdade para o tipo)
+    original_name = file.filename or "documento"
+    extension = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    if extension not in DOC_EXTENSION_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Extensão de arquivo não permitida: .{extension}. "
+                f"Extensões aceitas: {', '.join(sorted(DOC_EXTENSION_TYPES))}"
+            ),
+        )
+
+    # Rejeição rápida pelo Content-Length antes de ler bytes
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_DOC_SIZE_BYTES * 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Arquivo muito grande. Tamanho máximo: {MAX_DOC_SIZE_MB} MB",
+        )
+
+    # Leitura em chunks com teto (Content-Length pode mentir ou faltar)
+    chunks = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        chunks.extend(chunk)
+        if len(chunks) > MAX_DOC_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Arquivo muito grande. Tamanho máximo: {MAX_DOC_SIZE_MB} MB",
+            )
+    content = bytes(chunks)
+
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Arquivo vazio",
+        )
+
+    # Valida magic bytes (Content-Type de office é pouco confiável)
+    if not _validate_doc_magic(content, extension):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Conteúdo do arquivo não corresponde à extensão. Arquivo possivelmente corrompido.",
+        )
+
+    content_type = DOC_EXTENSION_TYPES[extension]
+    file_id = uuid.uuid4().hex
+    stored_filename = f"documents/{file_id}.{extension}"
+
+    if settings.S3_ACCESS_KEY:
+        url = await _upload_to_s3(content, stored_filename, content_type)
+    else:
+        url = await _save_locally(content, stored_filename.replace("/", "_"))
+
+    return JSONResponse(
+        content={
+            "url": url,
+            "file_name": original_name,
+            "file_type": extension,
+            "file_size": len(content),
+        },
+        status_code=status.HTTP_200_OK,
+    )
+
+
+@router.post("/video", summary="Upload de vídeo da vistoria")
+async def upload_video(
+    request: Request,
+    file: UploadFile,
+    current_user=Depends(get_current_user),
+) -> JSONResponse:
+    """
+    Faz upload de um vídeo curto da vistoria (1 por O.S., opcional).
+
+    - Tipos aceitos: MP4 (video/mp4), MOV (video/quicktime)
+    - Tamanho máximo: 50 MB
+    - Storage: S3/MinIO se configurado, senão uploads/ (modo dev)
+
+    Returns: { "url": str }
+    """
+    if file.content_type not in ALLOWED_VIDEO_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Tipo de arquivo não suportado: {file.content_type}. "
+                f"Tipos aceitos: {', '.join(sorted(ALLOWED_VIDEO_CONTENT_TYPES))}"
+            ),
+        )
+
+    original_name = file.filename or "video.mp4"
+    extension = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    if extension not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Extensão de arquivo não permitida: .{extension}. "
+                f"Extensões aceitas: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+            ),
+        )
+
+    # Rejeição rápida pelo Content-Length antes de ler bytes
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > MAX_VIDEO_SIZE_BYTES * 2
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Arquivo muito grande. Tamanho máximo: {MAX_VIDEO_SIZE_MB} MB",
+        )
+
+    # Leitura em chunks com teto real (Content-Length pode mentir ou faltar)
+    chunks = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        chunks.extend(chunk)
+        if len(chunks) > MAX_VIDEO_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Arquivo muito grande. Tamanho máximo: {MAX_VIDEO_SIZE_MB} MB",
+            )
+    content = bytes(chunks)
+
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Arquivo vazio",
+        )
+
+    if not _validate_video_magic(content):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Conteúdo do arquivo não corresponde a um vídeo. Arquivo possivelmente corrompido.",
+        )
+
+    file_id = uuid.uuid4().hex
+    stored_filename = f"videos/{file_id}.{extension}"
+
+    if settings.S3_ACCESS_KEY:
+        url = await _upload_to_s3(content, stored_filename, file.content_type)
+    else:
+        url = await _save_locally(content, stored_filename.replace("/", "_"))
+
+    return JSONResponse(content={"url": url}, status_code=status.HTTP_200_OK)
 
 
 @router.get("/media-auth", include_in_schema=False, summary="Autorização de mídia (Nginx)")

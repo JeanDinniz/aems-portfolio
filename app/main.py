@@ -36,14 +36,21 @@ from app.modules.auth.router import router as auth_router
 from app.modules.brands.router import router as brands_router
 from app.modules.consultants.router import router as consultants_router
 from app.modules.dealerships.router import router as dealerships_router
+from app.modules.ebook.router import router as ebook_router
 from app.modules.employees.router import router as employees_router
+from app.modules.epi.router import router as epi_router
+from app.modules.holidays.router import router as holidays_router
+from app.modules.installer_performance.router import router as installer_performance_router
 from app.modules.inventory.router import film_types_router, inventory_router
+from app.modules.material_requests.router import router as material_requests_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.push.router import router as push_router
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.service_orders.router import router as service_orders_router
 from app.modules.services.router import router as services_router
+from app.modules.settings.router import router as settings_router
 from app.modules.stores.router import router as stores_router
+from app.modules.time_clock.router import router as time_clock_router
 from app.modules.upload.router import router as upload_router
 from app.modules.users.router import router as users_router
 from app.modules.vehicle_models.router import router as vehicle_models_router
@@ -227,12 +234,19 @@ app.include_router(push_router, prefix=settings.API_V1_PREFIX)
 app.include_router(employees_router, prefix=settings.API_V1_PREFIX)
 app.include_router(vehicle_models_router, prefix=settings.API_V1_PREFIX)
 app.include_router(brands_router, prefix=settings.API_V1_PREFIX)
+app.include_router(ebook_router, prefix=settings.API_V1_PREFIX)
+app.include_router(epi_router, prefix=settings.API_V1_PREFIX)
+app.include_router(installer_performance_router, prefix=settings.API_V1_PREFIX)
+app.include_router(holidays_router, prefix=settings.API_V1_PREFIX)
+app.include_router(time_clock_router, prefix=settings.API_V1_PREFIX)
 app.include_router(access_profiles_router, prefix=settings.API_V1_PREFIX)
 app.include_router(access_profiles_me_router, prefix=settings.API_V1_PREFIX)
+app.include_router(settings_router, prefix=settings.API_V1_PREFIX)
 
 # Register routers - Phase 7 (Inventory)
 app.include_router(film_types_router, prefix=settings.API_V1_PREFIX)
 app.include_router(inventory_router, prefix=settings.API_V1_PREFIX)
+app.include_router(material_requests_router, prefix=settings.API_V1_PREFIX)
 
 # Register routers - Phase 8 (Scheduling)
 app.include_router(scheduling_router, prefix=settings.API_V1_PREFIX)

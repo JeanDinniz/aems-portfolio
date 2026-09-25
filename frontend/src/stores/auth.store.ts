@@ -64,8 +64,12 @@ export const useAuthStore = create<AuthStore>()(
                 if (!state.user) return false;
                 // Owner always has full access
                 if (state.user.role === 'owner') return true;
-                // If permissions haven't loaded yet, allow by default to avoid blank screens
-                if (!state.effectivePermissions) return true;
+                // Permissões ainda não carregadas → NEGA (fail-closed). Antes liberava,
+                // deixando o não-owner ver UI restrita até /me/permissions responder.
+                // O flicker transitório de carregamento é tratado nos hooks
+                // useCanView/Edit/Delete (isLoading libera); os callers diretos usam
+                // useHasPermission (reativo) para recalcular quando os dados chegam.
+                if (!state.effectivePermissions) return false;
                 const perm = state.effectivePermissions.permissions.find(
                     (p) => p.sub_module === sub_module
                 );

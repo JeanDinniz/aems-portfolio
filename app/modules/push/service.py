@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.push.models import PushDevice
-from app.modules.push.schemas import PushDeviceRegister
+from app.modules.push.models import PushDevice, WebPushSubscription
+from app.modules.push.schemas import PushDeviceRegister, WebPushSubscribe
 
 if TYPE_CHECKING:
     from app.modules.auth.models import User
@@ -87,6 +87,56 @@ async def delete_device(
         delete(PushDevice).where(
             PushDevice.token == token,
             PushDevice.user_id == user.id,
+        )
+    )
+    await db.commit()
+
+
+async def register_web_subscription(
+    db: AsyncSession,
+    user: "User",
+    data: "WebPushSubscribe",
+) -> WebPushSubscription:
+    """
+    Registra ou atualiza uma assinatura de Web Push (mesma semântica de
+    upsert do register_device: endpoint é a chave; re-assinar migra a conta).
+    """
+    now = datetime.now(UTC)
+
+    result = await db.execute(
+        select(WebPushSubscription).where(WebPushSubscription.endpoint == data.endpoint)
+    )
+    subscription = result.scalar_one_or_none()
+
+    if subscription is not None:
+        subscription.user_id = user.id
+        subscription.p256dh = data.keys.p256dh
+        subscription.auth = data.keys.auth
+        subscription.user_agent = data.user_agent
+        subscription.last_seen = now
+    else:
+        subscription = WebPushSubscription(
+            user_id=user.id,
+            endpoint=data.endpoint,
+            p256dh=data.keys.p256dh,
+            auth=data.keys.auth,
+            user_agent=data.user_agent,
+            created_at=now,
+            last_seen=now,
+        )
+        db.add(subscription)
+
+    await db.commit()
+    await db.refresh(subscription)
+    return subscription
+
+
+async def delete_web_subscription(db: AsyncSession, user: "User", endpoint: str) -> None:
+    """Remove a assinatura de Web Push (idempotente; filtra por usuário)."""
+    await db.execute(
+        delete(WebPushSubscription).where(
+            WebPushSubscription.endpoint == endpoint,
+            WebPushSubscription.user_id == user.id,
         )
     )
     await db.commit()

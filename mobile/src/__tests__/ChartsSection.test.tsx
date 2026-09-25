@@ -52,7 +52,7 @@ const FILM_PPF: FilmPpfStoreRankingItem[] = [
     },
     {
         store_id: 2,
-        store_name: 'Loja Central',
+        store_name: 'Loja Barra',
         orders_count: 6,
         revenue: 2500,
         loja_count: 4,
@@ -134,7 +134,7 @@ describe('ChartsSection — render', () => {
     it('mostra os nomes das lojas como rótulos do gráfico de barras', async () => {
         const { getByText } = await renderSection();
         expect(getByText('Loja Centro')).toBeTruthy();
-        expect(getByText('Loja Central')).toBeTruthy();
+        expect(getByText('Loja Barra')).toBeTruthy();
     });
 });
 

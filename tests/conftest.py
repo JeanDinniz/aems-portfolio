@@ -11,6 +11,11 @@ if "SECRET_KEY" not in os.environ:
     os.environ["SECRET_KEY"] = "test-secret-key-with-at-least-32-characters-for-testing-purposes"
 os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ["CSRF_ENABLED"] = "false"
+# DEBUG=true desliga o cache de leitura dos Indicadores (analytics/router._cached):
+# sem isso o cache (Redis, TTL 30s) é reutilizado entre testes que compartilham
+# período+escopo+filtros e contamina resultados (flakiness). É o modo que o próprio
+# _cached documenta para a suíte. Só relaxa o validador de origens de produção.
+os.environ["DEBUG"] = "true"
 
 from collections.abc import AsyncGenerator  # noqa: E402
 
@@ -47,9 +52,7 @@ VALID_OWNER_PASSWORD = "OwnerPass123!@"
 
 def _register_sqlite_functions(dbapi_connection, connection_record):
     """Register PostgreSQL-compatible functions for SQLite test engine."""
-    dbapi_connection.create_function(
-        "to_char", 2, lambda dt, fmt: dt[:7] if dt else None
-    )
+    dbapi_connection.create_function("to_char", 2, lambda dt, fmt: dt[:7] if dt else None)
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -61,6 +64,7 @@ async def db_engine():
     )
 
     from sqlalchemy import event
+
     event.listen(engine.sync_engine, "connect", _register_sqlite_functions)
 
     async with engine.begin() as conn:
@@ -202,7 +206,6 @@ async def test_owner(db_session: AsyncSession) -> User:
     return user
 
 
-
 @pytest_asyncio.fixture
 async def authenticated_client(
     client: AsyncClient, test_user: User, test_user_profile
@@ -227,7 +230,6 @@ async def owner_client(client: AsyncClient, test_owner: User) -> AsyncClient:
     token = response.json()["access_token"]
     client.headers["Authorization"] = f"Bearer {token}"
     return client
-
 
 
 @pytest_asyncio.fixture

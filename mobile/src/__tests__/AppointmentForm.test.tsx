@@ -23,14 +23,26 @@ import type { Appointment } from '@/types/scheduling.types';
 
 // ─── Mutations ───────────────────────────────────────────────────────────────
 const mockCreateMutate = jest.fn();
+const mockCreateCombinedMutate = jest.fn();
 const mockUpdateMutate = jest.fn();
+const mockAddDepartmentsMutate = jest.fn();
 let mockCreatePending = false;
+let mockCreateCombinedPending = false;
 let mockUpdatePending = false;
+let mockAddDepartmentsPending = false;
 let mockAppointment: Appointment | null = null;
 
 jest.mock('@/hooks/useScheduling', () => ({
     useCreateAppointment: () => ({ mutate: mockCreateMutate, isPending: mockCreatePending }),
+    useCreateCombinedAppointment: () => ({
+        mutate: mockCreateCombinedMutate,
+        isPending: mockCreateCombinedPending,
+    }),
     useUpdateAppointment: () => ({ mutate: mockUpdateMutate, isPending: mockUpdatePending }),
+    useAddDepartments: () => ({
+        mutate: mockAddDepartmentsMutate,
+        isPending: mockAddDepartmentsPending,
+    }),
     useAppointment: () => ({
         data: mockAppointment,
         isLoading: false,
@@ -234,6 +246,7 @@ async function setTime(utils: Awaited<ReturnType<typeof renderCreate>>) {
 beforeEach(() => {
     jest.clearAllMocks();
     mockCreatePending = false;
+    mockCreateCombinedPending = false;
     mockUpdatePending = false;
     mockSelectedStoreId = 1;
     mockGalponFlags = { isGalponProfile: false, hideGalponOption: false };
@@ -419,6 +432,131 @@ describe('CreateAppointmentScreen — caminho feliz + film_entries', () => {
         expect(payload.service_ids).toEqual([42]);
     });
 
+    // Renderiza o Create e adiciona uma película (serviço PD + tonalidade G20).
+    async function addFilmEntryG20() {
+        const utils = await renderCreate();
+        const { getByText } = utils;
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Normal'));
+        });
+        await fillVehicle(utils, 'ABC1D23');
+        await pickOption(utils, 'Corolla');
+        await pickOption(utils, 'João Consultor');
+        await pickOption(utils, 'PD — Película Dianteira');
+        await pickOption(utils, 'G20');
+        await act(async () => {
+            fireEvent.press(getByText('Adicionar película'));
+        });
+        await setTime(utils);
+        return utils;
+    }
+
+    it('detalhar por região cria 2 aplicações e bloqueia submit sem tonalidade em todas', async () => {
+        const utils = await addFilmEntryG20();
+        const { getByText, queryByText } = utils;
+
+        // Antes de detalhar, o link de regiões aparece; ao clicar, vira lista de
+        // aplicações (2, a 2ª sem tonalidade) → submit bloqueado.
+        await act(async () => {
+            fireEvent.press(getByText('Tonalidades diferentes por região do carro?'));
+        });
+        // O link some (agora está no modo "por região").
+        expect(queryByText('Tonalidades diferentes por região do carro?')).toBeNull();
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar agendamento'));
+        });
+
+        await waitFor(() => {
+            expect(getByText(/incluindo cada região adicionada/i)).toBeTruthy();
+        });
+        expect(mockCreateMutate).not.toHaveBeenCalled();
+    });
+
+    it('remover a última aplicação volta para tonalidade única e permite submit', async () => {
+        const utils = await addFilmEntryG20();
+        const { getByText, getByLabelText } = utils;
+
+        await act(async () => {
+            fireEvent.press(getByText('Tonalidades diferentes por região do carro?'));
+        });
+        // Remove a 2ª aplicação (vazia): next.length <= 1 → colapsa p/ tonalidade única.
+        await act(async () => {
+            fireEvent.press(getByLabelText('Remover região 2'));
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar agendamento'));
+        });
+
+        await waitFor(() => {
+            expect(mockCreateMutate).toHaveBeenCalledTimes(1);
+        });
+        const payload = mockCreateMutate.mock.calls[0][0];
+        expect(payload.film_entries).toEqual([
+            {
+                service_id: 42,
+                tonality: 'G20',
+                film_roll_id: undefined,
+                film_type_id: undefined,
+                applications: undefined,
+            },
+        ]);
+    });
+
+    it('detalhar por região envia applications (tonalidade + região) no payload', async () => {
+        const utils = await addFilmEntryG20();
+        const { getByText, getByLabelText, getAllByLabelText } = utils;
+
+        await act(async () => {
+            fireEvent.press(getByText('Tonalidades diferentes por região do carro?'));
+        });
+
+        // Região da 1ª aplicação (já com G20).
+        await act(async () => {
+            fireEvent.changeText(
+                getAllByLabelText('Região do carro')[0],
+                'Para-brisa'
+            );
+        });
+
+        // Seleciona a tonalidade da 2ª aplicação: abre a sheet do card (activeAppIndex=1)
+        // e escolhe G05. O card renderiza antes da sheet pendente → índice 0 é o do card.
+        await act(async () => {
+            fireEvent.press(getByLabelText('Selecionar tonalidade da região'));
+        });
+        await act(async () => {
+            fireEvent.press(getAllByLabelText('opt-G05')[0]);
+        });
+        // Região da 2ª aplicação.
+        await act(async () => {
+            fireEvent.changeText(
+                getAllByLabelText('Região do carro')[1],
+                'Portas dianteiras'
+            );
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar agendamento'));
+        });
+
+        await waitFor(() => {
+            expect(mockCreateMutate).toHaveBeenCalledTimes(1);
+        });
+        const payload = mockCreateMutate.mock.calls[0][0];
+        expect(payload.film_entries).toHaveLength(1);
+        expect(payload.film_entries[0]).toMatchObject({
+            service_id: 42,
+            applications: [
+                { tonality: 'G20', region: 'Para-brisa' },
+                { tonality: 'G05', region: 'Portas dianteiras' },
+            ],
+        });
+    });
+
     it('depto não-película monta service_ids e chama create', async () => {
         const utils = await renderCreate();
         const { getByText } = utils;
@@ -446,6 +584,205 @@ describe('CreateAppointmentScreen — caminho feliz + film_entries', () => {
         expect(payload.service_ids).toEqual([43]);
         expect(payload.film_entries).toBeUndefined();
         expect(payload.delivery_time).toBe('14:30');
+    });
+});
+
+describe('CreateAppointmentScreen — agendamento combinado (2C)', () => {
+    // Liga o toggle "Combinado" (switch por accessibilityLabel).
+    async function toggleCombined(utils: Awaited<ReturnType<typeof renderCreate>>) {
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('Combinado (múltiplos departamentos)'));
+        });
+    }
+
+    // Pressiona um chip de departamento por texto (Chip usa o label como texto).
+    async function pressDept(utils: Awaited<ReturnType<typeof renderCreate>>, label: string) {
+        await act(async () => {
+            fireEvent.press(utils.getByText(label));
+        });
+    }
+
+    it('toggle combinado não aparece no modo edição', async () => {
+        mockAppointment = {
+            id: 5,
+            store_id: 1,
+            store_name: 'Loja Centro',
+            department: 'bodywork',
+            delivery_date: '2026-06-25',
+            delivery_time: '14:30',
+            external_os_number: null,
+            vehicle_plate: 'XYZ1A23',
+            vehicle_model: 'Corolla',
+            vehicle_color: 'Preto',
+            consultant_id: 77,
+            consultant_name: 'João Consultor',
+            service_ids: [43],
+            service_names: ['Funilaria Geral'],
+            film_entries: null,
+            notes: null,
+            is_galpon: false,
+            is_courtesy: false,
+            is_return: false,
+            film_type_id: null,
+            film_tonality: null,
+            status: 'scheduled',
+            display_status: 'agendado',
+            service_order_id: null,
+            service_order_number: null,
+            created_at: '2026-06-20T10:00:00Z',
+            updated_at: '2026-06-20T10:00:00Z',
+        };
+        const utils = await renderEdit(5);
+        await waitFor(() => {
+            expect(
+                (utils.getByPlaceholderText('ABC1D23').props as { value: string }).value
+            ).toBe('XYZ1A23');
+        });
+        expect(utils.queryByLabelText('Combinado (múltiplos departamentos)')).toBeNull();
+    });
+
+    it('mostra o preview com N departamentos e a placa', async () => {
+        const utils = await renderCreate();
+        const { getByText } = utils;
+
+        await pressDept(utils, 'Normal');
+        await toggleCombined(utils);
+        // Chips de departamento (multi-seleção): Funilaria + PPF.
+        await pressDept(utils, 'Funilaria');
+        await pressDept(utils, 'PPF');
+        await fillVehicle(utils, 'ABC1D23');
+
+        await waitFor(() => {
+            expect(
+                getByText(/Serão criados 2 agendamentos: 1 de Funilaria \+ 1 de PPF/)
+            ).toBeTruthy();
+        });
+        expect(getByText(/mesmo carro ABC1D23/)).toBeTruthy();
+        // O botão de submit reflete a contagem.
+        expect(getByText('Criar 2 agendamentos')).toBeTruthy();
+    });
+
+    it('bloqueia submit quando um departamento combinado está sem serviço', async () => {
+        const utils = await renderCreate();
+        const { getByText } = utils;
+
+        await pressDept(utils, 'Normal');
+        await toggleCombined(utils);
+        await pressDept(utils, 'Funilaria');
+        await pressDept(utils, 'PPF');
+        await fillVehicle(utils, 'ABC1D23');
+        await pickOption(utils, 'Corolla');
+        await pickOption(utils, 'João Consultor');
+        await setTime(utils);
+        // NENHUM serviço adicionado em nenhum departamento.
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar 2 agendamentos'));
+        });
+
+        await waitFor(() => {
+            expect(getByText(/Adicione ao menos 1 serviço/i)).toBeTruthy();
+        });
+        expect(mockCreateCombinedMutate).not.toHaveBeenCalled();
+    });
+
+    it('monta departments[] (película + funilaria) e chama createCombined', async () => {
+        const utils = await renderCreate();
+        const { getByText, getAllByLabelText } = utils;
+
+        await pressDept(utils, 'Normal');
+        await toggleCombined(utils);
+        // Combina Película + Funilaria (ordem importa p/ indexar as seções).
+        await pressDept(utils, 'Película');
+        await pressDept(utils, 'Funilaria');
+        await fillVehicle(utils, 'ABC1D23');
+        await pickOption(utils, 'Corolla');
+        await pickOption(utils, 'João Consultor');
+        await setTime(utils);
+
+        // Seção 1 (Película): o mock de useServices devolve as 2 mesmas opções em
+        // AMBAS as seções; a 1ª seção (Película) é a de índice 0 do serviço PD.
+        await act(async () => {
+            fireEvent.press(getAllByLabelText('opt-PD — Película Dianteira')[0]);
+        });
+        // Tonalidade da seção Película (índice 0).
+        await act(async () => {
+            fireEvent.press(getAllByLabelText('opt-G20')[0]);
+        });
+        await act(async () => {
+            // Só a seção de película renderiza "Adicionar película".
+            fireEvent.press(getByText('Adicionar película'));
+        });
+
+        // Seção 2 (Funilaria): multi-select de serviços — escolhe FG na 2ª ocorrência.
+        await act(async () => {
+            fireEvent.press(getAllByLabelText('opt-FG — Funilaria Geral')[1]);
+        });
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar 2 agendamentos'));
+        });
+
+        await waitFor(() => {
+            expect(mockCreateCombinedMutate).toHaveBeenCalledTimes(1);
+        });
+        expect(mockCreateMutate).not.toHaveBeenCalled();
+
+        const payload = mockCreateCombinedMutate.mock.calls[0][0];
+        expect(payload).toMatchObject({
+            store_id: 1,
+            vehicle_plate: 'ABC1D23',
+            consultant_id: 77,
+            delivery_time: '14:30',
+        });
+        expect(payload.department).toBeUndefined(); // combinado não envia department de topo
+        expect(payload.departments).toHaveLength(2);
+
+        const filmDept = payload.departments.find(
+            (d: { department: string }) => d.department === 'film'
+        );
+        expect(filmDept.service_ids).toEqual([42]);
+        expect(filmDept.film_entries).toEqual([
+            { service_id: 42, tonality: 'G20', film_roll_id: undefined, film_type_id: undefined },
+        ]);
+
+        const bodyworkDept = payload.departments.find(
+            (d: { department: string }) => d.department === 'bodywork'
+        );
+        expect(bodyworkDept.service_ids).toEqual([43]);
+        expect(bodyworkDept.film_entries).toBeUndefined();
+    });
+
+    it('desligar o toggle volta ao modo simples (1 depto, create normal)', async () => {
+        const utils = await renderCreate();
+        const { getByText } = utils;
+
+        await pressDept(utils, 'Normal');
+        await toggleCombined(utils);
+        await pressDept(utils, 'Funilaria');
+        await pressDept(utils, 'PPF');
+        // Desliga: volta ao modo simples (chips viram seleção única).
+        await toggleCombined(utils);
+
+        // Agora escolhe UM departamento e cria via fluxo normal.
+        await pressDept(utils, 'Funilaria');
+        await fillVehicle(utils, 'ABC1D23');
+        await pickOption(utils, 'Corolla');
+        await pickOption(utils, 'João Consultor');
+        await pickOption(utils, 'FG — Funilaria Geral');
+        await setTime(utils);
+
+        await act(async () => {
+            fireEvent.press(getByText('Criar agendamento'));
+        });
+
+        await waitFor(() => {
+            expect(mockCreateMutate).toHaveBeenCalledTimes(1);
+        });
+        expect(mockCreateCombinedMutate).not.toHaveBeenCalled();
+        const payload = mockCreateMutate.mock.calls[0][0];
+        expect(payload.department).toBe('bodywork');
+        expect(payload.service_ids).toEqual([43]);
     });
 });
 

@@ -23,6 +23,7 @@ import * as Notifications from 'expo-notifications';
 import { registerForPushNotificationsAsync } from '@/services/push/push.service';
 import { navigateFromPush, type PushData } from '@/services/push/pushNavigation';
 import { useAuthStore } from '@/stores/auth.store';
+import { useSettingsStore } from '@/stores/settings.store';
 
 /**
  * Handler de apresentação em foreground. Definido no escopo do módulo (uma vez):
@@ -46,13 +47,17 @@ function dataFromResponse(response: Notifications.NotificationResponse | null): 
 
 export function PushProvider({ children }: { children: ReactNode }): ReactNode {
     const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+    const pushEnabled = useSettingsStore((s) => s.pushEnabled);
 
     // ── Registro do device: quando o usuário fica autenticado ───────────────────
+    // Respeita a preferência do usuário (Configurações → Notificações push). O
+    // default de `pushEnabled` é `true`, então quem nunca mexeu segue registrando.
+    // O toggle em SettingsScreen cuida do des-registro ao desligar.
     useEffect(() => {
-        if (!isAuthenticated) return;
+        if (!isAuthenticated || !pushEnabled) return;
         // fire-and-forget; o service trata permissão/erros internamente.
         void registerForPushNotificationsAsync();
-    }, [isAuthenticated]);
+    }, [isAuthenticated, pushEnabled]);
 
     // ── Listener de toque + cold start (instalados uma vez) ─────────────────────
     // Guard para não processar o cold-start duas vezes (o listener também pode

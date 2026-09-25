@@ -5,7 +5,15 @@ import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { StoreSelector } from '@/components/common/StoreSelector';
 import { useAuthStore } from '@/stores/auth.store';
 import { useCanView } from '@/hooks/useMyPermissions';
+import { useTimeClockMe } from '@/hooks/useTimeClock';
 import { useGalponFlags } from '@/navigation/guards';
+import {
+    CONFERENCE_ENABLED,
+    FECHAMENTO_ENABLED,
+    DASHBOARD_ENABLED,
+    INSTALLER_PERFORMANCE_ENABLED,
+    EBOOK_ENABLED,
+} from '@/constants/features';
 import type { AppTabScreenProps } from '@/navigation/types';
 
 /**
@@ -62,9 +70,25 @@ export function MoreScreen({ navigation }: AppTabScreenProps<'More'>) {
     const user = useAuthStore((s) => s.user);
     const isOwner = useAuthStore((s) => s.isOwner)();
     const { isGalponProfile } = useGalponFlags();
-    const canViewConference = useCanView('conference');
-    const canViewFechamento = useCanView('fechamento');
-    const canViewDashboard = isOwner || isGalponProfile;
+    // Regra de hooks: cada `useCanView(...)` é chamado incondicionalmente (ordem
+    // estável entre renders); a flag de módulo apenas combina com o resultado.
+    const _conf = useCanView('conference');
+    const _fech = useCanView('fechamento');
+    const _perf = useCanView('installer_performance');
+    const _ebook = useCanView('ebook');
+    const canViewConference = CONFERENCE_ENABLED && _conf;
+    const canViewFechamento = FECHAMENTO_ENABLED && _fech;
+    const canViewDashboard = DASHBOARD_ENABLED && (isOwner || isGalponProfile);
+    const canViewInstallerPerformance = INSTALLER_PERFORMANCE_ENABLED && _perf;
+    const canViewEbook = EBOOK_ENABLED && _ebook;
+    const canViewEpi = useCanView('epi');
+    const canViewMaterialRequests = useCanView('material_requests');
+
+    // Ponto Eletrônico: permissão `time_clock` + vínculo de funcionário.
+    const canViewTimeClock = useCanView('time_clock');
+    const { data: timeClockMe } = useTimeClockMe();
+    const showTimeClock =
+        canViewTimeClock && !!timeClockMe && timeClockMe.employee_id !== null;
 
     // Administração: visível se Owner ou qualquer submódulo admin visível.
     const canViewUsers = useCanView('users');
@@ -113,6 +137,14 @@ export function MoreScreen({ navigation }: AppTabScreenProps<'More'>) {
                             onPress={() => navigation.navigate('Dashboard')}
                         />
                     ) : null}
+                    {canViewInstallerPerformance ? (
+                        <Shortcut
+                            icon="speedometer-outline"
+                            label="Desempenho"
+                            description="Produção de instaladores"
+                            onPress={() => navigation.navigate('InstallerPerformance')}
+                        />
+                    ) : null}
                     {canViewConference ? (
                         <Shortcut
                             icon="checkmark-done-outline"
@@ -127,6 +159,38 @@ export function MoreScreen({ navigation }: AppTabScreenProps<'More'>) {
                             label="Fechamento"
                             description="Fechamento mensal e exports"
                             onPress={() => navigation.navigate('Fechamento')}
+                        />
+                    ) : null}
+                    {canViewEbook ? (
+                        <Shortcut
+                            icon="library-outline"
+                            label="Biblioteca"
+                            description="Documentos, apresentações e certificados"
+                            onPress={() => navigation.navigate('EbookList')}
+                        />
+                    ) : null}
+                    {canViewMaterialRequests ? (
+                        <Shortcut
+                            icon="cube-outline"
+                            label="Pedidos de Material"
+                            description="Películas, ferramentas e insumos por loja"
+                            onPress={() => navigation.navigate('MaterialRequests', { screen: 'MaterialRequestsList' })}
+                        />
+                    ) : null}
+                    {canViewEpi ? (
+                        <Shortcut
+                            icon="shield-half-outline"
+                            label="Controle de EPIs"
+                            description="Ficha de entrega, cargos e pendências"
+                            onPress={() => navigation.navigate('Epi')}
+                        />
+                    ) : null}
+                    {showTimeClock ? (
+                        <Shortcut
+                            icon="finger-print-outline"
+                            label="Ponto Eletrônico"
+                            description="Bater entrada e saída"
+                            onPress={() => navigation.navigate('TimeClock')}
                         />
                     ) : null}
                     <Shortcut

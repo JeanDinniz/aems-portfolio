@@ -6,6 +6,7 @@ Restricted to Owner role only.
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import UserRole, require_roles
@@ -58,4 +59,43 @@ async def list_audit_logs(
         total=total,
         page=page,
         limit=limit,
+    )
+
+
+@router.get(
+    "/export",
+    dependencies=[Depends(require_roles(UserRole.OWNER))],
+)
+async def export_audit_logs(
+    db: AsyncSession = Depends(get_db),
+    action: str | None = Query(None, description="Filtrar por ação"),
+    resource_type: str | None = Query(None, description="Filtrar por tipo de recurso"),
+    resource_id: int | None = Query(None, description="Filtrar por ID do recurso"),
+    user_id: int | None = Query(None, description="Filtrar por ID do usuário"),
+    user_name: str | None = Query(None, description="Buscar por nome do usuário (parcial)"),
+    start_date: datetime | None = Query(None, description="Data/hora inicial (ISO 8601)"),
+    end_date: datetime | None = Query(None, description="Data/hora final (ISO 8601)"),
+) -> StreamingResponse:
+    """
+    Exporta a trilha de auditoria em CSV aplicando os mesmos filtros da listagem.
+    Stream linha a linha (lotes de 1k) com teto de 50k linhas. Restrito a Owner.
+    """
+    filename = service.build_export_filename()
+    generator = service.stream_audit_csv(
+        db=db,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        user_id=user_id,
+        user_name=user_name,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return StreamingResponse(
+        generator,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )

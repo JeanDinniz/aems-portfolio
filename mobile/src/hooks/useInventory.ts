@@ -5,8 +5,11 @@ import type {
     AddServiceToFilmTypePayload,
     CreateFilmRollPayload,
     CreateFilmTypePayload,
+    CreateFilmWithdrawalPayload,
     FilmDepartment,
     FilmRollListParams,
+    FilmWithdrawalListParams,
+    UpdateFilmRollPayload,
     UpdateFilmTypePayload,
 } from '@/services/api/inventory.service';
 import { useToast } from '@/components/ui/Toast';
@@ -95,6 +98,31 @@ export function useForecast(filmTypeId?: number, storeId?: number) {
     });
 }
 
+// ─── Saída avulsa (withdrawals) — leitura ────────────────────────────────────
+
+/**
+ * Lista paginada de saídas avulsas (período/loja/funcionário/tipo). `staleTime: 0`
+ * (paridade com o web) porque estorno/registro devem refletir imediatamente.
+ */
+export function useWithdrawals(params?: FilmWithdrawalListParams) {
+    return useQuery({
+        queryKey: ['film-withdrawals', params],
+        queryFn: () => inventoryService.listWithdrawals(params),
+        staleTime: 0,
+    });
+}
+
+/** Totais por funcionário no período (base do desconto mensal; exclui estornadas). */
+export function useWithdrawalsSummary(
+    params?: Omit<FilmWithdrawalListParams, 'page' | 'limit'>
+) {
+    return useQuery({
+        queryKey: ['film-withdrawals-summary', params],
+        queryFn: () => inventoryService.getWithdrawalsSummary(params),
+        staleTime: 0,
+    });
+}
+
 // ─── Mutations ──────────────────────────────────────────────────────────────
 
 /** Invalida lista de bobinas + alerta de críticas + DETALHE/consumos após mutação. */
@@ -122,6 +150,56 @@ export function useCreateRoll() {
         onSuccess: () => {
             invalidateRollQueries(queryClient);
             toast.success('Bobina registrada com sucesso.');
+        },
+    });
+}
+
+/**
+ * Ajusta os metros restantes de uma bobina (conferência física de estoque).
+ * Requer can_edit no backend. Invalida lista/críticas/detalhe/consumos.
+ */
+export function useAdjustRollMeters() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: ({
+            id,
+            remaining_meters,
+            note,
+        }: {
+            id: number;
+            remaining_meters: number;
+            note: string;
+        }) => inventoryService.adjustRollMeters(id, { remaining_meters, note }),
+        onSuccess: () => {
+            invalidateRollQueries(queryClient);
+            toast.success('Metros ajustados com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error, 'Erro ao ajustar metros.'));
+        },
+    });
+}
+
+/**
+ * Edita os metadados de uma bobina (tipo, tonalidade, fornecedor, NFe, custo,
+ * lote, metragem total, recebimento). Requer can_edit. Invalida as mesmas queries
+ * das demais mutations de bobina.
+ */
+export function useUpdateRoll() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: ({ id, payload }: { id: number; payload: UpdateFilmRollPayload }) =>
+            inventoryService.updateRoll(id, payload),
+        onSuccess: () => {
+            invalidateRollQueries(queryClient);
+            toast.success('Bobina atualizada com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error, 'Erro ao atualizar bobina.'));
         },
     });
 }
@@ -175,6 +253,29 @@ export function useRestoreRoll() {
     });
 }
 
+/**
+ * Abre uma bobina para uso (em_estoque → em_uso). Só quem tem permissão de
+ * estoque (inventory can_edit) consegue — o endpoint retorna 403 caso contrário.
+ * Além das queries de bobina, invalida o seletor da finalização de O.S.
+ * (`film-rolls-for-os`) para a bobina recém-aberta virar selecionável na hora.
+ */
+export function useOpenRoll() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: (id: number) => inventoryService.openRoll(id),
+        onSuccess: () => {
+            invalidateRollQueries(queryClient);
+            queryClient.invalidateQueries({ queryKey: ['film-rolls-for-os'] });
+            toast.success('Bobina aberta para uso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error, 'Erro ao abrir bobina.'));
+        },
+    });
+}
+
 export function useDeleteRoll() {
     const queryClient = useQueryClient();
     const toast = useToast();
@@ -188,6 +289,54 @@ export function useDeleteRoll() {
         onError: (error: Error) => {
             // 409: bobina com consumos vinculados → mensagem do backend.
             toast.error(getApiErrorMessage(error, 'Erro ao excluir bobina.'));
+        },
+    });
+}
+
+// ─── Saída avulsa (withdrawals) — mutations ──────────────────────────────────
+
+/**
+ * Invalida as listas/summary de saídas + as bobinas (o registro/estorno mexe na
+ * metragem restante e pode mudar a cor/críticas). Paridade com o web.
+ */
+function invalidateWithdrawalQueries(queryClient: ReturnType<typeof useQueryClient>) {
+    queryClient.invalidateQueries({ queryKey: ['film-withdrawals'] });
+    queryClient.invalidateQueries({ queryKey: ['film-withdrawals-summary'] });
+    queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+    queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+}
+
+/** Registra uma saída avulsa. Sucesso/erro viram Toast. */
+export function useCreateWithdrawal() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: (payload: CreateFilmWithdrawalPayload) =>
+            inventoryService.createWithdrawal(payload),
+        onSuccess: () => {
+            invalidateWithdrawalQueries(queryClient);
+            toast.success('Saída registrada com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error, 'Erro ao registrar saída.'));
+        },
+    });
+}
+
+/** Estorno (soft) de uma saída. Requer inventory:can_delete no backend. */
+export function useReverseWithdrawal() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: (withdrawalId: number) => inventoryService.reverseWithdrawal(withdrawalId),
+        onSuccess: () => {
+            invalidateWithdrawalQueries(queryClient);
+            toast.success('Saída estornada com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error, 'Erro ao estornar saída.'));
         },
     });
 }

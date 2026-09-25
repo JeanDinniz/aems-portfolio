@@ -45,6 +45,21 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+            # Bump pós-commit: só dispara se algum service marcou a flag
+            # (session.info["bump_analytics"]) durante a transação. Centraliza
+            # a invalidação do cache de analytics aqui — depois do commit real
+            # (não do commit interno de um service) — para nunca invalidar
+            # antes do dado estar persistido. Import local evita ciclo.
+            if session.info.pop("bump_analytics", False):
+                from app.core.redis import bump_analytics_cache
+
+                await bump_analytics_cache()
+            # Mesmo mecanismo para o cache dos catálogos de referência (tipos de
+            # película, consultores, funcionários) consumidos pelo editor de O.S.
+            if session.info.pop("bump_catalogs", False):
+                from app.core.redis import bump_catalogs_cache
+
+                await bump_catalogs_cache()
         except Exception:
             await session.rollback()
             raise

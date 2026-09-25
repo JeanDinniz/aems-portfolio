@@ -17,6 +17,7 @@ class NotificationType(StrEnum):
     INVENTORY_ALERT = "inventory_alert"
     ORDER_COMPLETED = "order_completed"
     SCHEDULING_CREATED = "scheduling_created"
+    TIME_CLOCK_REMINDER = "time_clock_reminder"
 
 
 class NotificationResponse(BaseModel):
@@ -31,6 +32,7 @@ class NotificationResponse(BaseModel):
     body: str
     is_read: bool
     is_galpon: bool
+    related_url: str | None = None
     created_at: datetime
 
 

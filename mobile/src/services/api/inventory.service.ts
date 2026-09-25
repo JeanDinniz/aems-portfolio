@@ -8,7 +8,7 @@ import { apiClient } from './client';
  * - LEITURA: listRolls / listFilmTypes / getRoll / listRollConsumptions /
  *   listCriticalRolls / getForecast
  * - ESCRITA (bobinas): createRoll (com tratamento de 409 + X-Has-Critical-Rolls),
- *   transferRoll, exhaustRoll, restoreRoll, deleteRoll
+ *   transferRoll, exhaustRoll, restoreRoll, openRoll, deleteRoll
  * - ESCRITA (tipos de película): createFilmType / updateFilmType / deleteFilmType /
  *   addServiceToFilmType / removeServiceFromFilmType
  *
@@ -90,7 +90,9 @@ export interface FilmRoll {
     visual_id: string;
     color: FilmRollColor;
     created_at: string;
-    cost: number | null;
+    // Decimal do backend chega como STRING (Pydantic v2 serializa Decimal como
+    // string JSON). Formatar via formatDecimalBRL — nunca `.toFixed` direto.
+    cost: string | null;
     lot_number: string | null;
 }
 
@@ -104,6 +106,8 @@ export interface FilmRollListParams {
     film_type_id?: number;
     service_id?: number;
     status?: FilmRollStatus | '';
+    /** Múltiplos status numa única request (tem prioridade sobre `status`). */
+    statuses?: FilmRollStatus[];
     department?: FilmDepartment;
     page?: number;
     limit?: number;
@@ -123,6 +127,40 @@ export interface CreateFilmRollPayload {
     lot_number?: string;
 }
 
+/**
+ * Ajuste de metros restantes (conferência física de estoque). O gestor corrige o
+ * saldo do sistema para bater com o físico, com MOTIVO obrigatório. Espelha
+ * `frontend/src/services/api/inventory.service.ts` (adjustRollMeters).
+ */
+export interface AdjustMetersPayload {
+    /** Novo saldo físico: 0 ≤ valor ≤ total_meters (o teto é validado client-side). */
+    remaining_meters: number;
+    /** Motivo do ajuste (obrigatório, 1..200). */
+    note: string;
+}
+
+/**
+ * Edição de metadados da bobina (todos os campos opcionais). Espelha o
+ * `FilmRollUpdate` do web. Alterar `total_meters` NÃO edita o saldo — o backend
+ * recalcula preservando o consumo. As flags `clear_*` esvaziam o campo respectivo
+ * (envie a flag em vez de string vazia). `cost` é Decimal (aceita number|string;
+ * nunca `.toFixed` direto).
+ */
+export interface UpdateFilmRollPayload {
+    film_type_id?: number;
+    tonality?: string | null;
+    supplier_id?: number;
+    nfe_number?: string;
+    cost?: number | string;
+    lot_number?: string;
+    total_meters?: number;
+    receipt_date?: string;
+    clear_supplier?: boolean;
+    clear_nfe?: boolean;
+    clear_cost?: boolean;
+    clear_lot?: boolean;
+}
+
 export interface FilmConsumption {
     id: number;
     film_roll_id: number;
@@ -131,6 +169,73 @@ export interface FilmConsumption {
     vehicle_model: string | null;
     plate: string | null;
     created_at: string;
+}
+
+// ─── Film Withdrawals (saída avulsa) ─────────────────────────────────────────
+
+/**
+ * Saída avulsa de película: baixa de metros de uma bobina para um funcionário
+ * (ex.: pedaço pedido pelo instalador, descontado no fim do mês). Espelha
+ * `frontend/src/services/api/inventory.service.ts` (FilmWithdrawal). O estorno é
+ * soft: `is_reversed` marca a saída como estornada (sai do total do funcionário)
+ * sem restaurar bobina esgotada.
+ */
+export interface FilmWithdrawal {
+    id: number;
+    film_roll_id: number;
+    roll_visual_id: string;
+    /** Data de recebimento da bobina (para rótulo legível). Ausente em backends antigos. */
+    roll_receipt_date: string | null;
+    /** Metragem total da bobina (para rótulo legível). Ausente em backends antigos. */
+    roll_total_meters: number | null;
+    film_type_name: string | null;
+    tonality: string | null;
+    store_id: number;
+    store_name: string | null;
+    employee_id: number;
+    employee_name: string | null;
+    meters: number;
+    reason: string | null;
+    created_by_name: string | null;
+    created_at: string;
+    reversed_at: string | null;
+    reversed_by_name: string | null;
+    is_reversed: boolean;
+}
+
+export interface CreateFilmWithdrawalPayload {
+    film_roll_id: number;
+    employee_id: number;
+    meters: number;
+    reason?: string;
+}
+
+export interface FilmWithdrawalListParams {
+    store_id?: number;
+    employee_id?: number;
+    film_type_id?: number;
+    date_from?: string;
+    date_to?: string;
+    page?: number;
+    limit?: number;
+}
+
+export interface FilmWithdrawalListResponse {
+    items: FilmWithdrawal[];
+    total: number;
+    total_pages: number;
+}
+
+export interface FilmWithdrawalSummaryItem {
+    employee_id: number;
+    employee_name: string;
+    withdrawal_count: number;
+    total_meters: number;
+}
+
+export interface FilmWithdrawalSummaryResponse {
+    items: FilmWithdrawalSummaryItem[];
+    total_meters: number;
 }
 
 // ─── Forecast (Sprint 6 — só camada de dados, sem hook/uso ainda) ─────────────
@@ -267,7 +372,14 @@ export const inventoryService = {
         if (params?.department) queryParams.department = params.department;
         if (params?.use_galpon_store) queryParams.use_galpon_store = 'true';
 
-        const response = await apiClient.get('/inventory/rolls', { params: queryParams });
+        // statuses[] — serializa como query array (statuses=em_uso&statuses=esgotada)
+        const search = new URLSearchParams();
+        Object.entries(queryParams).forEach(([k, v]) => search.append(k, String(v)));
+        if (params?.statuses?.length) {
+            params.statuses.forEach((s) => search.append('statuses', s));
+        }
+
+        const response = await apiClient.get(`/inventory/rolls?${search.toString()}`);
         return {
             items: response.data.items ?? [],
             total: response.data.total ?? response.data.pagination?.total ?? 0,
@@ -323,6 +435,25 @@ export const inventoryService = {
         return response.data;
     },
 
+    /**
+     * Corrige o saldo físico de uma bobina (conferência de estoque). Requer
+     * can_edit. O backend valida `remaining_meters` (0 ≤ valor ≤ total_meters) e
+     * exige `note`; retorna a bobina atualizada (FilmRollResponse).
+     */
+    adjustRollMeters: async (id: number, payload: AdjustMetersPayload): Promise<FilmRoll> => {
+        const response = await apiClient.patch(`/inventory/rolls/${id}/adjust-meters`, payload);
+        return response.data;
+    },
+
+    /**
+     * Edita os metadados de uma bobina (todos os campos opcionais). Requer
+     * can_edit. Alterar `total_meters` não mexe no saldo (recálculo no backend).
+     */
+    updateRoll: async (id: number, payload: UpdateFilmRollPayload): Promise<FilmRoll> => {
+        const response = await apiClient.patch(`/inventory/rolls/${id}`, payload);
+        return response.data;
+    },
+
     exhaustRoll: async (id: number): Promise<FilmRoll> => {
         const response = await apiClient.patch(`/inventory/rolls/${id}/exhaust`);
         return response.data;
@@ -330,6 +461,11 @@ export const inventoryService = {
 
     restoreRoll: async (id: number): Promise<FilmRoll> => {
         const response = await apiClient.patch(`/inventory/rolls/${id}/restore`);
+        return response.data;
+    },
+
+    openRoll: async (id: number): Promise<FilmRoll> => {
+        const response = await apiClient.patch(`/inventory/rolls/${id}/open`);
         return response.data;
     },
 
@@ -344,5 +480,61 @@ export const inventoryService = {
         if (storeId) params.store_id = storeId;
         const response = await apiClient.get('/inventory/rolls/critical', { params });
         return response.data ?? [];
+    },
+
+    // ─── Film Withdrawals (saída avulsa) ─────────────────────────────────────
+
+    /** Registra uma saída avulsa (baixa de metros de uma bobina p/ um funcionário). */
+    createWithdrawal: async (
+        payload: CreateFilmWithdrawalPayload
+    ): Promise<FilmWithdrawal> => {
+        const response = await apiClient.post('/inventory/withdrawals', payload);
+        return response.data;
+    },
+
+    /** Lista paginada de saídas avulsas (filtros: período/loja/funcionário/tipo). */
+    listWithdrawals: async (
+        params?: FilmWithdrawalListParams
+    ): Promise<FilmWithdrawalListResponse> => {
+        const queryParams: Record<string, string | number> = {
+            page: params?.page ?? 1,
+            limit: params?.limit ?? 20,
+        };
+        if (params?.store_id) queryParams.store_id = params.store_id;
+        if (params?.employee_id) queryParams.employee_id = params.employee_id;
+        if (params?.film_type_id) queryParams.film_type_id = params.film_type_id;
+        if (params?.date_from) queryParams.date_from = params.date_from;
+        if (params?.date_to) queryParams.date_to = params.date_to;
+        const response = await apiClient.get('/inventory/withdrawals', { params: queryParams });
+        return {
+            items: response.data.items ?? [],
+            total: response.data.pagination?.total ?? 0,
+            total_pages: response.data.pagination?.total_pages ?? 1,
+        };
+    },
+
+    /** Totais por funcionário no período (exclui estornadas). Sem paginação. */
+    getWithdrawalsSummary: async (
+        params?: Omit<FilmWithdrawalListParams, 'page' | 'limit'>
+    ): Promise<FilmWithdrawalSummaryResponse> => {
+        const queryParams: Record<string, string | number> = {};
+        if (params?.store_id) queryParams.store_id = params.store_id;
+        if (params?.employee_id) queryParams.employee_id = params.employee_id;
+        if (params?.film_type_id) queryParams.film_type_id = params.film_type_id;
+        if (params?.date_from) queryParams.date_from = params.date_from;
+        if (params?.date_to) queryParams.date_to = params.date_to;
+        const response = await apiClient.get('/inventory/withdrawals/summary', {
+            params: queryParams,
+        });
+        return {
+            items: response.data.items ?? [],
+            total_meters: response.data.total_meters ?? 0,
+        };
+    },
+
+    /** Estorno (soft) de uma saída. Requer permissão inventory:can_delete no backend. */
+    reverseWithdrawal: async (withdrawalId: number): Promise<FilmWithdrawal> => {
+        const response = await apiClient.post(`/inventory/withdrawals/${withdrawalId}/reverse`);
+        return response.data;
     },
 };

@@ -19,8 +19,8 @@ export function ProfileUsersTab({ userIds, onChange }: Props) {
     const [selectedToAdd, setSelectedToAdd] = useState<Set<string>>(new Set())
 
     const { data, isLoading } = useQuery({
-        queryKey: ['all-active-users'],
-        queryFn: () => usersService.list({ is_active: true }, 1, 500),
+        queryKey: ['all-active-users', 'selectable'],
+        queryFn: () => usersService.listSelectable({ is_active: true }, 1, 500),
         staleTime: 1000 * 60 * 5,
     })
 

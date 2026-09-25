@@ -4,25 +4,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { AuditActionBadge } from './AuditActionBadge';
+import { AUDIT_RESOURCE_LABELS as RESOURCE_LABELS } from '@/constants/audit';
 import type { AuditLog } from '@/types/audit';
 
 // ─── Label maps ──────────────────────────────────────────────────────────────
-
-const RESOURCE_LABELS: Record<string, string> = {
-    auth:           'Autenticação',
-    user:           'Usuário',
-    employee:       'Funcionário',
-    consultant:     'Consultor',
-    service_order:  'Ordem de Serviço',
-    store:          'Loja',
-    access_profile: 'Perfil de Acesso',
-    film_type:      'Tipo de Película',
-    film_roll:      'Bobina',
-    appointment:    'Agendamento',
-    service:        'Serviço',
-    brand:          'Marca',
-    vehicle_model:  'Modelo de Veículo',
-};
 
 const FIELD_LABELS: Record<string, string> = {
     plate:                          'Placa',
@@ -49,6 +34,8 @@ const FIELD_LABELS: Record<string, string> = {
     is_active:                      'Ativo',
     remaining_meters:               'Metros Restantes',
     total_meters:                   'Total de Metros',
+    tonality:                       'Tonalidade',
+    receipt_date:                   'Data de Recebimento',
     delivery_date:                  'Data do Serviço',
     notes:                          'Observações',
     internal_notes:                 'Notas Internas',
@@ -63,6 +50,12 @@ const FIELD_LABELS: Record<string, string> = {
     invoice_number:                 'Nº Nota Fiscal',
     requires_invoice:               'Requer NF',
     film_type_id:                   'Tipo de Película',
+    film_entries:                   'Películas',
+    film_tonality:                  'Tonalidade',
+    service_ids:                    'Serviços',
+    delivery_time:                  'Horário de entrega',
+    ppf_type:                       'Tipo de PPF',
+    ppf_brand:                      'Marca de PPF',
 };
 
 const DEPT_LABELS: Record<string, string> = {
@@ -107,6 +100,7 @@ function formatDate(iso: string): string {
 interface Resolvers {
     storeMap?: Record<number, string>;
     filmTypeMap?: Record<number, string>;
+    serviceMap?: Record<number, string>;
 }
 
 function formatValue(key: string, value: unknown, resolvers?: Resolvers): string {
@@ -129,6 +123,71 @@ function formatValue(key: string, value: unknown, resolvers?: Resolvers): string
         return `${d}/${m}/${y}`;
     }
     return String(value);
+}
+
+// ─── Detailed renderers for complex/JSON fields ───────────────────────────────
+// Listas (film_entries, service_ids, items) não podem colapsar em "N registro(s)":
+// o auditor precisa ver o serviço e a tonalidade que mudaram.
+
+function serviceLabel(id: unknown, resolvers?: Resolvers): string {
+    const n = Number(id);
+    if (!Number.isFinite(n)) return String(id);
+    return resolvers?.serviceMap?.[n] ?? `Serviço #${n}`;
+}
+
+/** Tonalidade de um film_entry: usa as aplicações por região quando houver. */
+function filmEntryTonality(entry: Record<string, unknown>): string {
+    const apps = entry.applications ?? entry.film_applications;
+    if (Array.isArray(apps) && apps.length > 0) {
+        return apps
+            .map((a: Record<string, unknown>) =>
+                a.region ? `${a.region}: ${a.tonality ?? '—'}` : String(a.tonality ?? '—')
+            )
+            .join(', ');
+    }
+    return entry.tonality != null ? String(entry.tonality) : '—';
+}
+
+function LinesList({ lines }: { lines: string[] }) {
+    if (lines.length === 0) return <span>—</span>;
+    return (
+        <ul className="space-y-0.5 list-disc list-inside">
+            {lines.map((l, i) => (
+                <li key={i}>{l}</li>
+            ))}
+        </ul>
+    );
+}
+
+/**
+ * Renderiza um valor para célula do diff. Para campos de lista/JSON produz um
+ * detalhamento legível (serviço — tonalidade); para os demais cai em formatValue.
+ */
+function renderValue(key: string, value: unknown, resolvers?: Resolvers): React.ReactNode {
+    if (value === null || value === undefined) return '—';
+
+    if ((key === 'film_entries') && Array.isArray(value)) {
+        const lines = (value as Record<string, unknown>[]).map(
+            (e) => `${serviceLabel(e.service_id, resolvers)} — ${filmEntryTonality(e)}`
+        );
+        return <LinesList lines={lines} />;
+    }
+
+    if (key === 'service_ids' && Array.isArray(value)) {
+        const lines = (value as unknown[]).map((id) => serviceLabel(id, resolvers));
+        return <LinesList lines={lines} />;
+    }
+
+    if (key === 'items' && Array.isArray(value)) {
+        const lines = (value as Record<string, unknown>[]).map((it) => {
+            const svc = serviceLabel(it.service_id, resolvers);
+            const ton = it.tonality != null ? ` — ${it.tonality}` : '';
+            return `${svc}${ton}`;
+        });
+        return <LinesList lines={lines} />;
+    }
+
+    return formatValue(key, value, resolvers);
 }
 
 // Chaves que são sinônimos — mapeadas para a chave canônica
@@ -180,9 +239,13 @@ function DiffTable({
             </thead>
             <tbody>
                 {keys.map((key) => {
-                    const before = formatValue(key, getValueForKey(oldValue, key), resolvers);
-                    const after  = formatValue(key, getValueForKey(newValue, key), resolvers);
-                    const changed = before !== after;
+                    const rawBefore = getValueForKey(oldValue, key);
+                    const rawAfter  = getValueForKey(newValue, key);
+                    // Detecta alteração pelo valor BRUTO (JSON) — não pelo rótulo colapsado.
+                    // Sem isso, mudar a tonalidade dentro de film_entries passava despercebido.
+                    const changed = JSON.stringify(rawBefore ?? null) !== JSON.stringify(rawAfter ?? null);
+                    const before = renderValue(key, rawBefore, resolvers);
+                    const after  = renderValue(key, rawAfter, resolvers);
                     return (
                         <tr
                             key={key}
@@ -191,11 +254,11 @@ function DiffTable({
                                 changed && 'bg-amber-50 dark:bg-amber-950/30'
                             )}
                         >
-                            <td className="py-1 pr-3 font-medium text-foreground/70">{fieldLabel(key)}</td>
-                            <td className={cn('py-1 pr-3', changed && 'text-red-600 dark:text-red-400')}>
+                            <td className="py-1 pr-3 font-medium text-foreground/70 align-top">{fieldLabel(key)}</td>
+                            <td className={cn('py-1 pr-3 align-top', changed && 'text-red-600 dark:text-red-400')}>
                                 {before}
                             </td>
-                            <td className={cn('py-1', changed && 'text-green-700 dark:text-green-400 font-medium')}>
+                            <td className={cn('py-1 align-top', changed && 'text-green-700 dark:text-green-400 font-medium')}>
                                 {after}
                             </td>
                         </tr>
@@ -220,8 +283,8 @@ function CreateTable({ value, resolvers }: { value: Record<string, unknown>; res
             <tbody>
                 {keys.map((key) => (
                     <tr key={key} className="border-b border-border/50 last:border-0">
-                        <td className="py-1 pr-3 font-medium text-foreground/70">{fieldLabel(key)}</td>
-                        <td className="py-1 text-foreground">{formatValue(key, value[key], resolvers)}</td>
+                        <td className="py-1 pr-3 font-medium text-foreground/70 align-top">{fieldLabel(key)}</td>
+                        <td className="py-1 text-foreground align-top">{renderValue(key, value[key], resolvers)}</td>
                     </tr>
                 ))}
             </tbody>
@@ -243,8 +306,8 @@ function DeleteTable({ value, resolvers }: { value: Record<string, unknown>; res
             <tbody>
                 {keys.map((key) => (
                     <tr key={key} className="border-b border-border/50 last:border-0">
-                        <td className="py-1 pr-3 font-medium text-foreground/70">{fieldLabel(key)}</td>
-                        <td className="py-1 text-red-500 dark:text-red-400">{formatValue(key, value[key], resolvers)}</td>
+                        <td className="py-1 pr-3 font-medium text-foreground/70 align-top">{fieldLabel(key)}</td>
+                        <td className="py-1 text-red-500 dark:text-red-400 align-top">{renderValue(key, value[key], resolvers)}</td>
                     </tr>
                 ))}
             </tbody>
@@ -287,11 +350,55 @@ function AuditDiffSection({ log, resolvers }: { log: AuditLog; resolvers?: Resol
     return null;
 }
 
+/** Formata uma data-only "YYYY-MM-DD" como dd/mm/aaaa (sem shift de fuso). */
+function formatDateOnly(value: string): string {
+    const [y, m, d] = value.split('-');
+    if (y && m && d) return `${d}/${m}/${y}`;
+    return value;
+}
+
+/**
+ * Bloco identificador do recurso (hoje: Bobina) — tipo, tonalidade, data de
+ * recebimento e data de criação. Separado da tabela de "Alterações" porque são
+ * dados de identificação da bobina, não campos que mudaram na ação.
+ */
+function ResourceDetailSection({ log }: { log: AuditLog }) {
+    const detail = log.resource_detail;
+    if (!detail || log.resource_type !== 'film_roll') return null;
+
+    const filmType = detail.film_type_name as string | null | undefined;
+    const tonality = detail.tonality as string | null | undefined;
+    const receiptDate = detail.receipt_date as string | null | undefined;
+    const createdAt = detail.created_at as string | null | undefined;
+
+    const rows: Array<[string, string]> = [
+        ['Tipo de Película', filmType || '—'],
+        ['Tonalidade', tonality || '—'],
+        ['Data de Recebimento', receiptDate ? formatDateOnly(receiptDate) : '—'],
+        ['Data de Criação', createdAt ? formatDate(createdAt) : '—'],
+    ];
+
+    return (
+        <div className="mb-4">
+            <p className="text-xs font-medium text-muted-foreground mb-2">Bobina</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-4">
+                {rows.map(([label, value]) => (
+                    <div key={label} className="flex flex-col">
+                        <span className="text-[11px] text-muted-foreground">{label}</span>
+                        <span className="text-xs font-medium text-foreground">{value}</span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 // ─── Row ─────────────────────────────────────────────────────────────────────
 
 function AuditRow({ log, resolvers }: { log: AuditLog; resolvers?: Resolvers }) {
     const [expanded, setExpanded] = useState(false);
-    const hasDiff = log.old_value !== null || log.new_value !== null;
+    const hasDetail = !!log.resource_detail && log.resource_type === 'film_roll';
+    const hasDiff = log.old_value !== null || log.new_value !== null || hasDetail;
 
     return (
         <>
@@ -348,6 +455,7 @@ function AuditRow({ log, resolvers }: { log: AuditLog; resolvers?: Resolvers }) 
             {expanded && (
                 <TableRow>
                     <TableCell colSpan={6} className="bg-muted/30 py-3 px-6">
+                        <ResourceDetailSection log={log} />
                         <AuditDiffSection log={log} resolvers={resolvers} />
                         {log.user_agent && (
                             <p className="mt-3 text-xs text-muted-foreground truncate">
@@ -368,10 +476,11 @@ interface AuditTableProps {
     loading: boolean;
     storeMap?: Record<number, string>;
     filmTypeMap?: Record<number, string>;
+    serviceMap?: Record<number, string>;
 }
 
-export function AuditTable({ data, loading, storeMap, filmTypeMap }: AuditTableProps) {
-    const resolvers: Resolvers = { storeMap, filmTypeMap };
+export function AuditTable({ data, loading, storeMap, filmTypeMap, serviceMap }: AuditTableProps) {
+    const resolvers: Resolvers = { storeMap, filmTypeMap, serviceMap };
     return (
         <div className="rounded-lg border bg-card">
             <Table>

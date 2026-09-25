@@ -19,6 +19,7 @@ export default defineConfig({
       // Mantém o mesmo caminho /sw.js para que clientes com o SW antigo migrem sozinhos.
       filename: 'sw.js',
       workbox: {
+        importScripts: ['sw-push.js'],
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2}'],
         cleanupOutdatedCaches: true,
         // SPA: navegações caem no index.html...

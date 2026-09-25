@@ -12,9 +12,13 @@ import {
 } from '@/components/features/CancelAppointmentSheet';
 import { useAppointment, useAppointmentHistory } from '@/hooks/useScheduling';
 import { useCanEdit, useCanDelete } from '@/hooks/useMyPermissions';
-import { APPOINTMENT_STATUS_CONFIG, DEPARTMENT_LABELS } from '@/constants/scheduling';
+import { getAppointmentStatusConfig, DEPARTMENT_LABELS } from '@/constants/scheduling';
 import { formatDateBR, formatDateTimeBR, formatClock } from '@/utils/formatDate';
-import type { Appointment, AppointmentHistoryEntry } from '@/types/scheduling.types';
+import type {
+    Appointment,
+    AppointmentHistoryEntry,
+    GroupSibling,
+} from '@/types/scheduling.types';
 import type { SchedulingStackScreenProps } from '@/navigation/types';
 
 /**
@@ -62,7 +66,7 @@ export function AppointmentDetailScreen({
         );
     }
 
-    const cfg = APPOINTMENT_STATUS_CONFIG[appointment.display_status];
+    const cfg = getAppointmentStatusConfig(appointment.display_status);
     const time = formatClock(appointment.delivery_time);
     const department = DEPARTMENT_LABELS[appointment.department] ?? appointment.department;
 
@@ -99,28 +103,54 @@ export function AppointmentDetailScreen({
                     )}
                 </Section>
 
-                {/* Películas (tonalidade por entrada) */}
+                {/* Películas (tonalidade por entrada; tonalidade por região quando houver) */}
                 {appointment.film_entries && appointment.film_entries.length > 0 ? (
                     <Section title="Películas">
                         <View className="gap-2">
                             {appointment.film_entries.map((entry, idx) => {
                                 const serviceName = serviceNameFor(appointment, entry.service_id, idx);
+                                const applications = entry.applications ?? [];
+                                const hasApplications = applications.length > 0;
                                 return (
                                     <View
                                         key={`${entry.service_id}-${idx}`}
-                                        className="flex-row items-center justify-between gap-2 rounded-xl border border-neutral-100 px-3 py-2.5 dark:border-dark-border-soft"
+                                        className="gap-2 rounded-xl border border-neutral-100 px-3 py-2.5 dark:border-dark-border-soft"
                                     >
-                                        <Text
-                                            className="flex-1 font-sans-semibold text-sm text-neutral-800 dark:text-dark-text"
-                                            numberOfLines={2}
-                                        >
-                                            {serviceName}
-                                        </Text>
-                                        {entry.tonality ? (
-                                            <View className="rounded-md bg-brand/15 px-2 py-1">
-                                                <Text className="font-sans-bold text-xs text-primary-700 dark:text-brand">
-                                                    {entry.tonality}
-                                                </Text>
+                                        <View className="flex-row items-center justify-between gap-2">
+                                            <Text
+                                                className="flex-1 font-sans-semibold text-sm text-neutral-800 dark:text-dark-text"
+                                                numberOfLines={2}
+                                            >
+                                                {serviceName}
+                                            </Text>
+                                            {/* Sem regiões: tonalidade única como badge */}
+                                            {!hasApplications && entry.tonality ? (
+                                                <View className="rounded-md bg-brand/15 px-2 py-1">
+                                                    <Text className="font-sans-bold text-xs text-primary-700 dark:text-brand">
+                                                        {entry.tonality}
+                                                    </Text>
+                                                </View>
+                                            ) : null}
+                                        </View>
+
+                                        {/* Com regiões: tonalidade + região por linha */}
+                                        {hasApplications ? (
+                                            <View className="flex-row flex-wrap gap-1.5">
+                                                {applications.map((app, appIdx) => (
+                                                    <View
+                                                        key={appIdx}
+                                                        className="flex-row items-center gap-1.5 rounded-md bg-brand/15 px-2 py-1"
+                                                    >
+                                                        <Text className="font-sans-bold text-xs text-primary-700 dark:text-brand">
+                                                            {app.tonality}
+                                                        </Text>
+                                                        {app.region ? (
+                                                            <Text className="font-sans text-xs text-neutral-500 dark:text-dark-text-muted">
+                                                                {app.region}
+                                                            </Text>
+                                                        ) : null}
+                                                    </View>
+                                                ))}
                                             </View>
                                         ) : null}
                                     </View>
@@ -184,6 +214,26 @@ export function AppointmentDetailScreen({
                     </Section>
                 ) : null}
 
+                {/* Agendamentos do grupo (combinado — mesmo carro) */}
+                {(appointment.group_siblings?.length ?? 0) > 0 ? (
+                    <Section title="Agendamentos do grupo">
+                        <Text className="mb-3 font-sans text-xs text-neutral-400 dark:text-dark-text-muted">
+                            Mesmo carro, outros departamentos.
+                        </Text>
+                        <View className="gap-2">
+                            {appointment.group_siblings!.map((sibling) => (
+                                <SiblingRow
+                                    key={sibling.id}
+                                    sibling={sibling}
+                                    onPress={() =>
+                                        navigation.push('AppointmentDetail', { id: sibling.id })
+                                    }
+                                />
+                            ))}
+                        </View>
+                    </Section>
+                ) : null}
+
                 {/* Histórico */}
                 <Section title="Histórico">
                     <HistoryTimeline items={historyItems} loading={historyLoading} />
@@ -242,7 +292,10 @@ function renderActions(appointment: Appointment, ctx: ActionsContext): ReactNode
             appointment.display_status === 'atencao');
 
     const showGenerate = canGenerateOS && isOpen && canShowGenerate;
-    const showFinalize = canEdit && isOpen && hasOS;
+    // Só finalizável quando a O.S. está EM EXECUÇÃO (waiting/in_progress). Uma O.S.
+    // em "duplicidade" precisa antes ser resolvida pela própria O.S. — oferecer
+    // Finalizar aqui levava a um erro do backend e a uma tela sem saída.
+    const showFinalize = canEdit && hasOS && appointment.display_status === 'em_execucao';
     const showEdit = canEdit && isOpen;
     const showCancel = canDelete && isOpen;
 
@@ -321,6 +374,7 @@ const ACTION_LABELS: Record<string, string> = {
     cancelled: 'Agendamento cancelado',
     generate_os: 'O.S. gerada',
     os_generated: 'O.S. gerada',
+    finalize_os: 'O.S. finalizada',
 };
 
 function actionLabel(action: string): string {
@@ -396,6 +450,51 @@ function HistoryTimeline({
                 );
             })}
         </View>
+    );
+}
+
+// ─── Agendamentos do grupo (combinado) ───────────────────────────────────────
+
+/**
+ * Linha de um agendamento irmão do mesmo grupo combinado: badge do departamento
+ * + badge do status + (se houver) O.S. vinculada; toca para abrir o irmão.
+ */
+function SiblingRow({ sibling, onPress }: { sibling: GroupSibling; onPress: () => void }) {
+    const deptLabel = DEPARTMENT_LABELS[sibling.department] ?? sibling.department;
+    const cfg = getAppointmentStatusConfig(sibling.display_status);
+    return (
+        <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Abrir agendamento de ${deptLabel}, ${cfg.label}`}
+            onPress={onPress}
+            className="flex-row items-center gap-2 rounded-xl border border-neutral-100 px-3 py-2.5 active:opacity-70 dark:border-dark-border-soft"
+        >
+            <View className="h-8 w-8 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-900/40">
+                <Ionicons name="link" size={15} color="#7C3AED" />
+            </View>
+            <View className="flex-1 flex-row flex-wrap items-center gap-1.5">
+                <Text className="font-sans-semibold text-sm text-neutral-800 dark:text-dark-text">
+                    {deptLabel}
+                </Text>
+                <View
+                    className="flex-row items-center gap-1 rounded-full px-2 py-0.5"
+                    style={{ backgroundColor: cfg.cardBg }}
+                >
+                    <View
+                        style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: cfg.dot }}
+                    />
+                    <Text className="font-sans-semibold text-[11px]" style={{ color: cfg.color }}>
+                        {cfg.label}
+                    </Text>
+                </View>
+                {sibling.service_order_id ? (
+                    <Text className="font-sans text-[11px] text-neutral-400 dark:text-dark-text-muted">
+                        {`O.S. #${sibling.service_order_id}`}
+                    </Text>
+                ) : null}
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#98A2B3" />
+        </Pressable>
     );
 }
 

@@ -3,6 +3,8 @@
  * Singleton: use `wsService` exportado.
  */
 
+import { getApiBaseUrl } from '@/lib/apiBase';
+
 type EventHandler = (data: unknown) => void;
 type StatusHandler = (status: WsStatus) => void;
 
@@ -47,7 +49,7 @@ class WebSocketService {
     if (!this.connectParams) return;
     const { token, storeId } = this.connectParams;
 
-    const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000';
+    const apiBase = getApiBaseUrl();
     const wsBase = apiBase.replace(/^https/, 'wss').replace(/^http/, 'ws');
     const path = storeId === 'all' ? '/ws/all' : `/ws/${storeId}`;
     const url = `${wsBase}${path}?token=${encodeURIComponent(token)}`;
@@ -78,8 +80,14 @@ class WebSocketService {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event: CloseEvent) => {
       this._setStatus('disconnected');
+      // 4001/4003 = rejeição do servidor (token inválido / sem acesso ao canal):
+      // reconectar em loop nunca vai funcionar — para e fica vermelho.
+      if (event.code === 4001 || event.code === 4003) {
+        this.shouldReconnect = false;
+        return;
+      }
       if (this.shouldReconnect) {
         this._scheduleReconnect();
       }

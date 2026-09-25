@@ -82,6 +82,35 @@ class TestSvcAggWorkshopCourtesy:
         assert result == {}
 
 
+class TestSvcAggCortesiaOutrosDepartamentos:
+    """Cortesia de Película/Segurança/PPF migra para workshop_courtesy; sai do próprio depto."""
+
+    @pytest.mark.parametrize("dept", ["film", "security_film", "ppf"])
+    def test_cortesia_migra_para_courtesy(self, dept):
+        order = _order(dept, [_item("Película Polarizada", unit_price=300.0)], is_courtesy=True)
+        cort = _svc_agg([order], "workshop_courtesy")
+        assert "Película Polarizada" in cort
+        assert cort["Película Polarizada"]["total"] == 300.0
+
+    @pytest.mark.parametrize("dept", ["film", "security_film", "ppf"])
+    def test_cortesia_nao_aparece_no_proprio_departamento(self, dept):
+        order = _order(dept, [_item("Película Polarizada", unit_price=300.0)], is_courtesy=True)
+        # No próprio bucket do departamento a cortesia não deve mais aparecer
+        assert _svc_agg([order], dept) == {}
+
+    @pytest.mark.parametrize("dept", ["film", "security_film", "ppf"])
+    def test_nao_cortesia_permanece_no_departamento(self, dept):
+        order = _order(dept, [_item("Película Polarizada", unit_price=300.0)], is_courtesy=False)
+        assert "Película Polarizada" in _svc_agg([order], dept)
+        assert _svc_agg([order], "workshop_courtesy") == {}
+
+    @pytest.mark.parametrize("dept", ["vn", "vu", "bodywork", "vd"])
+    def test_cortesia_de_outros_deptos_nao_migra(self, dept):
+        """Escopo restrito: VN/VU/Funilaria/VD cortesia NÃO vão para Oficina Cortesia."""
+        order = _order(dept, [_item("Serviço X", unit_price=100.0)], is_courtesy=True)
+        assert _svc_agg([order], "workshop_courtesy") == {}
+
+
 class TestSvcAggWorkshopSoLavagem:
     """O.S. apenas com Lavagem Simples → vai para workshop_lavagem, não para workshop_other."""
 

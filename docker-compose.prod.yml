@@ -48,7 +48,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          # 256M era apertado demais: a API idle já ficava ~211M e estourava no
+          # pico de requisições (tela de Estoque) → OOM (SIGKILL) → 502 Bad Gateway.
+          memory: 512M
           cpus: '1.0'
     logging:
       driver: "json-file"
@@ -77,7 +79,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 192M
+          # 192M não comportava --concurrency=2 (2 processos × ~100M = ~200M) →
+          # OOM do worker a cada poucos minutos. 320M dá folga; alternativa mais
+          # enxuta seria --concurrency=1 (fica p/ um passe futuro).
+          memory: 320M
           cpus: '0.5'
     logging:
       driver: "json-file"

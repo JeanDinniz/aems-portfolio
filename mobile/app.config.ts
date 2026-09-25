@@ -69,19 +69,25 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         'O app usa a câmera para registrar fotos das ordens de serviço.',
       NSPhotoLibraryUsageDescription:
         'O app acessa suas fotos para anexar imagens às ordens de serviço.',
+      NSLocationWhenInUseUsageDescription:
+        'Usamos sua localização para registrar o local da batida de ponto.',
       UIBackgroundModes: ['remote-notification'],
     },
   },
   android: {
     package: 'com.example.aems',
+    // HML/prod agora são HTTPS (hml.aems.example.com / aems.example.com),
+    // então cleartext HTTP não é necessário. Se um dia precisar (ex.: HTTP por IP),
+    // use o plugin `expo-build-properties` com android.usesCleartextTraffic — a key
+    // NÃO existe direto no ExpoConfig.android (erro de tsc).
     adaptiveIcon: {
-      backgroundColor: '#E6F4FE',
+      backgroundColor: '#1A1A1A',
       foregroundImage: './assets/android-icon-foreground.png',
       backgroundImage: './assets/android-icon-background.png',
       monochromeImage: './assets/android-icon-monochrome.png',
     },
     predictiveBackGestureEnabled: false,
-    permissions: ['CAMERA', 'POST_NOTIFICATIONS'],
+    permissions: ['CAMERA', 'POST_NOTIFICATIONS', 'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION'],
     // SLOT Android (OBRIGATÓRIO para push em produção). O `google-services.json`
     // NÃO é commitado (está no .gitignore). No build EAS ele é injetado via file
     // env var (secret) `GOOGLE_SERVICES_JSON` — o EAS baixa o arquivo e expõe o
@@ -110,6 +116,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     [
+      // Localização (Ponto Eletrônico). Só uso em foreground (batida de ponto);
+      // não pedimos permissão de background. O plugin declara
+      // NSLocationWhenInUseUsageDescription (iOS) e as permissões ACCESS_*
+      // LOCATION (Android). Módulo NATIVO novo — exige um novo dev/production
+      // build para o expo-location funcionar (não roda por OTA nem no Expo Go
+      // sem o binário atualizado).
+      'expo-location',
+      {
+        locationWhenInUsePermission:
+          'Usamos sua localização para registrar o local da batida de ponto.',
+      },
+    ],
+    [
       'expo-notifications',
       {
         // Cor de acento da notificação (Android). `icon` omitido de propósito:
@@ -128,6 +147,23 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           'O app usa o Face ID para desbloquear o acesso sem digitar a senha novamente.',
       },
     ],
+    [
+      // Reconhecimento facial do Ponto (Fase 1 — enrollment). O plugin do
+      // react-native-fast-tflite ajusta a config nativa (iOS/Android) para o
+      // runtime do TensorFlow Lite. Mantemos CPU-only (sem CoreML delegate) na
+      // v1 por simplicidade — o FaceNet ~94MB é temporário e será trocado por um
+      // MobileFaceNet pequeno. Módulo NATIVO novo → exige novo dev/production
+      // build (não roda por OTA nem no Expo Go). O `@react-native-ml-kit/face-detection`
+      // NÃO tem config plugin — é autolinkado pelo `expo prebuild`.
+      'react-native-fast-tflite',
+      {
+        enableCoreMLDelegate: false,
+      },
+    ],
+    // Resolve o .tflite embarcado para um caminho file:// real (necessário no
+    // build de RELEASE — o require() do asset vinha sem esquema de URL e o
+    // fast-tflite falhava com "no protocol: assets_models_facenet").
+    'expo-asset',
     [
       // Sentry source maps (HARD-02): faz upload dos source maps/símbolos no
       // build EAS para stack traces legíveis nos crashes. O `authToken` NÃO fica
@@ -151,6 +187,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // `SENTRY_DSN` nos perfis preview/production (ver eas.json) — sem mudar
     // código. Lido por `src/lib/env.ts` (extra.sentryDsn). Ver `src/lib/sentry.ts`.
     sentryDsn: process.env.SENTRY_DSN ?? '',
+    // Feature flags de módulos secundários (default OFF — ver src/constants/features.ts).
+    // Habilitar por perfil no eas.json (env) ou em dev: `FEATURE_DASHBOARD=true npx expo start`.
+    featureConference: process.env.FEATURE_CONFERENCE ?? '',
+    featureFechamento: process.env.FEATURE_FECHAMENTO ?? '',
+    featureDashboard: process.env.FEATURE_DASHBOARD ?? '',
+    featureInstallerPerformance: process.env.FEATURE_INSTALLER_PERFORMANCE ?? '',
+    featureEbook: process.env.FEATURE_EBOOK ?? '',
+    featureAdminCadastros: process.env.FEATURE_ADMIN_CADASTROS ?? '',
     ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
   },
 });

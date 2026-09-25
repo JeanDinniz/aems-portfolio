@@ -20,7 +20,6 @@ import type { DashboardOverview } from '@/types/dashboard.types';
 // ─── Hooks de dados do Dashboard ─────────────────────────────────────────────
 let mockOverviewData: DashboardOverview | undefined;
 const mockOverviewRefetch = jest.fn();
-const mockQueueRefetch = jest.fn();
 
 jest.mock('@/hooks/useDashboard', () => {
     // Helper inline (jest.mock não pode referenciar variáveis de fora do escopo).
@@ -36,12 +35,10 @@ jest.mock('@/hooks/useDashboard', () => {
         useDashboardOverview: () =>
             q({ data: mockOverviewData, refetch: mockOverviewRefetch }),
         useDashboardSla: () => q({ data: undefined }),
-        useDashboardQueue: () => q({ data: [], refetch: mockQueueRefetch }),
         useDashboardStoresRanking: () => q({ data: [] }),
         useDashboardServicesRanking: () => q({ data: [] }),
         useDashboardDepartmentBreakdown: () => q({ data: [] }),
         useDashboardEmployeesRanking: () => q({ data: [] }),
-        useDashboardConsultantsRanking: () => q({ data: [] }),
         // Hooks da ChartsSection (Fatia 3b) — exercitados pelo branch dev build.
         useDashboardTimeseries: () => q({ data: [] }),
         useDashboardTimeseriesByType: () => q({ data: [] }),

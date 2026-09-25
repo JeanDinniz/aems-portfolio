@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Button } from '@/components/ui/Button';
-import { TextField } from '@/components/ui/TextField';
+import { DateField } from '@/components/ui/DateField';
 import { useTheme } from '@/theme';
 import { DEPARTMENTS } from '@/constants/service-orders';
 import type { AppointmentFilters } from '@/types/scheduling.types';
@@ -110,12 +110,13 @@ export const SchedulingFilterSheet = forwardRef<SchedulingFilterSheetRef, Schedu
             <BottomSheetModal
                 ref={modalRef}
                 enableDynamicSizing
-                maxDynamicContentSize={640}
+                maxDynamicContentSize={760}
+                bottomInset={insets.bottom}
                 backdropComponent={renderBackdrop}
                 handleIndicatorStyle={{ backgroundColor: isDark ? '#555555' : '#D0D5DD' }}
                 backgroundStyle={{ backgroundColor: colors.surface }}
             >
-                <BottomSheetView style={{ paddingBottom: insets.bottom + 16 }}>
+                <BottomSheetView>
                     <View className="flex-row items-center justify-between border-b border-neutral-100 px-5 pb-3 pt-1 dark:border-dark-border-soft">
                         <Text className="font-display text-lg text-neutral-900 dark:text-dark-text">
                             Filtros
@@ -134,7 +135,7 @@ export const SchedulingFilterSheet = forwardRef<SchedulingFilterSheetRef, Schedu
 
                     <ScrollView
                         className="px-5"
-                        contentContainerStyle={{ paddingTop: 16, paddingBottom: 8 }}
+                        contentContainerStyle={{ paddingTop: 16, paddingBottom: 24 }}
                         keyboardShouldPersistTaps="handled"
                     >
                         {/* Departamento (único) */}
@@ -190,31 +191,26 @@ export const SchedulingFilterSheet = forwardRef<SchedulingFilterSheetRef, Schedu
                         <FilterLabel>Período</FilterLabel>
                         <View className="flex-row gap-3">
                             <View className="flex-1">
-                                <TextField
+                                <DateField
                                     label="De"
-                                    placeholder="AAAA-MM-DD"
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
                                     value={draft.date_from}
-                                    onChangeText={(t) => setDraft((d) => ({ ...d, date_from: t }))}
+                                    onChange={(iso) => setDraft((d) => ({ ...d, date_from: iso }))}
                                 />
                             </View>
                             <View className="flex-1">
-                                <TextField
+                                <DateField
                                     label="Até"
-                                    placeholder="AAAA-MM-DD"
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
                                     value={draft.date_to}
-                                    onChangeText={(t) => setDraft((d) => ({ ...d, date_to: t }))}
+                                    onChange={(iso) => setDraft((d) => ({ ...d, date_to: iso }))}
                                 />
                             </View>
                         </View>
-                    </ScrollView>
 
-                    <View className="px-5 pt-2">
-                        <Button title="Aplicar filtros" icon="checkmark" onPress={apply} />
-                    </View>
+                        {/* Ação dentro do scroll → nunca fica atrás da barra do Android. */}
+                        <View className="mt-5">
+                            <Button title="Aplicar filtros" icon="checkmark" onPress={apply} />
+                        </View>
+                    </ScrollView>
                 </BottomSheetView>
             </BottomSheetModal>
         );

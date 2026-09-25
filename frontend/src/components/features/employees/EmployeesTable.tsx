@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { FileText, ArrowRightLeft, Clock, Trash2 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth.store';
+import { FileText, ArrowRightLeft, Clock, Trash2, UserPlus } from 'lucide-react';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import {
     Table,
     TableBody,
@@ -49,6 +49,7 @@ interface Props {
     onFicha: (employee: Employee) => void;
     onMovimentacao: (employee: Employee) => void;
     onHistorico: (employee: Employee) => void;
+    onCreateUser?: (employee: Employee) => void;
 }
 
 export function EmployeesTable({
@@ -61,10 +62,11 @@ export function EmployeesTable({
     onFicha,
     onMovimentacao,
     onHistorico,
+    onCreateUser,
 }: Props) {
     const [employeeToDelete, setEmployeeToDelete] = useState<Employee | null>(null);
 
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('employees', 'edit');
     const canDelete = hasPermission('employees', 'delete');
 
@@ -86,18 +88,19 @@ export function EmployeesTable({
                 <Table>
                     <TableHeader>
                         <TableRow>
-                            <TableHead className="w-[120px]">Acoes</TableHead>
+                            <TableHead className="w-[120px]">Ações</TableHead>
                             <TableHead className="w-[90px]">ID</TableHead>
                             <TableHead>Nome Completo</TableHead>
                             <TableHead>Cargo</TableHead>
                             <TableHead>Loja</TableHead>
+                            <TableHead>Usuário</TableHead>
                             <TableHead>Status</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {employees.length === 0 ? (
                             <TableRow>
-                                <TableCell colSpan={6} className="text-center text-[#666666] dark:text-zinc-500 py-8">
+                                <TableCell colSpan={7} className="text-center text-[#666666] dark:text-zinc-500 py-8">
                                     Nenhum funcionario encontrado
                                 </TableCell>
                             </TableRow>
@@ -141,6 +144,18 @@ export function EmployeesTable({
                                                 >
                                                     <Clock className="h-4 w-4" />
                                                 </Button>
+                                                {canEdit && onCreateUser && !emp.user_id && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        title="Criar usuário"
+                                                        aria-label={`Criar usuário para ${emp.name}`}
+                                                        onClick={() => onCreateUser(emp)}
+                                                        className="h-8 w-8 text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white"
+                                                    >
+                                                        <UserPlus className="h-4 w-4" />
+                                                    </Button>
+                                                )}
                                                 {canDelete && (
                                                     <Button
                                                         variant="ghost"
@@ -164,6 +179,12 @@ export function EmployeesTable({
                                         </TableCell>
                                         <TableCell className="text-sm text-[#444444] dark:text-zinc-300">
                                             {emp.store_name || 'N/A'}
+                                        </TableCell>
+                                        <TableCell className="text-sm">
+                                            {emp.user_name
+                                                ? <span className="text-[#444444] dark:text-zinc-300">{emp.user_name}</span>
+                                                : <span className="text-muted-foreground">Sem vínculo</span>
+                                            }
                                         </TableCell>
                                         <TableCell>
                                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusCfg.className}`}>

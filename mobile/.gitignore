@@ -50,3 +50,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Modelo facial (Ponto — reconhecimento). FaceNet ~94MB é TEMPORÁRIO (caminho A);
+# grande demais para versionar. Baixar com `npm run fetch:face-model`.
+# O modelo pequeno definitivo (produção) poderá ser versionado quando existir.
+assets/models/*.tflite

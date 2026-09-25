@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
+import { useConfirm } from '@/components/ui';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -67,6 +68,7 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
 export function UserDetailScreen({ route, navigation }: AdminStackScreenProps<'UserDetail'>) {
     const { id } = route.params;
     const canEdit = useCanEdit('users');
+    const { confirm } = useConfirm();
     const toast = useToast();
 
     const { data: user, isLoading, isError, refetch } = useUser(id);
@@ -99,40 +101,37 @@ export function UserDetailScreen({ route, navigation }: AdminStackScreenProps<'U
 
     const busy = activate.isPending || deactivate.isPending || resetPassword.isPending;
 
-    const confirmToggle = () => {
+    const confirmToggle = async () => {
         if (user.is_active) {
-            Alert.alert('Desativar usuário', `Desativar ${user.full_name}?`, [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: 'Desativar',
-                    style: 'destructive',
-                    onPress: () => deactivate.mutate(user.id),
-                },
-            ]);
+            const ok = await confirm({
+                title: 'Desativar usuário',
+                message: `Desativar ${user.full_name}?`,
+                confirmLabel: 'Desativar',
+                destructive: true,
+            });
+            if (ok) deactivate.mutate(user.id);
         } else {
-            Alert.alert('Ativar usuário', `Ativar ${user.full_name}?`, [
-                { text: 'Cancelar', style: 'cancel' },
-                { text: 'Ativar', onPress: () => activate.mutate(user.id) },
-            ]);
+            const ok = await confirm({
+                title: 'Ativar usuário',
+                message: `Ativar ${user.full_name}?`,
+                confirmLabel: 'Ativar',
+            });
+            if (ok) activate.mutate(user.id);
         }
     };
 
-    const confirmResetPassword = () => {
-        Alert.alert(
-            'Redefinir senha',
-            `Gerar uma nova senha temporária para ${user.full_name}? A senha atual deixará de funcionar.`,
-            [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: 'Redefinir',
-                    style: 'destructive',
-                    onPress: () =>
-                        resetPassword.mutate(user.id, {
-                            onSuccess: (data) => setTempPassword(data.temporary_password),
-                        }),
-                },
-            ]
-        );
+    const confirmResetPassword = async () => {
+        const ok = await confirm({
+            title: 'Redefinir senha',
+            message: `Gerar uma nova senha temporária para ${user.full_name}? A senha atual deixará de funcionar.`,
+            confirmLabel: 'Redefinir',
+            destructive: true,
+        });
+        if (ok) {
+            resetPassword.mutate(user.id, {
+                onSuccess: (data) => setTempPassword(data.temporary_password),
+            });
+        }
     };
 
     const copyPassword = async () => {

@@ -17,6 +17,9 @@ export interface Store {
     dealership_brand?: string | null;
     brand_id?: number;
     brand?: { id: number; name: string; code: string } | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    geofence_radius_m?: number | null;
 }
 
 export interface CreateStorePayload {
@@ -37,6 +40,9 @@ export interface UpdateStorePayload {
     state?: string;
     address?: string;
     phone?: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    geofence_radius_m?: number | null;
 }
 
 export const storesService = {

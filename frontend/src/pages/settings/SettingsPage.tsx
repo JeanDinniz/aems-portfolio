@@ -2,10 +2,13 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
 import { useAuth } from '@/hooks/useAuth';
-import { Settings, User, Bell, Palette, Shield, Sun, Moon } from 'lucide-react';
+import { Settings, User, Bell, Palette, Shield, Sun, Moon, Target } from 'lucide-react';
+import { subscribeWebPush, unsubscribeWebPush } from '@/services/webPush';
+import { useToast } from '@/hooks/use-toast';
+import { useRevenueGoals, useUpdateRevenueGoals } from '@/hooks/useSettings';
 
-const STORAGE_KEY_PUSH = 'aems-notify-push';
 const STORAGE_KEY_DARK = 'aems-dark-mode';
 
 function readBoolFromStorage(key: string, defaultValue: boolean): boolean {
@@ -21,22 +24,88 @@ function applyDarkMode(enabled: boolean): void {
 export default function SettingsPage() {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
+    const { toast } = useToast();
 
     const [notifyPush, setNotifyPush] = useState<boolean>(() =>
-        readBoolFromStorage(STORAGE_KEY_PUSH, false)
+        typeof Notification !== 'undefined' && Notification.permission === 'granted'
     );
     const [darkMode, setDarkMode] = useState<boolean>(() =>
         readBoolFromStorage(STORAGE_KEY_DARK, false)
     );
+
+    // Metas de Faturamento (por funcionário) — só Owner
+    const isOwner = user?.role === 'owner';
+    const revenueGoalsQuery = useRevenueGoals(isOwner);
+    const updateGoals = useUpdateRevenueGoals();
+    const [goals, setGoals] = useState({ tier_1: '', tier_2: '', tier_3: '' });
+    // Sincroniza os campos com o valor carregado do backend na primeira vez que
+    // ele chega (padrão React de ajustar estado a partir de props durante o render,
+    // sem useEffect). Depois disso o usuário edita livremente.
+    const [syncedGoals, setSyncedGoals] = useState<typeof revenueGoalsQuery.data>(undefined);
+    if (revenueGoalsQuery.data && revenueGoalsQuery.data !== syncedGoals) {
+        setSyncedGoals(revenueGoalsQuery.data);
+        setGoals({
+            tier_1: String(revenueGoalsQuery.data.tier_1),
+            tier_2: String(revenueGoalsQuery.data.tier_2),
+            tier_3: String(revenueGoalsQuery.data.tier_3),
+        });
+    }
+
+    const handleSaveGoals = async () => {
+        const parsed = {
+            tier_1: Number(goals.tier_1),
+            tier_2: Number(goals.tier_2),
+            tier_3: Number(goals.tier_3),
+        };
+        if (Object.values(parsed).some((v) => Number.isNaN(v) || v < 0)) {
+            toast({
+                variant: 'destructive',
+                title: 'Valores inválidos',
+                description: 'Informe valores numéricos maiores ou iguais a zero.',
+            });
+            return;
+        }
+        try {
+            await updateGoals.mutateAsync(parsed);
+            toast({ title: 'Metas atualizadas', description: 'As metas de faturamento foram salvas.' });
+        } catch {
+            toast({
+                variant: 'destructive',
+                title: 'Erro ao salvar metas',
+                description: 'Tente novamente mais tarde.',
+            });
+        }
+    };
 
     // Apply dark mode class on mount based on persisted value
     useEffect(() => {
         applyDarkMode(readBoolFromStorage(STORAGE_KEY_DARK, false));
     }, []);
 
-    const handleNotifyPushChange = (checked: boolean) => {
-        setNotifyPush(checked);
-        localStorage.setItem(STORAGE_KEY_PUSH, String(checked));
+    const handleNotifyPushChange = async (checked: boolean) => {
+        if (checked) {
+            if (typeof Notification === 'undefined') return;
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                try {
+                    await subscribeWebPush();
+                    setNotifyPush(true);
+                } catch {
+                    toast({
+                        variant: 'destructive',
+                        title: 'Erro ao ativar notificações',
+                        description: 'Tente novamente mais tarde.',
+                    });
+                }
+            }
+        } else {
+            try {
+                await unsubscribeWebPush();
+            } catch {
+                // best-effort
+            }
+            setNotifyPush(false);
+        }
     };
 
     const handleDarkModeChange = (checked: boolean) => {
@@ -213,6 +282,56 @@ export default function SettingsPage() {
                     </div>
                 </div>
             </div>
+
+            {/* Metas de Faturamento (Owner) */}
+            {isOwner && (
+                <div className="bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-hidden">
+                    <div className="flex items-center gap-3 px-6 py-4 border-b border-[#E8E8E8] dark:border-[#333333]">
+                        <div className="w-8 h-8 rounded-lg bg-[#F5A800]/10 flex items-center justify-center shrink-0">
+                            <Target className="w-4 h-4" style={{ color: '#F5A800' }} />
+                        </div>
+                        <span className="text-base font-semibold text-[#111111] dark:text-white">Metas de Faturamento</span>
+                    </div>
+
+                    <div className="p-6 space-y-5">
+                        <p className="text-sm text-[#666666] dark:text-zinc-400">
+                            Valor <strong>por funcionário</strong>. No Dashboard, a meta de cada loja é este valor
+                            multiplicado pelo nº de funcionários ativos (sem instaladores).
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            {([
+                                ['tier_1', 'Meta 1'],
+                                ['tier_2', 'Meta 2'],
+                                ['tier_3', 'Meta 3'],
+                            ] as const).map(([key, label]) => (
+                                <div key={key} className="space-y-1.5">
+                                    <Label htmlFor={key} className="text-xs text-[#666666] dark:text-zinc-400">
+                                        {label} (R$ por funcionário)
+                                    </Label>
+                                    <Input
+                                        id={key}
+                                        type="number"
+                                        min={0}
+                                        step={100}
+                                        value={goals[key]}
+                                        onChange={(e) => setGoals((g) => ({ ...g, [key]: e.target.value }))}
+                                        disabled={revenueGoalsQuery.isLoading}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                        <div>
+                            <button
+                                onClick={handleSaveGoals}
+                                disabled={updateGoals.isPending || revenueGoalsQuery.isLoading}
+                                className="h-9 px-4 rounded-lg text-sm font-semibold bg-[#F5A800] hover:bg-[#E09600] text-[#1A1A1A] transition-colors disabled:opacity-60"
+                            >
+                                {updateGoals.isPending ? 'Salvando…' : 'Salvar metas'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Sessão e Segurança */}
             <div className="bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-hidden">

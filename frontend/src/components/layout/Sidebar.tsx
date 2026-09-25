@@ -7,13 +7,15 @@ import {
     Package, LayoutDashboard,
     PanelLeftClose, PanelLeftOpen, Calendar,
     BarChart2, ChevronDown, ChevronRight, ScrollText,
+    Clock, BookOpen, Gauge, Truck, LineChart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { TIME_CLOCK_ENABLED, EBOOK_ENABLED, EPI_ENABLED } from '@/constants/features';
 import { useAuth } from '@/hooks/useAuth';
-import { useMyPermissions } from '@/hooks/useMyPermissions';
+import { useMyPermissions, useHasPermission } from '@/hooks/useMyPermissions';
 import { useAuthStore } from '@/stores/auth.store';
-import { WashCenterLogo } from '@/components/brand/WashCenterLogo';
+import { AemsLogo } from '@/components/brand/AemsLogo';
 import type { SubModule } from '@/types/accessProfile.types';
 
 type AllowedRole = 'owner' | 'user';
@@ -50,10 +52,15 @@ interface SidebarGroup {
 
 const sidebarGroups: SidebarGroup[] = [
     {
+        // Sem trava de role no grupo: o Dashboard tem a sua própria (owner) e o
+        // Desempenho é liberado por permissão (installer_performance). Assim o grupo
+        // aparece para owner (Dashboard + Desempenho) e para quem tem só a permissão
+        // de Desempenho.
         label: 'Executivo',
-        roles: ['owner'] as AllowedRole[],
         items: [
-            { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard', roles: ['owner'] as AllowedRole[] },
+            { icon: LayoutDashboard, label: 'Dashboard',   href: '/dashboard',                roles: ['owner'] as AllowedRole[] },
+            { icon: Gauge,           label: 'Desempenho',  href: '/desempenho-instaladores',  subModule: 'installer_performance' as SubModule },
+            { icon: LineChart,       label: 'Películas',   href: '/peliculas',                subModule: 'indicadores' as SubModule },
         ],
     },
     {
@@ -64,6 +71,16 @@ const sidebarGroups: SidebarGroup[] = [
             { icon: ClipboardCheck,   label: 'Conferencia',       href: '/conference',     subModule: 'conference' },
             { icon: FileSpreadsheet,  label: 'Fechamento',        href: '/fechamento',     subModule: 'fechamento' },
             { icon: Package,          label: 'Estoque',           href: '/estoque',        subModule: 'inventory' },
+            { icon: Truck,            label: 'Pedidos de Material', href: '/pedidos',        subModule: 'material_requests' as SubModule },
+            ...(EBOOK_ENABLED
+                ? [
+                    { icon: BookOpen,    label: 'Biblioteca',   href: '/ebook',               subModule: 'ebook' as SubModule },
+                    { icon: ShieldCheck, label: 'Certificados', href: '/ebook/certificados',   subModule: 'ebook' as SubModule },
+                  ]
+                : []),
+            ...(TIME_CLOCK_ENABLED
+                ? [{ icon: Clock,     label: 'Ponto',             href: '/ponto',          subModule: 'time_clock' as SubModule }]
+                : []),
         ],
     },
     {
@@ -79,6 +96,13 @@ const sidebarGroups: SidebarGroup[] = [
                 subItems: [
                     { label: 'Funcionários',    href: '/admin/employees', subModule: 'employees' },
                     { label: 'Prog. de Férias', href: '/admin/ferias',    subModule: 'employees' },
+                    { label: 'Faltas do Dia',   href: '/admin/faltas',    subModule: 'employees' },
+                    ...(EPI_ENABLED
+                        ? [{ label: 'Controle de EPIs', href: '/admin/epi', subModule: 'epi' as SubModule }]
+                        : []),
+                    ...(TIME_CLOCK_ENABLED
+                        ? [{ label: 'Espelho de Ponto', href: '/admin/ponto', subModule: 'time_clock_mirror' as SubModule }]
+                        : []),
                 ],
             },
             {
@@ -92,7 +116,11 @@ const sidebarGroups: SidebarGroup[] = [
                     { label: 'Tipos Pelicula', href: '/admin/tipos-pelicula', roles: ['owner'] as AllowedRole[] },
                     { label: 'Marcas',         href: '/admin/marcas',         subModule: 'brands' },
                     { label: 'Modelos',        href: '/admin/modelos',        subModule: 'models' },
+                    { label: 'Feriados',       href: '/admin/feriados',       subModule: 'stores' },
                     { label: 'Fornecedores',   href: '/admin/fornecedores',   roles: ['owner'] as AllowedRole[] },
+                    ...(EBOOK_ENABLED
+                        ? [{ label: 'Gerenciar Biblioteca', href: '/admin/ebook', subModule: 'ebook' as SubModule }]
+                        : []),
                 ],
             },
         ],
@@ -113,7 +141,7 @@ interface SidebarProps {
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
     const location = useLocation();
     const { user } = useAuth();
-    const hasPermissionFn = useAuthStore((s) => s.hasPermission);
+    const hasPermissionFn = useHasPermission();
     const isOwnerFn = useAuthStore((s) => s.isOwner);
     const effectivePermissions = useAuthStore((s) => s.effectivePermissions);
     const isGalponProfile = effectivePermissions?.is_galpon_profile === true;
@@ -124,7 +152,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     useMyPermissions();
 
     const isActive = (href: string) =>
-        location.pathname.startsWith(href);
+        href === '/ebook'
+            ? location.pathname === '/ebook'
+            : location.pathname.startsWith(href);
 
     const canViewItem = (item: SidebarItem | SidebarSubItem): boolean => {
         if (!item.subModule || isOwnerFn()) return true;
@@ -199,29 +229,25 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             {/* Sidebar */}
             <aside
                 className={cn(
-                    'flex flex-col flex-shrink-0',
-                    'border-r border-[#1E1E1E]',
+                    'app-sidebar flex flex-col flex-shrink-0',
+                    'bg-sidebar border-r border-sidebar-border',
                     'transition-all duration-200 ease-in-out',
                     'fixed inset-y-0 left-0 z-50',
                     'md:relative md:inset-auto md:z-auto',
                     'w-[220px]',
                     isCollapsed ? 'md:w-[56px]' : 'md:w-[220px]',
                 )}
-                style={{ backgroundColor: '#111111' }}
                 aria-label="Navegacao principal"
             >
                 {/* Logo / Header */}
-                <div
-                    className="flex h-[60px] items-center justify-between px-3 flex-shrink-0 border-b border-[#1E1E1E] overflow-hidden"
-                    style={{ backgroundColor: '#111111' }}
-                >
+                <div className="flex h-[60px] items-center justify-between px-3 flex-shrink-0 border-b border-sidebar-border overflow-hidden">
                     <div className={cn(
                         'items-center transition-all duration-200',
                         'hidden md:hidden',
                         expanded && 'md:flex',
                         'max-md:flex'
                     )}>
-                        <WashCenterLogo size={28} />
+                        <AemsLogo size={28} />
                     </div>
 
                     {/* Desktop: collapse toggle button */}
@@ -229,7 +255,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                         variant="ghost"
                         size="icon"
                         className={cn(
-                            'hidden md:flex text-[#555] hover:text-white hover:bg-[#1E1E1E] h-8 w-8 flex-shrink-0',
+                            'hidden md:flex text-sidebar-dim hover:text-sidebar-fg-hover hover:bg-sidebar-hover h-8 w-8 flex-shrink-0',
                             isCollapsed && 'mx-auto'
                         )}
                         onClick={toggleCollapsed}
@@ -245,7 +271,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="md:hidden text-[#555] hover:text-white hover:bg-[#1E1E1E] h-8 w-8 flex-shrink-0"
+                        className="md:hidden text-sidebar-dim hover:text-sidebar-fg-hover hover:bg-sidebar-hover h-8 w-8 flex-shrink-0"
                         onClick={onClose}
                         aria-label="Fechar menu"
                     >
@@ -254,10 +280,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </div>
 
                 {/* Nav */}
-                <nav
-                    className="flex-1 overflow-y-auto overflow-x-hidden py-2 aems-scroll"
-                    style={{ backgroundColor: '#111111' }}
-                >
+                <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 aems-scroll">
                     {visibleGroups.map((group) => {
                         const visibleItems = group.items.filter((item) => {
                             const roleOk = !item.roles
@@ -281,10 +304,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                     expanded && 'md:h-auto md:opacity-100',
                                     'max-md:h-auto max-md:opacity-100'
                                 )}>
-                                    <p
-                                        className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-[0.15em] select-none whitespace-nowrap"
-                                        style={{ color: '#6B7280' }}
-                                    >
+                                    <p className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-[0.15em] select-none whitespace-nowrap text-sidebar-muted">
                                         {group.label}
                                     </p>
                                 </div>
@@ -307,26 +327,14 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                                         onClick={() => toggleAccordion(item.label)}
                                                         className={cn(
                                                             'flex items-center gap-2.5 py-2 rounded-lg text-sm transition-colors',
-                                                            'px-3 md:justify-center hover:bg-[#1E1E1E]',
+                                                            'px-3 md:justify-center hover:bg-sidebar-hover',
+                                                            'text-sidebar-fg hover:text-sidebar-fg-hover',
+                                                            hasActiveSub && 'bg-sidebar-active-strong',
                                                             // Expanded: full width so chevron stays on the right
                                                             expanded && 'md:justify-start md:w-full',
                                                             // Mobile always full width
                                                             'max-md:w-full',
                                                         )}
-                                                        style={hasActiveSub
-                                                            ? { color: '#F2F2F2', backgroundColor: 'rgba(245,168,0,0.15)' }
-                                                            : { color: '#F2F2F2' }
-                                                        }
-                                                        onMouseEnter={(e) => {
-                                                            if (!hasActiveSub) {
-                                                                (e.currentTarget as HTMLButtonElement).style.color = '#FFFFFF';
-                                                            }
-                                                        }}
-                                                        onMouseLeave={(e) => {
-                                                            if (!hasActiveSub) {
-                                                                (e.currentTarget as HTMLButtonElement).style.color = '#F2F2F2';
-                                                            }
-                                                        }}
                                                     >
                                                         <Icon className="h-4 w-4 flex-shrink-0" />
                                                         {/* Label + chevron — hidden when collapsed */}
@@ -360,23 +368,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                                                         key={sub.href}
                                                                         to={sub.href}
                                                                         onClick={onClose}
-                                                                        className="flex items-center py-1.5 pl-9 pr-3 rounded-lg text-sm transition-colors"
-                                                                        style={subActive
-                                                                            ? { color: '#111111', backgroundColor: '#F5A800' }
-                                                                            : { color: '#F2F2F2' }
-                                                                        }
-                                                                        onMouseEnter={(e) => {
-                                                                            if (!subActive) {
-                                                                                (e.currentTarget as HTMLAnchorElement).style.color = '#FFFFFF';
-                                                                                (e.currentTarget as HTMLAnchorElement).style.backgroundColor = '#1E1E1E';
-                                                                            }
-                                                                        }}
-                                                                        onMouseLeave={(e) => {
-                                                                            if (!subActive) {
-                                                                                (e.currentTarget as HTMLAnchorElement).style.color = '#F2F2F2';
-                                                                                (e.currentTarget as HTMLAnchorElement).style.backgroundColor = 'transparent';
-                                                                            }
-                                                                        }}
+                                                                        className={cn(
+                                                                            'flex items-center py-1.5 pl-9 pr-3 rounded-lg text-sm transition-colors',
+                                                                            subActive
+                                                                                ? 'text-sidebar-accent-fg bg-sidebar-accent'
+                                                                                : 'text-sidebar-fg hover:text-sidebar-fg-hover hover:bg-sidebar-hover'
+                                                                        )}
                                                                         aria-current={subActive ? 'page' : undefined}
                                                                     >
                                                                         {sub.label}
@@ -401,29 +398,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                                     'md:justify-center',
                                                     expanded && 'md:justify-start',
                                                     active
-                                                        ? 'border-l-2 border-[#F5A800] -ml-px pl-[11px] pr-3'
-                                                        : 'px-3 hover:bg-[#1E1E1E]'
+                                                        ? 'border-l-2 border-sidebar-accent -ml-px pl-[11px] pr-3 text-sidebar-active-fg bg-sidebar-active'
+                                                        : 'px-3 text-sidebar-fg hover:text-sidebar-fg-hover hover:bg-sidebar-hover'
                                                 )}
-                                                style={active
-                                                    ? { color: '#F5A800', backgroundColor: 'rgba(245,168,0,0.10)' }
-                                                    : { color: '#F2F2F2' }
-                                                }
-                                                onMouseEnter={(e) => {
-                                                    if (!active) {
-                                                        (e.currentTarget as HTMLAnchorElement).style.color = '#FFFFFF';
-                                                    }
-                                                }}
-                                                onMouseLeave={(e) => {
-                                                    if (!active) {
-                                                        (e.currentTarget as HTMLAnchorElement).style.color = '#F2F2F2';
-                                                    }
-                                                }}
                                                 aria-current={active ? 'page' : undefined}
                                             >
-                                                <Icon
-                                                    className="h-4 w-4 flex-shrink-0"
-                                                    style={active ? { color: '#F5A800' } : undefined}
-                                                />
+                                                <Icon className="h-4 w-4 flex-shrink-0" />
                                                 <span className={cn(
                                                     'truncate leading-none transition-all duration-200 whitespace-nowrap',
                                                     'md:opacity-0 md:w-0 md:overflow-hidden',
@@ -442,21 +422,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </nav>
 
                 {/* Footer */}
-                <div
-                    className="flex-shrink-0 px-2 py-3 border-t border-[#1E1E1E] overflow-hidden"
-                    style={{ backgroundColor: '#111111' }}
-                >
+                <div className="flex-shrink-0 px-2 py-3 border-t border-sidebar-border overflow-hidden">
                     <div className={cn(
-                        'flex items-center py-2 rounded-lg transition-colors cursor-default hover:bg-[#1A1A1A]',
+                        'flex items-center py-2 rounded-lg transition-colors cursor-default hover:bg-sidebar-hover',
                         'md:justify-center md:px-0',
                         expanded && 'md:justify-start md:px-2 md:gap-2.5',
                         'max-md:gap-2.5 max-md:px-2'
                     )}>
-                        <div
-                            className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                            style={{ backgroundColor: 'rgba(245,168,0,0.20)' }}
-                        >
-                            <span className="text-[10px] font-bold" style={{ color: '#F5A800' }}>
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 bg-sidebar-active-strong">
+                            <span className="text-[10px] font-bold text-sidebar-active-fg">
                                 {userInitials}
                             </span>
                         </div>
@@ -466,10 +440,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                             expanded && 'md:opacity-100 md:w-auto md:overflow-visible',
                             'max-md:opacity-100 max-md:w-auto'
                         )}>
-                            <p className="text-xs font-medium text-white truncate leading-tight whitespace-nowrap">
+                            <p className="text-xs font-medium text-sidebar-fg-hover truncate leading-tight whitespace-nowrap">
                                 {user?.full_name ?? 'Usuario'}
                             </p>
-                            <p className="text-[10px] truncate leading-none whitespace-nowrap" style={{ color: '#555' }}>
+                            <p className="text-[10px] truncate leading-none whitespace-nowrap text-sidebar-dim">
                                 {user?.email ?? ''}
                             </p>
                         </div>

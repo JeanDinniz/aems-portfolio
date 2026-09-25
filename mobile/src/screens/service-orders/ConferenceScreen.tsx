@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
     ActivityIndicator,
     Image,
@@ -34,7 +34,10 @@ import { useTheme } from '@/theme';
 import { serviceOrdersService } from '@/services/api/service-orders.service';
 import { DEPARTMENTS_MAP } from '@/constants/service-orders';
 import { formatDateBR, formatDateTimeBR } from '@/utils/formatDate';
+import { cleanConsultantNotes } from '@/utils/serviceOrderNotes';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { resolveMediaUrl } from '@/lib/resolveMediaUrl';
+import { mediaHeaders } from '@/lib/mediaSource';
 import type { Department, OSCopyPrefill, ServiceOrder } from '@/types/service-order.types';
 import type { AppStackScreenProps } from '@/navigation/types';
 
@@ -665,6 +668,71 @@ function ConferenceStoreSummaryHeader({
     );
 }
 
+// ─── Bloco de observação expansível (briefing / relato técnico) ─────────────
+
+const NOTE_TONE_CLASSES = {
+    info: {
+        box: 'bg-info-light dark:bg-dark-elevated',
+        label: 'text-info dark:text-info-dark',
+    },
+    warning: {
+        box: 'bg-warning-light dark:bg-dark-elevated',
+        label: 'text-warning dark:text-warning-dark',
+    },
+} as const;
+
+/**
+ * Bloco rotulado com texto colapsado em 2 linhas; toque expande/recolhe (estado
+ * local por bloco). `notes` = briefing do consultor (azul); `execution_notes` =
+ * relato técnico do instalador (âmbar).
+ */
+function ExpandableNote({
+    label,
+    icon,
+    tone,
+    text,
+}: {
+    label: string;
+    icon: ComponentProps<typeof Ionicons>['name'];
+    tone: keyof typeof NOTE_TONE_CLASSES;
+    text: string;
+}) {
+    const [expanded, setExpanded] = useState(false);
+    const { colors } = useTheme();
+    const classes = NOTE_TONE_CLASSES[tone];
+
+    return (
+        <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityHint={expanded ? 'Toque para recolher' : 'Toque para expandir'}
+            accessibilityState={{ expanded }}
+            onPress={() => setExpanded((v) => !v)}
+            className={`mt-2 min-h-[44px] rounded-xl p-2.5 active:opacity-80 ${classes.box}`}
+        >
+            <View className="mb-0.5 flex-row items-center gap-1.5">
+                <Ionicons name={icon} size={13} color={colors[tone]} />
+                <Text
+                    className={`flex-1 font-sans-semibold text-[11px] uppercase tracking-wide ${classes.label}`}
+                >
+                    {label}
+                </Text>
+                <Ionicons
+                    name={expanded ? 'chevron-up' : 'chevron-down'}
+                    size={14}
+                    color={colors.textMuted}
+                />
+            </View>
+            <Text
+                className="font-sans text-sm text-neutral-700 dark:text-dark-text"
+                numberOfLines={expanded ? undefined : 2}
+            >
+                {text}
+            </Text>
+        </Pressable>
+    );
+}
+
 // ─── Card de conferência ────────────────────────────────────────────────────
 
 interface ConferenceCardProps {
@@ -728,19 +796,22 @@ function ConferenceCardComponent({
                     </View>
                 )}
 
-                {/* A5 — Observações + foto de avaria + atualização */}
-                {order.notes ? (
-                    <View className="mt-3">
-                        <Text className="font-sans text-[11px] uppercase tracking-wide text-neutral-400 dark:text-dark-text-muted">
-                            Observações
-                        </Text>
-                        <Text
-                            className="font-sans text-sm text-neutral-700 dark:text-dark-text"
-                            numberOfLines={3}
-                        >
-                            {order.notes}
-                        </Text>
-                    </View>
+                {/* A5 — Briefing do consultor + relato técnico + foto de avaria + atualização */}
+                {cleanConsultantNotes(order.notes) ? (
+                    <ExpandableNote
+                        label="Briefing do Consultor"
+                        icon="chatbubble-ellipses-outline"
+                        tone="info"
+                        text={cleanConsultantNotes(order.notes) ?? ''}
+                    />
+                ) : null}
+                {order.execution_notes ? (
+                    <ExpandableNote
+                        label="Relato Técnico do Instalador"
+                        icon="build-outline"
+                        tone="warning"
+                        text={order.execution_notes}
+                    />
                 ) : null}
 
                 {order.internal_notes ? (
@@ -763,7 +834,7 @@ function ConferenceCardComponent({
                             Avaria
                         </Text>
                         <Image
-                            source={{ uri: order.damage_photos[0] }}
+                            source={{ uri: resolveMediaUrl(order.damage_photos[0]), headers: mediaHeaders() }}
                             accessibilityLabel="Foto de avaria"
                             className="h-20 w-20 rounded-xl bg-neutral-100 dark:bg-dark-elevated"
                             resizeMode="cover"

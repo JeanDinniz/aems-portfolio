@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
-import { DEPARTMENT_LABELS } from '@/constants/scheduling'
+import { visibleDepartmentEntries } from '@/constants/scheduling'
 import type { AppointmentFilters } from '@/types/scheduling.types'
 import type { Store } from '@/services/api/stores.service'
 
@@ -18,14 +18,17 @@ interface SchedulingFiltersProps {
   filters: AppointmentFilters
   onFiltersChange: (filters: AppointmentFilters) => void
   stores: Store[]
+  allowedDepartments?: string[]
 }
 
 export function SchedulingFilters({
   filters,
   onFiltersChange,
   stores,
+  allowedDepartments,
 }: SchedulingFiltersProps) {
   const searchRef = useRef<HTMLInputElement>(null)
+  const departmentEntries = visibleDepartmentEntries(allowedDepartments)
 
   const hasActiveFilters =
     !!filters.search ||
@@ -106,7 +109,7 @@ export function SchedulingFilters({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Todos</SelectItem>
-            {Object.entries(DEPARTMENT_LABELS).map(([value, label]) => (
+            {departmentEntries.map(([value, label]) => (
               <SelectItem key={value} value={value}>
                 {label}
               </SelectItem>

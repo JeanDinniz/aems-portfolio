@@ -4,13 +4,15 @@ import { getApiErrorMessage } from '@/lib/api-error';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceOrdersService } from '@/services/api/service-orders.service';
 import { servicesService } from '@/services/api/services.service';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import { useStoreStore } from '@/stores/store.store';
 import { useConferenceFiltersStore, type ConferenceStatusValue } from '@/stores/filters.store';
 import { MultiSelectFilter } from '@/components/common/MultiSelectFilter';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useVehicleModels } from '@/hooks/useVehicleModels';
 import { useServices } from '@/hooks/useServices';
+import { orderEditDetailKey, ORDER_DETAIL_STALE_TIME } from '@/lib/catalog-queries';
+import { prefetchOrderEditData } from '@/lib/prefetch-order-edit';
 import { useConferenceSummary } from '@/hooks/useConferenceSummary';
 import { useConferenceSummaryByStore } from '@/hooks/useConferenceSummaryByStore';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -21,6 +23,7 @@ import type { Photo } from '@/types/photo.types';
 import { DEPARTMENTS_MAP, OS_STATUS_HISTORY_LABELS } from '@/constants/service-orders';
 import { FILM_INSTALLER_POSITION } from '@/constants/employees';
 import { toThumbUrl } from '@/utils/imageThumb';
+import { NotesCell } from '@/components/features/conference/NotesCell';
 
 // Cores do badge de status no histórico (vocabulário backend). Fora do componente
 // para não recriar o objeto a cada item renderizado da timeline.
@@ -33,6 +36,7 @@ const HISTORY_STATUS_COLORS: Record<string, string> = {
     duplicate: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
 };
 import { isValidPlateOrChassi, PLATE_ERROR_MESSAGE } from '@/utils/plate';
+import { buildPhotoCaption } from '@/utils/photoCaption';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -61,6 +65,7 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { PhotoDialog } from '@/components/common/PhotoDialog';
+import { VideoDialog } from '@/components/common/VideoDialog';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -72,7 +77,7 @@ import {
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { toast } from '@/hooks/use-toast';
-import { AlertCircle, CheckCircle, CheckCircle2, Pencil, Search, ClipboardCheck, ImageOff, X, RotateCcw, Download, ChevronDown, ChevronUp, ChevronsUpDown, ChevronLeft, ChevronRight, Car, Clock, AlertTriangle, XCircle, Copy } from 'lucide-react';
+import { AlertCircle, CheckCircle, CheckCircle2, Pencil, Search, ClipboardCheck, ImageOff, X, RotateCcw, Download, FileArchive, ChevronDown, ChevronUp, ChevronsUpDown, ChevronLeft, ChevronRight, Car, Clock, AlertTriangle, XCircle, Copy, PlayCircle, VideoOff } from 'lucide-react';
 import apiClient from '@/services/api/client';
 import {
     DropdownMenu,
@@ -93,6 +98,7 @@ import {
 } from '@/components/features/service-orders/QuickCreateModal';
 import { ConferenceSummaryCards } from '@/components/features/conference/ConferenceSummaryCards';
 import { DepartmentBadge } from '@/components/common/DepartmentBadge';
+import { cleanConsultantNotes } from '@/utils/serviceOrderNotes';
 
 // ─── Flag Filter Dropdown (Cortesia / Galpão / Retorno) ───────────────────────
 
@@ -178,26 +184,33 @@ function calcTotal(order: ServiceOrder): number {
     }, 0);
 }
 
-// Remove tags [CORTESIA] e [RETORNO] das observações para exibição
-function cleanNotes(notes: string | null | undefined): string {
-    if (!notes) return '—';
-    const clean = notes
-        .replace(/\s*\|\s*\[CORTESIA\]|\[CORTESIA\]\s*\|\s*/g, '')
-        .replace(/\s*\|\s*\[RETORNO\]|\[RETORNO\]\s*\|\s*/g, '')
-        .trim();
-    return clean || '—';
+// Lista de nomes dos serviços de uma OS
+// Retalho marcado no item (legado) ou em qualquer aplicação multi-tonalidade —
+// exibido na listagem de serviços para o gestor identificar na auditoria.
+function isScrapItem(item: NonNullable<ServiceOrder['items']>[number]): boolean {
+    return !!item.used_scrap || (item.film_applications ?? []).some((app) => app.used_scrap);
 }
 
-// Lista de nomes dos serviços de uma OS
 function getServiceList(order: ServiceOrder, services?: Array<{ id: number; name: string; code?: string | null }>): string[] {
     if (!order.items || order.items.length === 0) return [];
-    if (!services || services.length === 0) return order.items.map((_, i) => `Serviço #${i + 1}`);
+    if (!services || services.length === 0) {
+        return order.items.map((item, i) => `Serviço #${i + 1}${isScrapItem(item) ? ' (Retalho)' : ''}`);
+    }
     return order.items.map((item) => {
         const svc = services.find((s) => s.id === item.service_id);
         const name = item.service_name ?? svc?.name ?? `Serviço #${item.service_id}`;
         const code = svc?.code;
-        return code ? `${code} - ${name}` : name;
+        const label = code ? `${code} - ${name}` : name;
+        return isScrapItem(item) ? `${label} (Retalho)` : label;
     });
+}
+
+/** Foto aberta no lightbox da tabela, com a legenda da linha que a originou. */
+type PhotoView = { url: string; caption: string };
+
+/** Monta o estado do lightbox a partir da linha clicada (HML-244). */
+function toPhotoView(order: ServiceOrder, url: string): PhotoView {
+    return { url, caption: buildPhotoCaption(order.plate, order.external_os_number) };
 }
 
 // ─── EditDialog ────────────────────────────────────────────────────────────────
@@ -236,6 +249,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [notes, setNotes] = useState('');
     const [internalNotes, setInternalNotes] = useState('');
+    const [executionNotes, setExecutionNotes] = useState('');
     const [saving, setSaving] = useState(false);
     const [vehicleHistoryOpen, setVehicleHistoryOpen] = useState(true);
     const [osHistoryOpen, setOsHistoryOpen] = useState(false);
@@ -272,10 +286,20 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
     });
 
     const { data: orderDetail } = useQuery({
-        queryKey: ['service-order-edit-detail', order?.id],
+        queryKey: orderEditDetailKey(order?.id),
         queryFn: () => serviceOrdersService.getById(order!.id),
         enabled: open && !!order?.id,
-        staleTime: 0,
+        // Semeia com o DTO da lista (já traz items/workers) — mata o "pop-in"
+        // de abrir sempre em branco/staleTime:0. Se o hover (ver handleEdit)
+        // já esquentou o cache, este initialData nem chega a ser usado (o
+        // React Query só aplica initialData quando NÃO há entrada prévia).
+        initialData: order ?? undefined,
+        // initialDataUpdatedAt:0 marca o seed como STALE de imediato: o form de
+        // EDIÇÃO ainda dispara um refetch de background no mount para reconciliar
+        // com o detalhe (edições concorrentes / futura divergência lista↔detalhe),
+        // preservando a intenção do antigo staleTime:0 sem reintroduzir o pop-in.
+        initialDataUpdatedAt: 0,
+        staleTime: ORDER_DETAIL_STALE_TIME,
     });
 
     const { availableStores } = useStoreStore();
@@ -317,8 +341,9 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
             setIsCourtesy(order.is_courtesy ?? false);
             setIsReturn(order.is_return ?? false);
             const rawNotes = order.notes ?? '';
-            setNotes(rawNotes.replace(/\s*\|\s*\[CORTESIA\]|\[CORTESIA\]\s*\|\s*/g, '').replace(/\s*\|\s*\[RETORNO\]|\[RETORNO\]\s*\|\s*/g, '').trim());
+            setNotes(cleanConsultantNotes(rawNotes) ?? '');
             setInternalNotes(order.internal_notes ?? '');
+            setExecutionNotes(order.execution_notes ?? '');
             setInvoiceNumber(order.invoice_number ?? '');
             setExistingPhotoUrl(order.photos?.[0] ?? null);
             setNewPhoto([]);
@@ -340,8 +365,9 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                     service_name: item.service_name ?? undefined,
                     tonality: item.tonality ?? '',
                     roll_code: item.roll_code ?? '',
-                    film_roll_id: item.film_roll_id ?? undefined,
+                    film_roll_id: item.used_scrap ? undefined : (item.film_roll_id ?? undefined),
                     film_type_id: item.film_type_id ?? undefined,
+                    used_scrap: item.used_scrap ?? false,
                 })));
                 setSelectedServices([]);
             } else {
@@ -356,7 +382,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                 setServicePrices(initialPrices);
                 setServicePriceErrors({});
             }
-            setInstallers((order.workers ?? []).map(w => Number(w.employee_id)).filter(id => id > 0));
+            setInstallers([...new Set((order.workers ?? []).map(w => Number(w.employee_id)).filter(id => id > 0))]);
             setVehicleHistoryOpen(true);
             setOsHistoryOpen(false);
         }
@@ -365,7 +391,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
     useEffect(() => {
         if (!orderDetail) return;
         if (orderDetail.workers) {
-            setInstallers(orderDetail.workers.map(w => Number(w.employee_id)).filter(id => id > 0));
+            setInstallers([...new Set(orderDetail.workers.map(w => Number(w.employee_id)).filter(id => id > 0))]);
         }
         const isFilmDetail = orderDetail.department === 'film' || orderDetail.department === 'security_film' || orderDetail.department === 'ppf';
         if (isFilmDetail && orderDetail.items?.length) {
@@ -374,8 +400,9 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                 service_name: item.service_name ?? undefined,
                 tonality: item.tonality ?? '',
                 roll_code: item.roll_code ?? '',
-                film_roll_id: item.film_roll_id ?? undefined,
+                film_roll_id: item.used_scrap ? undefined : (item.film_roll_id ?? undefined),
                 film_type_id: item.film_type_id ?? undefined,
+                used_scrap: item.used_scrap ?? false,
             })));
         } else if (!isFilmDetail && orderDetail.items?.length) {
             // Atualiza preços variáveis com os valores confiáveis do detalhe completo
@@ -445,7 +472,20 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
             const itemsPayload = isFilm
                 ? filmEntries
                     .filter(e => e.service_id > 0 && (department === 'ppf' || e.tonality))
-                    .map(e => ({ service_id: e.service_id, quantity: 1, tonality: e.tonality, roll_code: e.roll_code || undefined, film_roll_id: e.film_roll_id || undefined, film_type_id: e.film_type_id || undefined }))
+                    .map(e => ({
+                        service_id: e.service_id,
+                        quantity: 1,
+                        tonality: e.tonality,
+                        // Retalho (sobra): selecionado direto no dropdown de bobina — sem
+                        // bobina de origem vinculada, nenhum metro é debitado.
+                        roll_code: e.used_scrap ? undefined : (e.roll_code || undefined),
+                        film_roll_id: e.used_scrap ? undefined : (e.film_roll_id || undefined),
+                        film_type_id: e.film_type_id || undefined,
+                        // Booleano EXPLÍCITO (nunca `|| undefined`): o backend preserva o
+                        // retalho quando a key vem ausente, então omitir `false` impediria
+                        // DESMARCAR retalho pela Conferência.
+                        used_scrap: !!e.used_scrap,
+                    }))
                 : selectedServices.map(id => ({
                     service_id: id,
                     quantity: 1,
@@ -469,13 +509,14 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                 invoice_number: isFilm ? (invoiceNumber || undefined) : undefined,
                 notes: notes.trim() ? notes : null,
                 internal_notes: internalNotes.trim() ? internalNotes : null,
+                execution_notes: executionNotes.trim() ? executionNotes : null,
                 store_id: storeId,
                 ...(photosPayload !== undefined && { photos: photosPayload }),
                 ...extra,
             } as Parameters<typeof serviceOrdersService.update>[1]);
 
             onSaved();
-            queryClient.invalidateQueries({ queryKey: ['service-order-edit-detail', order.id] });
+            queryClient.invalidateQueries({ queryKey: orderEditDetailKey(order.id) });
 
             if (!keepOpen) {
                 toast({ title: 'OS atualizada com sucesso!' });
@@ -494,6 +535,15 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
 
     // Ponto 1: Validar — salva edições + marca is_verified=true, fecha o dialog
     const handleVerify = async () => {
+        const isFilm = department === 'film' || department === 'security_film' || department === 'ppf';
+        if (isFilm && !invoiceNumber.trim()) {
+            toast({
+                variant: 'destructive',
+                title: 'Número da NF obrigatório',
+                description: 'Informe o número da NF para verificar O.S. de Película, PPF ou Película de Segurança.',
+            });
+            return;
+        }
         const ok = await handleSave({ extra: { is_verified: true } });
         if (ok) {
             onClose();
@@ -550,7 +600,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
             >
                 <DialogHeader className="px-6 pt-6 pb-4 border-b border-[#E8E8E8] dark:border-[#333333]">
                     <DialogTitle className="text-lg font-bold text-[#111111] dark:text-white">
-                        Editar OS — {order.order_number}
+                        Editar OS
                     </DialogTitle>
                 </DialogHeader>
 
@@ -773,6 +823,7 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                             }}
                             priceErrors={servicePriceErrors}
                             isCourtesy={isCourtesy}
+                            currentOrderItems={order?.items}
                         />
                     )}
                     {/* Ponto 2: botão para confirmar serviços da nova loja */}
@@ -853,14 +904,26 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
                         </div>
                     )}
 
-                    {/* Observações */}
+                    {/* Briefing do Consultor (campo "notes", copiado do agendamento) */}
                     <div className="space-y-1.5">
-                        <Label className="text-xs font-semibold uppercase tracking-wide text-[#666666] dark:text-zinc-500">Observações</Label>
+                        <Label className="text-xs font-semibold uppercase tracking-wide text-[#666666] dark:text-zinc-500">Briefing do Consultor</Label>
                         <Textarea
                             value={notes}
                             onChange={(e) => setNotes(e.target.value)}
                             placeholder="Informações adicionais..."
                             rows={3}
+                            className="rounded-lg text-sm text-[#111111] dark:text-white border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] px-3 outline-none focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800] placeholder:text-[#999999] dark:placeholder:text-zinc-600 resize-none"
+                        />
+                    </div>
+                    {/* Relato Técnico do Instalador (campo "execution_notes", registrado na finalização) */}
+                    <div className="space-y-1.5">
+                        <Label className="text-xs font-semibold uppercase tracking-wide text-[#666666] dark:text-zinc-500">Relato Técnico do Instalador</Label>
+                        <Textarea
+                            value={executionNotes}
+                            onChange={(e) => setExecutionNotes(e.target.value.slice(0, 2000))}
+                            placeholder="Avarias prévias, dificuldades na aplicação ou ocorrências da execução..."
+                            rows={3}
+                            maxLength={2000}
                             className="rounded-lg text-sm text-[#111111] dark:text-white border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] px-3 outline-none focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800] placeholder:text-[#999999] dark:placeholder:text-zinc-600 resize-none"
                         />
                     </div>
@@ -1166,7 +1229,12 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
             </div>}
 
             {existingPhotoUrl && (
-                <PhotoDialog url={existingPhotoUrl} open={photoZoomOpen} onClose={() => setPhotoZoomOpen(false)} />
+                <PhotoDialog
+                    url={existingPhotoUrl}
+                    open={photoZoomOpen}
+                    onClose={() => setPhotoZoomOpen(false)}
+                    caption={buildPhotoCaption(plate, externalOs)}
+                />
             )}
         </Dialog>
     );
@@ -1174,11 +1242,9 @@ function EditDialog({ order, open, onClose, onSaved, canEdit, canDelete, onGener
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
 export function ConferencePage() {
-    const user = useAuthStore((s) => s.user);
-    const hasDeletePermission = useAuthStore((s) => s.hasPermission);
+    const hasDeletePermission = useHasPermission();
     // Seletores granulares: assinar a store inteira re-renderizava a página
     // (2k+ linhas) a qualquer mudança de qualquer campo do useStoreStore
-    const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
     const availableStores = useStoreStore((s) => s.availableStores);
     const queryClient = useQueryClient();
 
@@ -1196,6 +1262,7 @@ export function ConferencePage() {
         reset: resetFilters,
     } = useConferenceFiltersStore();
     const [isExporting, setIsExporting] = useState(false);
+    const [isExportingPhotos, setIsExportingPhotos] = useState(false);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 50;
     // Ordenação por coluna (server-side). Padrão = Data do Serviço crescente (preservado ao recarregar).
@@ -1236,11 +1303,24 @@ export function ConferencePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    const handleStoreSummaryCardClick = useCallback((storeId: number, filterType: 'verified' | 'waiting' | 'wrong' | 'all' | 'cancelled') => {
+        setSelectedStoreIds(storeId ? [storeId] : []);
+        // "total" do card de loja = não-canceladas (verified + waiting). Diferente do
+        // card de departamento (cujo total inclui canceladas), aqui o clique em "total"
+        // filtra pelas não-canceladas para bater com o número exibido no card.
+        setStatusFilters(
+            filterType === 'all'
+                ? ['pending', 'verified']
+                : [filterType === 'waiting' ? 'pending' : filterType]
+        );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // Visibilidade de colunas condicionais por departamento
     const filmDepts = ['film', 'security_film', 'ppf'];
     const showFilmCols = departments.length === 0 || departments.some((d) => filmDepts.includes(d));
     const showTonality = departments.length === 0 || departments.some((d) => filmDepts.includes(d));
-    const totalCols = 18 + (showFilmCols ? 2 : 0) + (showTonality ? 2 : 0);
+    const totalCols = 19 + (showFilmCols ? 2 : 0) + (showTonality ? 2 : 0);
 
     // Edit state
     const [editOrder, setEditOrder] = useState<ServiceOrder | null>(null);
@@ -1284,10 +1364,15 @@ export function ConferencePage() {
     const [errorReason, setErrorReason] = useState('');
 
     // Photo lightbox state
-    const [photoUrl, setPhotoUrl] = useState<string | null>(null);
-    const [damagePhotoUrl, setDamagePhotoUrl] = useState<string | null>(null);
+    const [photoView, setPhotoView] = useState<PhotoView | null>(null);
+    const [damagePhotoView, setDamagePhotoView] = useState<PhotoView | null>(null);
 
-    const storeId = selectedStoreId ?? user?.store_id ?? undefined;
+    // Video lightbox state (vídeo da vistoria)
+    const [videoView, setVideoView] = useState<PhotoView | null>(null);
+
+    // Filtro de instaladores: usa a loja do filtro "LOJA" da tela quando há
+    // exatamente uma selecionada; caso contrário, lista de todas as acessíveis.
+    const storeId = selectedStoreIds.length === 1 ? selectedStoreIds[0] : undefined;
 
     // Buscas por texto: a query usa o valor debounced (1 request quando o
     // usuário para de digitar, não 1 por tecla)
@@ -1500,21 +1585,21 @@ export function ConferencePage() {
         onSettled: reconcile,
     });
 
-    // HML-70: desfazer erro — volta para waiting
+    // HML-70: desfazer erro — restaura o status anterior ao "Lançado Errado"
+    // (tipicamente Finalizado), em vez de reabrir para Aguardando. Assim, corrigir
+    // um falso erro de uma O.S. já finalizada não a faz ressurgir como "Atrasado".
     const undoWrongMutation = useMutation({
-        mutationFn: (id: number) =>
-            apiClient.patch(`/service-orders/${id}/status`, { new_status: 'waiting' }),
+        mutationFn: (id: number) => serviceOrdersService.undoWrong(id),
+        // A O.S. deixa o estado "wrong"; como o status final depende do backend
+        // (pode voltar a Finalizado), removemos a linha da visão de erros e
+        // deixamos o reconcile refletir o status real.
         onMutate: (id: number) =>
-            optimisticConference(
-                statusFilters.includes('wrong') && !statusFilters.includes('pending')
-                    ? dropRow(id)
-                    : patchRow(id, { status: 'waiting' }),
-            ).then((previous) => ({ previous })),
+            optimisticConference(dropRow(id)).then((previous) => ({ previous })),
         onError: (_e, _id, ctx) => {
             rollback(ctx?.previous);
             toast({ variant: 'destructive', title: 'Erro ao desfazer' });
         },
-        onSuccess: () => toast({ title: 'Erro desfeito. OS voltou para Aguardando.' }),
+        onSuccess: () => toast({ title: 'Lançado Errado desfeito.' }),
         onSettled: reconcile,
     });
 
@@ -1556,6 +1641,15 @@ export function ConferencePage() {
     );
 
     const handleVerify = (order: ServiceOrder) => {
+        const isFilm = order.department === 'film' || order.department === 'security_film' || order.department === 'ppf';
+        if (isFilm && !order.invoice_number?.trim()) {
+            toast({
+                variant: 'destructive',
+                title: 'Número da NF obrigatório',
+                description: 'Abra a O.S. e informe o número da NF para verificar Película, PPF ou Película de Segurança.',
+            });
+            return;
+        }
         verifyMutation.mutate(order.id);
     };
 
@@ -1563,7 +1657,9 @@ export function ConferencePage() {
         setIsExporting(true);
         try {
             const qs = new URLSearchParams();
-            if (storeId) qs.append('store_id', String(storeId));
+            // Loja: usa o filtro "LOJA" da tela (selectedStoreIds), igual à lista.
+            // Sem seleção = todas as lojas (nada é enviado).
+            selectedStoreIds.forEach((id) => qs.append('store_ids', String(id)));
             if (dateFrom) qs.append('date_from', dateFrom);
             if (dateTo) qs.append('date_to', dateTo);
             departments.forEach((d) => qs.append('departments', d));
@@ -1595,6 +1691,54 @@ export function ConferencePage() {
         }
     };
 
+    const handleExportPhotos = async () => {
+        setIsExportingPhotos(true);
+        try {
+            const qs = new URLSearchParams();
+            // Mesmos filtros da lista/Excel (ver handleExport).
+            selectedStoreIds.forEach((id) => qs.append('store_ids', String(id)));
+            if (dateFrom) qs.append('date_from', dateFrom);
+            if (dateTo) qs.append('date_to', dateTo);
+            departments.forEach((d) => qs.append('departments', d));
+            statusFilters.forEach((s) => qs.append('conference_statuses', s));
+            expandedServiceIds.forEach((id) => qs.append('service_ids', String(id)));
+            if (flagFilters.courtesy) qs.append('flag', 'courtesy');
+            if (flagFilters.galpon) qs.append('flag', 'galpon');
+            if (flagFilters.retorno) qs.append('flag', 'retorno');
+            if (search) qs.append('plate', search);
+            if (workerId) qs.append('worker_id', String(workerId));
+
+            const response = await apiClient.get(`/service-orders/export/fotos?${qs.toString()}`, {
+                responseType: 'blob',
+            });
+            const blob = new Blob([response.data], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `fotos_conferencia_${dateFrom}_${dateTo}.zip`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error('Erro ao exportar fotos:', err);
+            toast({ variant: 'destructive', title: 'Erro ao exportar', description: 'Não foi possível gerar o ZIP de fotos.' });
+        } finally {
+            setIsExportingPhotos(false);
+        }
+    };
+
+    // Prefetch por intenção: chamado no hover/foco/pointerdown da linha, antes
+    // do clique que de fato abre o EditDialog — esquenta detalhe da O.S. +
+    // catálogos relacionais (consultores/modelos/serviços/[película]) para o
+    // modal já abrir com os selects preenchidos.
+    const handlePrefetchEdit = (order: ServiceOrder) => {
+        const brandId = availableStores.find((s) => s.id === order.location_id)?.brand_id;
+        prefetchOrderEditData(
+            queryClient,
+            { id: order.id, storeId: order.location_id, department: order.department },
+            { brandId, detailQuery: 'conference' }
+        );
+    };
+
     const handleEdit = (order: ServiceOrder) => {
         setEditOrder(order);
         setEditOpen(true);
@@ -1622,15 +1766,25 @@ export function ConferencePage() {
                         </p>
                     </div>
                 </div>
-                <button
-                    onClick={handleExport}
-                    disabled={orders.length === 0 || isExporting}
-                    className="flex items-center gap-2 h-9 px-4 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98] transition-all shrink-0"
-                    style={{ backgroundColor: '#F5A800', color: '#1A1A1A' }}
-                >
-                    <Download className="h-4 w-4" />
-                    {isExporting ? 'Exportando...' : 'Exportar Excel'}
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                    <button
+                        onClick={handleExport}
+                        disabled={orders.length === 0 || isExporting}
+                        className="flex items-center gap-2 h-9 px-4 rounded-lg text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98] transition-all shrink-0"
+                        style={{ backgroundColor: '#F5A800', color: '#1A1A1A' }}
+                    >
+                        <Download className="h-4 w-4" />
+                        {isExporting ? 'Exportando...' : 'Exportar Excel'}
+                    </button>
+                    <button
+                        onClick={handleExportPhotos}
+                        disabled={orders.length === 0 || isExportingPhotos}
+                        className="flex items-center gap-2 h-9 px-4 rounded-lg text-sm font-semibold border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] text-[#111111] dark:text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#F5F5F5] dark:hover:bg-[#2E2E2E] active:scale-[0.98] transition-all shrink-0"
+                    >
+                        <FileArchive className="h-4 w-4" />
+                        {isExportingPhotos ? 'Exportando...' : 'Exportar fotos'}
+                    </button>
+                </div>
             </div>
 
             {/* Filters */}
@@ -1771,6 +1925,7 @@ export function ConferencePage() {
                 summary={summaryData ?? []}
                 isLoading={summaryLoading}
                 onFilterClick={handleSummaryCardClick}
+                onStoreFilterClick={handleStoreSummaryCardClick}
                 storeSummary={storeSummaryData ?? []}
                 storeSummaryLoading={storeSummaryLoading}
             />
@@ -1801,9 +1956,11 @@ export function ConferencePage() {
                 );
             })()}
 
-            {/* Table */}
+            {/* Table — min-h garante área de trabalho útil em telas baixas (notebook):
+                o excedente transborda o h-full da página e o <main> rola, preservando
+                o scroll interno da tabela e o cabeçalho fixo */}
             <div
-                className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-auto flex-1 min-h-0"
+                className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-auto flex-1 min-h-[420px]"
             >
                 <Table wrapperClassName="h-full">
                     <TableHeader className="sticky top-0 z-20 bg-gray-100 dark:bg-zinc-800/60">
@@ -1812,6 +1969,7 @@ export function ConferencePage() {
                             {sortHead('Status', 'status')}
                             {sortHead('Data Serv.', 'service_date')}
                             <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">Foto</TableHead>
+                            <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">Vídeo</TableHead>
                             {sortHead('Loja', 'location')}
                             {sortHead('Depto', 'department')}
                             {sortHead('Consultor', 'consultant')}
@@ -1821,7 +1979,7 @@ export function ConferencePage() {
                             {sortHead('Modelo', 'model')}
                             {sortHead('Obs. Internas', 'internal_notes')}
                             <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">Serviços</TableHead>
-                            {sortHead('Observações', 'notes')}
+                            {sortHead('Anotações', 'notes')}
                             {showTonality && <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">Tonalidade</TableHead>}
                             {showTonality && <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">N° Pelicula</TableHead>}
                             {showFilmCols && <TableHead className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide px-4 py-3">Instalador</TableHead>}
@@ -1882,6 +2040,9 @@ export function ConferencePage() {
                                             {hasDeletePermission('conference', 'edit') && (
                                                 <button
                                                     onClick={() => handleEdit(order)}
+                                                    onMouseEnter={() => handlePrefetchEdit(order)}
+                                                    onFocus={() => handlePrefetchEdit(order)}
+                                                    onPointerDown={() => handlePrefetchEdit(order)}
                                                     title="Editar"
                                                     className="h-8 w-8 rounded-lg text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-700/50 transition-colors flex items-center justify-center"
                                                 >
@@ -1966,7 +2127,7 @@ export function ConferencePage() {
                                     <TableCell className="px-4 py-3">
                                         {order.photos?.[0] ? (
                                             <button
-                                                onClick={() => setPhotoUrl(order.photos![0])}
+                                                onClick={() => setPhotoView(toPhotoView(order, order.photos![0]))}
                                                 className="block rounded overflow-hidden hover:opacity-80 transition-opacity"
                                                 title="Ver foto"
                                             >
@@ -1982,10 +2143,32 @@ export function ConferencePage() {
                                             <ImageOff className="h-5 w-5 text-zinc-600" />
                                         )}
                                     </TableCell>
-                                    {/* Loja */}
+                                    {/* Vídeo da vistoria */}
                                     <TableCell className="px-4 py-3">
+                                        {order.video_url ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setVideoView({
+                                                    url: order.video_url!,
+                                                    caption: buildPhotoCaption(order.plate, order.external_os_number),
+                                                })}
+                                                className="hover:opacity-80 transition-opacity"
+                                                title="Ver vídeo"
+                                                aria-label="Ver vídeo da vistoria"
+                                            >
+                                                <PlayCircle className="h-6 w-6" style={{ color: '#F5A800' }} />
+                                            </button>
+                                        ) : (
+                                            <VideoOff className="h-5 w-5 text-zinc-600" />
+                                        )}
+                                    </TableCell>
+                                    {/* Loja — 1 linha só; nome completo no hover */}
+                                    <TableCell className="px-4 py-3 max-w-[170px]">
                                         <div className="flex flex-col gap-1">
-                                            <span className="text-sm text-[#111111] dark:text-zinc-200 whitespace-nowrap">{order.location_name || '—'}</span>
+                                            <span
+                                                className="text-sm text-[#111111] dark:text-zinc-200 block truncate"
+                                                title={order.location_name || undefined}
+                                            >{order.location_name || '—'}</span>
                                             {order.is_galpon && (
                                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-indigo-100 text-indigo-700 border border-indigo-300 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-700/50 w-fit">
                                                     Galpão
@@ -1997,9 +2180,14 @@ export function ConferencePage() {
                                     <TableCell className="px-4 py-3">
                                         <DepartmentBadge department={order.department} />
                                     </TableCell>
-                                    {/* Consultor */}
-                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400">
-                                        {order.consultant_name || '—'}
+                                    {/* Consultor — 1 linha só; nome completo no hover (title) */}
+                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[150px]">
+                                        <span
+                                            className="block truncate"
+                                            title={order.consultant_name ?? undefined}
+                                        >
+                                            {order.consultant_name || '—'}
+                                        </span>
                                     </TableCell>
                                     {/* Cortesia / Retorno */}
                                     <TableCell className="px-4 py-3">
@@ -2027,9 +2215,11 @@ export function ConferencePage() {
                                     <TableCell className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200 font-mono font-medium">
                                         {order.plate}
                                     </TableCell>
-                                    {/* Modelo */}
-                                    <TableCell className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200">
-                                        {order.vehicle_model || '—'}
+                                    {/* Modelo — 1 linha só; nome completo no hover */}
+                                    <TableCell className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200 max-w-[140px]">
+                                        <span className="block truncate" title={order.vehicle_model || undefined}>
+                                            {order.vehicle_model || '—'}
+                                        </span>
                                     </TableCell>
                                     {/* Obs. Internas */}
                                     <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[180px]">
@@ -2063,40 +2253,59 @@ export function ConferencePage() {
                                             );
                                         })()}
                                     </TableCell>
-                                    {/* Observações */}
-                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[180px]">
-                                        <span
-                                            className="block truncate"
-                                            title={cleanNotes(order.notes) !== '—' ? cleanNotes(order.notes) : undefined}
-                                        >
-                                            {cleanNotes(order.notes)}
-                                        </span>
+                                    {/* Anotações — briefing do consultor + relato técnico do instalador */}
+                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[240px]">
+                                        <NotesCell
+                                            consultant={cleanConsultantNotes(order.notes)}
+                                            installer={order.execution_notes ?? null}
+                                        />
                                     </TableCell>
-                                    {/* Tonalidade (film/ppf) */}
+                                    {/* Tonalidade (film/ppf) — 1 linha só; completo no hover */}
                                     {showTonality && (
-                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400">
+                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[110px]">
                                             {(order.department === 'film' || order.department === 'security_film' || order.department === 'ppf')
-                                                ? (order.items?.map(i => i.tonality).filter(Boolean).join(', ') || '—')
+                                                ? (() => {
+                                                    const tonalities = order.items?.map(i => i.tonality).filter(Boolean).join(', ');
+                                                    return (
+                                                        <span className="block truncate" title={tonalities || undefined}>
+                                                            {tonalities || '—'}
+                                                        </span>
+                                                    );
+                                                })()
                                                 : <span className="text-zinc-300 dark:text-zinc-600">—</span>
                                             }
                                         </TableCell>
                                     )}
-                                    {/* N° Pelicula (film/ppf) */}
+                                    {/* N° Pelicula (film/ppf) — 1 linha só; completo no hover */}
                                     {showTonality && (
-                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 font-mono">
+                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 font-mono max-w-[190px]">
                                             {(order.department === 'film' || order.department === 'security_film' || order.department === 'ppf')
-                                                ? (order.items?.map(i => i.roll_code).filter(Boolean).join(', ') || '—')
+                                                ? (() => {
+                                                    const rollCodes = order.items?.map(i => i.roll_code).filter(Boolean).join(', ');
+                                                    return (
+                                                        <span className="block truncate" title={rollCodes || undefined}>
+                                                            {rollCodes || '—'}
+                                                        </span>
+                                                    );
+                                                })()
                                                 : <span className="text-zinc-300 dark:text-zinc-600">—</span>
                                             }
                                         </TableCell>
                                     )}
-                                    {/* Instalador (film/ppf) */}
+                                    {/* Instalador (film/ppf) — 1 linha só; completo no hover */}
                                     {showFilmCols && (
-                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400">
+                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[160px]">
                                             {(order.department === 'film' || order.department === 'security_film' || order.department === 'ppf')
-                                                ? (order.workers && order.workers.length > 0
-                                                    ? order.workers.map(w => w.name).join(', ')
-                                                    : '—')
+                                                ? (() => {
+                                                    const workerNames = order.workers && order.workers.length > 0
+                                                        ? order.workers.map(w => w.name).join(', ')
+                                                        : '';
+                                                    return (
+                                                        <span className="block truncate" title={workerNames || undefined}>
+                                                            {workerNames || '—'}
+                                                        </span>
+                                                    );
+                                                })()
                                                 : <span className="text-zinc-300 dark:text-zinc-600">—</span>
                                             }
                                         </TableCell>
@@ -2118,7 +2327,7 @@ export function ConferencePage() {
                                     <TableCell className="px-4 py-3">
                                         {order.damage_photos?.[0] ? (
                                             <button
-                                                onClick={() => setDamagePhotoUrl(order.damage_photos![0])}
+                                                onClick={() => setDamagePhotoView(toPhotoView(order, order.damage_photos![0]))}
                                                 className="block rounded overflow-hidden hover:opacity-80 transition-opacity"
                                                 title="Ver foto de avaria"
                                             >
@@ -2138,9 +2347,11 @@ export function ConferencePage() {
                                     <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 whitespace-nowrap">
                                         {formatDateTime(order.updated_at)}
                                     </TableCell>
-                                    {/* Atualizado por */}
-                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400">
-                                        {order.updated_by_name || '—'}
+                                    {/* Atualizado por — 1 linha só; nome completo no hover */}
+                                    <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[140px]">
+                                        <span className="block truncate" title={order.updated_by_name || undefined}>
+                                            {order.updated_by_name || '—'}
+                                        </span>
                                     </TableCell>
                                 </TableRow>
                             ))
@@ -2207,20 +2418,29 @@ export function ConferencePage() {
                 />
             )}
 
-            {photoUrl && (
+            {photoView && (
                 <PhotoDialog
-                    url={photoUrl}
-                    open={!!photoUrl}
-                    onClose={() => setPhotoUrl(null)}
+                    url={photoView.url}
+                    open
+                    onClose={() => setPhotoView(null)}
+                    caption={photoView.caption}
                 />
             )}
-            {damagePhotoUrl && (
+            {damagePhotoView && (
                 <PhotoDialog
-                    url={damagePhotoUrl}
-                    open={!!damagePhotoUrl}
-                    onClose={() => setDamagePhotoUrl(null)}
+                    url={damagePhotoView.url}
+                    open
+                    onClose={() => setDamagePhotoView(null)}
+                    caption={damagePhotoView.caption}
+                    alt="Foto de avaria"
                 />
             )}
+            <VideoDialog
+                url={videoView?.url ?? ''}
+                open={videoView !== null}
+                onClose={() => setVideoView(null)}
+                caption={videoView?.caption}
+            />
 
             <Dialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
                 <DialogContent className="max-w-sm bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333]">

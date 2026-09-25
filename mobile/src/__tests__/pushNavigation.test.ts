@@ -47,6 +47,24 @@ describe('resolvePushDestination', () => {
         });
     });
 
+    it('related_url ?roll=<id> → detalhe da bobina (prioridade sobre o tipo)', () => {
+        expect(
+            resolvePushDestination({ type: 'inventory_alert', related_url: '/estoque?roll=123' })
+        ).toEqual({ screen: 'RollDetail', id: 123 });
+    });
+
+    it('related_url inválido cai no destino do tipo', () => {
+        expect(
+            resolvePushDestination({ type: 'inventory_alert', related_url: '/estoque?roll=abc' })
+        ).toEqual({ screen: 'Tabs', tab: 'Inventory' });
+    });
+
+    it('time_clock_reminder → tela TimeClock', () => {
+        expect(resolvePushDestination({ type: 'time_clock_reminder' })).toEqual({
+            screen: 'TimeClock',
+        });
+    });
+
     it('tipo sem destino → tela Notifications', () => {
         expect(resolvePushDestination({ type: 'approval_needed' })).toEqual({
             screen: 'Notifications',
@@ -64,6 +82,19 @@ describe('navigateFromPush', () => {
     it('navega para a aba do módulo com params { screen: tab }', () => {
         navigateFromPush({ type: 'order_created' });
         expect(mockNavigate).toHaveBeenCalledWith('Tabs', { screen: 'ServiceOrders' });
+    });
+
+    it('navega aninhado para o detalhe da bobina quando há related_url', () => {
+        navigateFromPush({ type: 'inventory_alert', related_url: '/estoque?roll=42' });
+        expect(mockNavigate).toHaveBeenCalledWith('Tabs', {
+            screen: 'Inventory',
+            params: { screen: 'RollDetail', params: { id: 42 } },
+        });
+    });
+
+    it('navega para TimeClock no lembrete de ponto', () => {
+        navigateFromPush({ type: 'time_clock_reminder' });
+        expect(mockNavigate).toHaveBeenCalledWith('TimeClock');
     });
 
     it('navega para Notifications quando não há destino', () => {

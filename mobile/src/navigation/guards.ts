@@ -7,6 +7,10 @@ import type { SubModule } from '@/types/accessProfile.types';
  * espelhamos para UX (esconder/ desabilitar). Os hooks `useCanView/Edit/Delete`
  * já tratam Owner (sempre true) e estado de carregamento (libera p/ evitar flicker).
  *
+ * M2 (auditoria): `useVisibleModules` é FAIL-CLOSED — enquanto as permissões não
+ * chegam, um não-owner não vê módulos (antes via todos). Ele assina
+ * `effectivePermissions` para recalcular quando os dados chegam.
+ *
  * O consumo pleno (abas condicionais) vem no HOME-01 (Sprint 2); por ora a Home
  * placeholder usa `MODULE_GUARDS` para listar os módulos visíveis.
  */
@@ -35,6 +39,10 @@ export const MODULE_GUARDS: ModuleGuard[] = [
 export function useVisibleModules(): ModuleGuard[] {
     const isOwner = useAuthStore((s) => s.isOwner);
     const hasPermission = useAuthStore((s) => s.hasPermission);
+    // M2 (auditoria): assina effectivePermissions para RECALCULAR quando as
+    // permissões chegarem. hasPermission é referência estável e, com o fail-closed,
+    // sozinho não dispararia re-render — a lista ficaria vazia até outro update.
+    useAuthStore((s) => s.effectivePermissions);
     const owner = isOwner();
     return MODULE_GUARDS.filter((m) => owner || hasPermission(m.sub_module, 'view'));
 }

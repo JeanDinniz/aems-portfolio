@@ -7,18 +7,23 @@ import {
     TextInput,
     View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 
 import { OSCard } from '@/components/features/OSCard';
 import { OSFilterSheet, type OSFilterSheetRef } from '@/components/features/OSFilterSheet';
+import {
+    ResumoDiarioSheet,
+    type ResumoDiarioSheetRef,
+} from '@/components/features/ResumoDiarioSheet';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useServiceOrdersList } from '@/hooks/useServiceOrders';
 import { useCanEdit } from '@/hooks/useMyPermissions';
 import { useTheme } from '@/theme';
+import { getCurrentMonthRange, ymdLocal } from '@/utils/formatDate';
 import type { ServiceOrder, ServiceOrderFilters } from '@/types/service-order.types';
 import type { ServiceOrdersStackScreenProps } from '@/navigation/types';
 
@@ -46,11 +51,17 @@ function countActiveFilters(f: ServiceOrderFilters): number {
 
 export function ServiceOrdersListScreen({ navigation }: ServiceOrdersStackScreenProps<'ServiceOrdersList'>) {
     const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
     const canEdit = useCanEdit('service_orders');
     const filterSheetRef = useRef<OSFilterSheetRef>(null);
+    const resumoSheetRef = useRef<ResumoDiarioSheetRef>(null);
 
     // Filtros do sheet (status/department/datas/flags). `search` é separado.
-    const [sheetFilters, setSheetFilters] = useState<ServiceOrderFilters>({});
+    // Padrão: período do 1º dia do mês vigente até HOJE (o usuário pode limpar/ajustar).
+    const [sheetFilters, setSheetFilters] = useState<ServiceOrderFilters>(() => ({
+        date_from: getCurrentMonthRange().date_from,
+        date_to: ymdLocal(),
+    }));
     const [searchInput, setSearchInput] = useState('');
     const [search, setSearch] = useState('');
     const searchRef = useRef<TextInput>(null);
@@ -133,6 +144,15 @@ export function ServiceOrdersListScreen({ navigation }: ServiceOrdersStackScreen
 
                         <Pressable
                             accessibilityRole="button"
+                            accessibilityLabel="Resumo Diário (PDF)"
+                            onPress={() => resumoSheetRef.current?.present()}
+                            className="h-11 w-11 items-center justify-center rounded-full bg-white/10 active:opacity-70"
+                        >
+                            <Ionicons name="document-text-outline" size={20} color="#FFFFFF" />
+                        </Pressable>
+
+                        <Pressable
+                            accessibilityRole="button"
                             accessibilityLabel="Filtrar ordens"
                             onPress={() => filterSheetRef.current?.present()}
                             className="h-11 w-11 items-center justify-center rounded-full bg-white/10 active:opacity-70"
@@ -204,7 +224,7 @@ export function ServiceOrdersListScreen({ navigation }: ServiceOrdersStackScreen
                         data={items}
                         renderItem={renderItem}
                         keyExtractor={keyExtractor}
-                        contentContainerStyle={{ paddingTop: 12, paddingBottom: 96 }}
+                        contentContainerStyle={{ paddingTop: 12, paddingBottom: 96 + insets.bottom }}
                         onEndReached={onEndReached}
                         onEndReachedThreshold={0.5}
                         refreshControl={
@@ -231,7 +251,8 @@ export function ServiceOrdersListScreen({ navigation }: ServiceOrdersStackScreen
                     accessibilityRole="button"
                     accessibilityLabel="Nova ordem de serviço"
                     onPress={() => navigation.navigate('CreateServiceOrder')}
-                    className="absolute bottom-6 right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
+                    style={{ bottom: insets.bottom + 24 }}
+                    className="absolute right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
                 >
                     <Ionicons name="add" size={24} color="#1A1A1A" />
                     <Text className="font-sans-bold text-base text-brand-black">Nova O.S</Text>
@@ -239,6 +260,7 @@ export function ServiceOrdersListScreen({ navigation }: ServiceOrdersStackScreen
             ) : null}
 
             <OSFilterSheet ref={filterSheetRef} value={sheetFilters} onApply={setSheetFilters} />
+            <ResumoDiarioSheet ref={resumoSheetRef} />
         </View>
     );
 }

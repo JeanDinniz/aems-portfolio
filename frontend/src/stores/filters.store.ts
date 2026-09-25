@@ -124,6 +124,54 @@ export const useConferenceFiltersStore = create<ConferenceFiltersState>()(
     ),
 );
 
+// ─── Dashboard ───────────────────────────────────────────────────────────────
+
+type DashboardGranularity = 'day' | 'week' | 'month';
+
+interface DashboardFiltersState {
+    appliedStart: string;
+    appliedEnd: string;
+    storeId: number | null;
+    granularity: DashboardGranularity;
+    setAppliedStart: (v: string) => void;
+    setAppliedEnd: (v: string) => void;
+    setStoreId: (v: number | null) => void;
+    setGranularity: (v: DashboardGranularity) => void;
+    setRange: (start: string, end: string) => void;
+}
+
+function dashboardDefaults() {
+    return {
+        appliedStart: firstOfMonthStr(),
+        appliedEnd: todayStr(),
+        storeId: null as number | null,
+        granularity: 'day' as DashboardGranularity,
+    };
+}
+
+export const useDashboardFiltersStore = create<DashboardFiltersState>()(
+    persist(
+        (set) => ({
+            ...dashboardDefaults(),
+            setAppliedStart: (v) => set({ appliedStart: v }),
+            setAppliedEnd: (v) => set({ appliedEnd: v }),
+            setStoreId: (v) => set({ storeId: v }),
+            setGranularity: (v) => set({ granularity: v }),
+            setRange: (start, end) => set({ appliedStart: start, appliedEnd: end }),
+        }),
+        {
+            name: 'aems-dashboard-filters',
+            storage: createJSONStorage(() => sessionStorage),
+            partialize: (s) => ({
+                appliedStart: s.appliedStart,
+                appliedEnd: s.appliedEnd,
+                storeId: s.storeId,
+                granularity: s.granularity,
+            }),
+        },
+    ),
+);
+
 // ─── Fechamento ──────────────────────────────────────────────────────────────
 
 interface FechamentoFiltersState {

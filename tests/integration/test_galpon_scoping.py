@@ -81,9 +81,7 @@ async def _make_profile(
 
 
 async def _link(db: AsyncSession, profile: AccessProfile, user: User) -> None:
-    await db.execute(
-        access_profile_users.insert().values(profile_id=profile.id, user_id=user.id)
-    )
+    await db.execute(access_profile_users.insert().values(profile_id=profile.id, user_id=user.id))
     await db.commit()
     # A sessão é compartilhada com o app no teste: expira a coleção lazy="selectin"
     # já carregada (vazia) para o get_current_user reler os vínculos novos.
@@ -229,6 +227,46 @@ class TestSingleFlagUsers:
         data = response.json()
         assert data["is_galpon_profile"] is True
         assert data["hide_galpon_option"] is False
+
+
+class TestConferenceExportGalponScope:
+    """#11 — o export da Conferência/Fotos respeita o escopo de galpão.
+
+    Antes, build_conference_export_query aplicava só o filtro de loja (não o de
+    galpão), então um perfil galpão baixava no Excel/ZIP O.S. normais das suas
+    lojas — divergindo da tela (que filtra) e vazando fora do escopo.
+    """
+
+    @pytest.mark.asyncio
+    async def test_export_query_perfil_galpao_exclui_os_normais(
+        self, db_session: AsyncSession, test_store, second_store, scoped_orders
+    ):
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
+        from app.modules.service_orders.service import build_conference_export_query
+
+        user = await _make_user(db_session, "galpon_export@test.com")
+        await _link(
+            db_session,
+            await _make_profile(db_session, "Galpão Export", [test_store], is_galpon_profile=True),
+            user,
+        )
+        # Carrega perfis + lojas para a chamada direta ao service
+        user = (
+            await db_session.execute(
+                sa_select(User)
+                .options(selectinload(User.access_profiles).selectinload(AccessProfile.stores))
+                .where(User.id == user.id)
+            )
+        ).scalar_one()
+
+        query = build_conference_export_query(user)
+        rows = (await db_session.execute(query)).scalars().all()
+        plates = {r.vehicle_plate for r in rows}
+
+        assert "BBB2B22" in plates  # galpão da loja 1 → visível
+        assert "AAA1A11" not in plates  # normal da loja 1 → excluída (perfil galpão)
 
     @pytest.mark.asyncio
     async def test_so_ocultar_continua_sem_galpao(

@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { employeesService } from '@/services/api/employees.service';
-import { useStoreStore } from '@/stores/store.store';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Employee } from '@/types/employee.types';
 
@@ -46,8 +45,6 @@ function MonthRow({ month, employees }: { month: number; employees: Employee[] }
 }
 
 export function VacationTab() {
-    const { selectedStoreId } = useStoreStore();
-
     const { data: allEmployees = [], isLoading } = useQuery({
         queryKey: ['employees', 'vacation-planning'],
         queryFn: () => employeesService.list({ is_active: true }, 1, 500),
@@ -55,10 +52,8 @@ export function VacationTab() {
         select: (res) => res.employees,
     });
 
-    // Apply store filter from global selector
-    const employees = selectedStoreId
-        ? allEmployees.filter((e) => e.store_id === selectedStoreId)
-        : allEmployees;
+    // Planejamento de férias considera todos os funcionários acessíveis.
+    const employees = allEmployees;
 
     // Group by vacation_month
     const byMonth: Record<number, Employee[]> = {};

@@ -71,10 +71,13 @@ describe('useVisibleModules — visibilidade por permissão', () => {
         );
     });
 
-    it('usuário sem permissões carregadas vê tudo (evita tela em branco)', async () => {
+    it('M2: usuário sem permissões carregadas NÃO vê módulos (fail-closed)', async () => {
+        // Antes liberava tudo (fail-open) → não-owner via UI restrita até
+        // /me/permissions responder. Agora nega até as permissões chegarem;
+        // ao carregar, o hook re-renderiza (assina effectivePermissions).
         useAuthStore.setState({ user: plainUser, effectivePermissions: null });
         const { result } = await renderHook(() => useVisibleModules());
-        expect(result.current).toHaveLength(MODULE_GUARDS.length);
+        expect(result.current).toHaveLength(0);
     });
 
     it('usuário com perfil limitado só vê os módulos com can_view', async () => {

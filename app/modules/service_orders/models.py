@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -16,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,9 +31,28 @@ class ServiceOrder(Base, TimestampMixin):
     """
 
     __tablename__ = "service_orders"
-    # Composto para os filtros de perfil galpão (is_galpon combinado com loja
-    # em analytics, listagens e permissões)
-    __table_args__ = (Index("ix_service_orders_store_galpon", "store_id", "is_galpon"),)
+    __table_args__ = (
+        # Composto para os filtros de perfil galpão (is_galpon combinado com loja
+        # em analytics, listagens e permissões)
+        Index("ix_service_orders_store_galpon", "store_id", "is_galpon"),
+        # Conferência e Fechamento filtram por (loja, data do serviço).
+        Index("ix_service_orders_store_service_date", "store_id", "service_date"),
+        # Dashboard, Resumo Diário e ranking de instaladores contam O.S. completed
+        # por (loja, completion_time, status).
+        Index(
+            "ix_service_orders_store_completion_status",
+            "store_id",
+            "completion_time",
+            "status",
+        ),
+        # is_verified é boolean de baixa cardinalidade: índice PARCIAL só nas
+        # verificadas (as consultadas pela Conferência/Fechamento).
+        Index(
+            "ix_service_orders_verified",
+            "store_id",
+            postgresql_where=text("is_verified"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str | None] = mapped_column(
@@ -93,10 +114,15 @@ class ServiceOrder(Base, TimestampMixin):
     completion_photos: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # JSON com URLs das fotos da chancela (preenchido no Finalizar)
+    # Vídeo da vistoria (opcional, 1 por O.S.). URL direta no storage (não é JSON,
+    # diferente de photos/damage_photos que são listas).
+    video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Observações
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Relato técnico do instalador (preenchido na finalização)
+    execution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Conferência e fechamento
     service_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -112,6 +138,11 @@ class ServiceOrder(Base, TimestampMixin):
     # Modelo de veículo vinculado (FK opcional — preenchido quando selecionado do catálogo)
     vehicle_model_id: Mapped[int | None] = mapped_column(
         ForeignKey("vehicle_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # O.S. de origem quando is_return=True (auto-limpa se a origem for deletada)
+    original_service_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_orders.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # Usuário que criou
@@ -153,6 +184,11 @@ class ServiceOrder(Base, TimestampMixin):
     status_history: Mapped[list["StatusHistory"]] = relationship(
         "StatusHistory", back_populates="service_order", cascade="all, delete-orphan"
     )
+    original_order: Mapped["ServiceOrder | None"] = relationship(
+        "ServiceOrder",
+        foreign_keys=[original_service_order_id],
+        remote_side="ServiceOrder.id",
+    )
 
     @property
     def store_name(self) -> str | None:
@@ -186,6 +222,12 @@ class ServiceOrderItem(Base, TimestampMixin):
     tonality: Mapped[str | None] = mapped_column(String(20), nullable=True)
     roll_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Tonalidades por região do carro no mesmo serviço (ex.: G20 nas portas
+    # dianteiras, G05 nas traseiras): lista de {tonality, region, film_roll_id,
+    # roll_code}. NULL = item legado com tonalidade única; quando presente,
+    # tonality/film_roll_id/roll_code acima espelham a primeira aplicação.
+    film_applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     # Bobina de película vinculada (opcional — usada para rastreabilidade e desconto automático)
     film_roll_id: Mapped[int | None] = mapped_column(
         ForeignKey("film_rolls.id", ondelete="SET NULL"), nullable=True, index=True
@@ -196,6 +238,18 @@ class ServiceOrderItem(Base, TimestampMixin):
         ForeignKey("film_types.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Serviço feito com RETALHO (sobra de corte anterior, já debitada da bobina na
+    # época): a bobina em uso NÃO é debitada de novo. `scrap_source_roll_id` é a
+    # bobina de onde o pedaço saiu — opcional, e pode estar esgotada.
+    # Itens multi-tonalidade guardam as mesmas chaves por aplicação em
+    # `film_applications`; estas colunas espelham a primeira aplicação marcada.
+    used_scrap: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    scrap_source_roll_id: Mapped[int | None] = mapped_column(
+        ForeignKey("film_rolls.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Observações específicas do item
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -204,8 +258,13 @@ class ServiceOrderItem(Base, TimestampMixin):
     service: Mapped["Service"] = relationship(  # noqa: F821
         "Service", back_populates="service_order_items"
     )
+    # foreign_keys explícito: o item tem DUAS FKs para film_rolls (bobina consumida
+    # e bobina de origem do retalho) — sem isso o SQLAlchemy não resolve o join.
     film_roll: Mapped["FilmRoll | None"] = relationship(  # noqa: F821
-        "FilmRoll"
+        "FilmRoll", foreign_keys=[film_roll_id]
+    )
+    scrap_source_roll: Mapped["FilmRoll | None"] = relationship(  # noqa: F821
+        "FilmRoll", foreign_keys=[scrap_source_roll_id]
     )
 
     @property
@@ -215,6 +274,10 @@ class ServiceOrderItem(Base, TimestampMixin):
     @property
     def service_code(self) -> str | None:
         return self.service.code if self.service else None
+
+    @property
+    def service_department(self) -> str | None:
+        return self.service.department if self.service else None
 
     def __repr__(self) -> str:
         return f"<ServiceOrderItem #{self.id} - O.S. {self.service_order_id}>"
@@ -234,6 +297,12 @@ class ServiceOrderWorker(Base, TimestampMixin):
     )
     employee_id: Mapped[int] = mapped_column(
         ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False
+    )
+    # Vínculo opcional com o serviço específico (instalador por serviço).
+    # NULL = funcionário da O.S. inteira (comportamento legado/demais departamentos).
+    # SET NULL: se o item for recriado numa edição, o worker vira "da O.S." em vez de sumir.
+    service_order_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_order_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # Controle de tempo do funcionário

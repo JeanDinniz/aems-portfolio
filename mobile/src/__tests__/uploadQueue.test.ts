@@ -3,7 +3,7 @@
  *
  * Mocka `uploadPhoto` (sucesso/erro) e usa os mocks globais de expo-file-system
  * (copy/exists em memória) e netinfo (listeners disparáveis). Cobre: enqueue +
- * cópia + persistência, processamento serial, retry com backoff exponencial,
+ * cópia + persistência, processamento com paralelismo limitado, retry com backoff exponencial,
  * reprocesso em reconexão de rede, helpers de rascunho de O.S., persistência
  * entre "sessões" (rehidratação) e poda.
  */
@@ -90,28 +90,33 @@ describe('enqueue', () => {
     });
 });
 
-describe('processamento serial', () => {
-    it('envia um por vez (nunca dois uploads simultâneos)', async () => {
+describe('processamento com paralelismo limitado', () => {
+    it('sobe várias em paralelo, mas nunca mais que MAX_CONCURRENT_UPLOADS (3)', async () => {
+        // Upload mobile "moderado" (ADR 2026-08-31): antes era serial (1 por vez);
+        // agora até 3 POSTs simultâneos. Segura cada upload aberto ~5ms para o pool
+        // encher e medimos a concorrência máxima.
         let inFlight = 0;
         let maxConcurrent = 0;
         mockUpload.mockImplementation(async () => {
             inFlight += 1;
             maxConcurrent = Math.max(maxConcurrent, inFlight);
-            await Promise.resolve();
+            await new Promise((r) => setTimeout(r, 5));
             inFlight -= 1;
             return 'https://cdn/x.jpg';
         });
 
-        await queue.enqueue(asset, { id: 'a' });
-        await queue.enqueue(asset, { id: 'b' });
-        await queue.enqueue(asset, { id: 'c' });
+        const ids = ['a', 'b', 'c', 'd', 'e'];
+        for (const id of ids) {
+            await queue.enqueue(asset, { id });
+        }
         await flush();
         await flush();
 
-        expect(maxConcurrent).toBe(1);
-        expect(queue.getItem('a')!.status).toBe('uploaded');
-        expect(queue.getItem('b')!.status).toBe('uploaded');
-        expect(queue.getItem('c')!.status).toBe('uploaded');
+        // Com 5 itens e teto 3: chega a 3 simultâneos e NUNCA passa disso.
+        expect(maxConcurrent).toBe(3);
+        for (const id of ids) {
+            expect(queue.getItem(id)!.status).toBe('uploaded');
+        }
     });
 });
 
@@ -178,6 +183,31 @@ describe('retry com backoff exponencial', () => {
         await flush();
         expect(queue.getItem('p1')!.status).toBe('uploaded');
         expect(queue.getItem('p1')!.url).toBe('https://cdn/manual.jpg');
+    });
+
+    it('erro PERMANENTE (4xx, ex. 403 CSRF) NÃO reagenda — para em erro sem loop', async () => {
+        jest.useFakeTimers();
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { UploadError } = require('@/services/upload/uploadPhoto');
+        const err = new UploadError('origem não permitida');
+        err.status = 403;
+        mockUpload.mockRejectedValue(err);
+
+        await queue.enqueue(asset, { id: 'perm1' });
+        await jest.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+
+        const item = queue.getItem('perm1');
+        expect(item!.status).toBe('error');
+        expect(item!.permanent).toBe(true);
+        expect(mockUpload).toHaveBeenCalledTimes(1);
+
+        // Avança muito além de qualquer backoff: não pode haver re-tentativa automática.
+        await jest.advanceTimersByTimeAsync(60_000);
+        await Promise.resolve();
+        expect(mockUpload).toHaveBeenCalledTimes(1);
+        expect(queue.getItem('perm1')!.status).toBe('error');
+        jest.useRealTimers();
     });
 });
 

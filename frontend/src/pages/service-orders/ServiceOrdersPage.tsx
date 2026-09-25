@@ -1,7 +1,10 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useServiceOrders, useUpdateServiceOrderStatus } from '@/hooks/useServiceOrders';
 import { useStores } from '@/hooks/useStores';
 import { useDebounce } from '@/hooks/useDebounce';
+import { useStoreStore } from '@/stores/store.store';
+import { prefetchOrderEditData } from '@/lib/prefetch-order-edit';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,15 +24,18 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import { Search, ClipboardList, AlertCircle, Zap, Pencil, ChevronDown } from 'lucide-react';
+import { Search, ClipboardList, AlertCircle, Zap, Pencil, ChevronDown, FileText, SlidersHorizontal } from 'lucide-react';
 import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuTrigger,
     DropdownMenuCheckboxItem,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { QuickCreateModal } from '@/components/features/service-orders/QuickCreateModal';
+import { ResumoDiarioDialog } from '@/components/features/service-orders/ResumoDiarioDialog';
 import { EditServicesModal } from '@/components/features/service-orders/EditServicesModal';
+import { ServiceOrderDetailDialog } from '@/components/features/service-orders/ServiceOrderDetailDialog';
 import { EmptyState } from '@/components/common/EmptyState';
 import { DepartmentBadge } from '@/components/common/DepartmentBadge';
 import type { Department, ServiceOrder } from '@/types/service-order.types';
@@ -110,7 +116,26 @@ export default function ServiceOrdersPage() {
     const [page, setPage] = useState(0);
     const pageSize = 10;
     const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+    const [resumoDiarioOpen, setResumoDiarioOpen] = useState(false);
     const [editingOrder, setEditingOrder] = useState<ServiceOrder | null>(null);
+    const [viewingOrderId, setViewingOrderId] = useState<number | null>(null);
+
+    const queryClient = useQueryClient();
+    const availableStores = useStoreStore((s) => s.availableStores);
+
+    // Prefetch por intenção: hover/foco/pointerdown do botão "Editar" da
+    // lista — esquenta os catálogos relacionais (serviços do departamento+
+    // marca via EditServicesModal, e também o detalhe da rota dedicada
+    // /service-orders/:id/edit, hoje sem link ativo na lista, mas mantido
+    // aquecido para o caso de navegação direta pela URL).
+    const handlePrefetchEdit = (os: ServiceOrder) => {
+        const brandId = availableStores.find((s) => s.id === os.location_id)?.brand_id;
+        prefetchOrderEditData(
+            queryClient,
+            { id: os.id, storeId: os.location_id, department: os.department },
+            { brandId, detailQuery: 'route' }
+        );
+    };
 
     const [departmentFilter, setDepartmentFilter] = useState<Department | 'all'>('all');
     const [statusFilter, setStatusFilter] = useState<string[]>([]);
@@ -118,13 +143,24 @@ export default function ServiceOrdersPage() {
     const today = new Date().toISOString().split('T')[0];
     const [startDate, setStartDate] = useState<string>(today);
     const [endDate, setEndDate] = useState<string>(today);
+    // Painel de filtros mobile — recolhido por padrão; só a busca fica sempre visível.
+    const [filtersOpen, setFiltersOpen] = useState(false);
 
     const updateStatus = useUpdateServiceOrderStatus();
 
-    const { stores, isMultiStore } = useStores();
+    const { stores } = useStores();
+    const isMultiStore = stores.length > 1;
     const [selectedStoreId, setSelectedStoreId] = useState<number | null>(null);
 
     const debouncedSearch = useDebounce(search);
+
+    // Nº de filtros (fora a busca) diferentes do padrão — badge do botão "Filtros" mobile.
+    const activeFilterCount =
+        (isMultiStore && selectedStoreId !== null ? 1 : 0) +
+        (departmentFilter !== 'all' ? 1 : 0) +
+        (statusFilter.length > 0 ? 1 : 0) +
+        (startDate !== today ? 1 : 0) +
+        (endDate !== today ? 1 : 0);
 
     const { data, isLoading, isError } = useServiceOrders(
         {
@@ -167,29 +203,49 @@ export default function ServiceOrdersPage() {
                         </p>
                     </div>
                 </div>
-                {/* Botão visível apenas em desktop */}
+                {/* Botões visíveis apenas em desktop */}
+                <div className="hidden sm:flex items-center gap-2 shrink-0">
+                    <Button
+                        variant="outline"
+                        onClick={() => setResumoDiarioOpen(true)}
+                        className="font-semibold gap-2 border-[#D1D1D1] dark:border-[#333333] text-[#666666] dark:text-zinc-300 hover:border-[#F5A800] hover:text-[#F5A800] bg-transparent"
+                    >
+                        <FileText className="h-4 w-4" />
+                        Resumo Diário
+                    </Button>
+                    <Button
+                        onClick={() => setQuickCreateOpen(true)}
+                        className="font-semibold gap-2"
+                        style={{ backgroundColor: '#F5A800', color: '#000' }}
+                    >
+                        <Zap className="h-4 w-4" />
+                        Lançar OS
+                    </Button>
+                </div>
+            </div>
+
+            {/* Botões mobile — uma única linha (evita duplicar "Resumo Diário" em 2 blocos empilhados) */}
+            <div className="sm:hidden flex items-center gap-2">
                 <Button
                     onClick={() => setQuickCreateOpen(true)}
-                    className="hidden sm:inline-flex font-semibold gap-2 shrink-0"
+                    className="flex-1 h-11 text-sm font-bold gap-2 rounded-xl"
                     style={{ backgroundColor: '#F5A800', color: '#000' }}
                 >
                     <Zap className="h-4 w-4" />
                     Lançar OS
                 </Button>
+                <Button
+                    variant="outline"
+                    onClick={() => setResumoDiarioOpen(true)}
+                    className="flex-1 h-11 text-sm font-semibold gap-2 rounded-xl border-[#D1D1D1] dark:border-[#333333] text-[#666666] dark:text-zinc-300 hover:border-[#F5A800] hover:text-[#F5A800] bg-transparent"
+                >
+                    <FileText className="h-4 w-4" />
+                    Resumo Diário
+                </Button>
             </div>
 
-            {/* Botão Lançar OS — mobile full-width */}
-            <Button
-                onClick={() => setQuickCreateOpen(true)}
-                className="sm:hidden w-full h-11 text-base font-bold gap-2 rounded-xl"
-                style={{ backgroundColor: '#F5A800', color: '#000' }}
-            >
-                <Zap className="h-5 w-5" />
-                Lançar OS
-            </Button>
-
-            {/* Filters */}
-            <div className="bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-4 flex flex-wrap items-end gap-3">
+            {/* Filters — desktop: barra horizontal completa (mobile usa o painel colapsável abaixo) */}
+            <div className="hidden sm:flex sm:flex-wrap bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-4 items-end gap-3">
                 {isMultiStore && (
                     <div className="space-y-1">
                         <Label className="text-xs uppercase tracking-wide text-muted-foreground">LOJA</Label>
@@ -227,7 +283,7 @@ export default function ServiceOrdersPage() {
 
                 <div className="space-y-1">
                     <Label className="text-xs uppercase tracking-wide text-muted-foreground">DEPARTAMENTO</Label>
-                    <Select value={departmentFilter} onValueChange={(val) => setDepartmentFilter(val as Department | 'all')}>
+                    <Select value={departmentFilter} onValueChange={(val) => { setDepartmentFilter(val as Department | 'all'); setPage(0); }}>
                         <SelectTrigger className="h-9 w-full sm:w-[150px] bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-zinc-300 focus:ring-[#F5A800] focus:border-[#F5A800]">
                             <SelectValue placeholder="Departamento" />
                         </SelectTrigger>
@@ -278,6 +334,130 @@ export default function ServiceOrdersPage() {
                         }}
                         className="h-9 rounded-md border border-[#D1D1D1] bg-white dark:bg-[#1A1A1A] dark:border-[#333333] px-3 text-sm text-[#111111] dark:text-white focus:outline-none focus:border-[#F5A800]"
                     />
+                </div>
+            </div>
+
+            {/* Filters — mobile: busca sempre visível + demais filtros num painel colapsável */}
+            <div className="sm:hidden bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl p-3 space-y-3">
+                <div className="relative">
+                    <Search className="absolute left-2.5 top-3 h-4 w-4 text-[#999999] dark:text-zinc-500" />
+                    <Input
+                        placeholder="Buscar por placa ou nº OS..."
+                        value={search}
+                        onChange={handleSearch}
+                        className="h-10 rounded-lg text-sm text-[#111111] dark:text-white border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#252525] pl-8 pr-3 outline-none focus:ring-2 focus:ring-[#F5A800] focus:border-[#F5A800] placeholder:text-[#999999] dark:placeholder:text-zinc-600"
+                    />
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => setFiltersOpen((o) => !o)}
+                    aria-expanded={filtersOpen}
+                    className="w-full h-10 flex items-center justify-between gap-2 rounded-lg border border-[#D1D1D1] dark:border-[#333333] bg-white dark:bg-[#1A1A1A] px-3 text-sm font-semibold text-[#111111] dark:text-zinc-200 cursor-pointer"
+                >
+                    <span className="flex items-center gap-2">
+                        <SlidersHorizontal className="h-4 w-4 text-[#666666] dark:text-zinc-400" />
+                        Filtros
+                        {activeFilterCount > 0 && (
+                            <span
+                                className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-bold"
+                                style={{ backgroundColor: '#F5A800', color: '#000' }}
+                            >
+                                {activeFilterCount}
+                            </span>
+                        )}
+                    </span>
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-[#999999] dark:text-zinc-500 transition-transform duration-200 ${filtersOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                <div
+                    className={`grid transition-all duration-200 ease-in-out ${filtersOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+                    aria-hidden={!filtersOpen}
+                >
+                    <div className="overflow-hidden">
+                        <div className="space-y-3 pt-1">
+                            {isMultiStore && (
+                                <div className="space-y-1">
+                                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">LOJA</Label>
+                                    <Select
+                                        value={selectedStoreId !== null ? String(selectedStoreId) : 'all'}
+                                        onValueChange={(val) => {
+                                            setSelectedStoreId(val === 'all' ? null : Number(val));
+                                            setPage(0);
+                                        }}
+                                    >
+                                        <SelectTrigger className="h-10 w-full bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-zinc-300 focus:ring-[#F5A800] focus:border-[#F5A800]">
+                                            <SelectValue placeholder="Todas as lojas" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-zinc-200">
+                                            <SelectItem value="all">Todas as lojas</SelectItem>
+                                            {stores.map((s) => (
+                                                <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">DEPARTAMENTO</Label>
+                                    <Select value={departmentFilter} onValueChange={(val) => { setDepartmentFilter(val as Department | 'all'); setPage(0); }}>
+                                        <SelectTrigger className="h-10 w-full bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-zinc-300 focus:ring-[#F5A800] focus:border-[#F5A800]">
+                                            <SelectValue placeholder="Departamento" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-zinc-200">
+                                            <SelectItem value="all">Todos Depts</SelectItem>
+                                            <SelectItem value="film">Película</SelectItem>
+                                            <SelectItem value="security_film">Película de Segurança</SelectItem>
+                                            <SelectItem value="ppf">PPF</SelectItem>
+                                            <SelectItem value="vn">VN</SelectItem>
+                                            <SelectItem value="vd">Venda Direta</SelectItem>
+                                            <SelectItem value="vu">VU</SelectItem>
+                                            <SelectItem value="bodywork">Funilaria</SelectItem>
+                                            <SelectItem value="workshop">Oficina</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="space-y-1 min-w-0 [&_button]:w-full">
+                                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">STATUS</Label>
+                                    <StatusMultiSelect
+                                        value={statusFilter}
+                                        onChange={(v) => { setStatusFilter(v); setPage(0); }}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                    <Label className="text-xs uppercase tracking-wide text-muted-foreground block">DATA INÍCIO</Label>
+                                    <input
+                                        type="date"
+                                        value={startDate}
+                                        onChange={(e) => {
+                                            setStartDate(e.target.value);
+                                            setPage(0);
+                                        }}
+                                        className="h-10 w-full rounded-md border border-[#D1D1D1] bg-white dark:bg-[#1A1A1A] dark:border-[#333333] px-2 text-sm text-[#111111] dark:text-white focus:outline-none focus:border-[#F5A800]"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <Label className="text-xs uppercase tracking-wide text-muted-foreground block">DATA FIM</Label>
+                                    <input
+                                        type="date"
+                                        value={endDate}
+                                        min={startDate}
+                                        onChange={(e) => {
+                                            setEndDate(e.target.value);
+                                            setPage(0);
+                                        }}
+                                        className="h-10 w-full rounded-md border border-[#D1D1D1] bg-white dark:bg-[#1A1A1A] dark:border-[#333333] px-2 text-sm text-[#111111] dark:text-white focus:outline-none focus:border-[#F5A800]"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             </div>{/* fim: Header + Filters */}
@@ -357,28 +537,15 @@ export default function ServiceOrdersPage() {
                                         </div>
                                     )}
                                 </div>
-                                {/* Footer: Editar + Status */}
+                                {/* Footer: Status + Visualizar + Editar */}
                                 <div className="flex items-center gap-2 px-4 py-3 border-t border-[#E8E8E8] dark:border-[#333333] bg-gray-50 dark:bg-zinc-800/30">
-                                    <button
-                                        onClick={() => setEditingOrder(os)}
-                                        disabled={!editEnabled}
-                                        className={[
-                                            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-colors',
-                                            editEnabled
-                                                ? 'border-[#F5A800] text-[#F5A800] hover:bg-[#F5A800]/10 cursor-pointer'
-                                                : 'border-[#D1D1D1] text-[#BBBBBB] dark:border-[#444444] dark:text-[#555555] opacity-50 cursor-not-allowed',
-                                        ].join(' ')}
-                                    >
-                                        <Pencil className="w-3 h-3" />
-                                        Editar
-                                    </button>
                                     <Select
                                         value={os.status}
                                         onValueChange={(value) => updateStatus.mutate({ id: os.id, status: value })}
                                     >
                                         <SelectTrigger
                                             className={[
-                                                'h-8 flex-1 rounded-md border bg-white dark:bg-[#252525] px-2 text-xs font-semibold focus:ring-1 focus:ring-[#F5A800] focus:border-[#F5A800] cursor-pointer',
+                                                'h-8 w-[104px] shrink-0 rounded-md border bg-white dark:bg-[#252525] px-2 text-xs font-semibold focus:ring-1 focus:ring-[#F5A800] focus:border-[#F5A800] cursor-pointer',
                                                 STATUS_COLORS[os.status] ?? 'border-[#D1D1D1] text-[#666666]',
                                             ].join(' ')}
                                         >
@@ -391,6 +558,29 @@ export default function ServiceOrdersPage() {
                                             <SelectItem value="wrong" className="text-xs font-semibold text-red-500 focus:bg-zinc-100 dark:focus:bg-zinc-800">Lançado Errado</SelectItem>
                                         </SelectContent>
                                     </Select>
+                                    <button
+                                        onClick={() => setViewingOrderId(os.id)}
+                                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-blue-500 text-blue-500 hover:bg-blue-500/10 text-xs font-semibold transition-colors cursor-pointer"
+                                    >
+                                        <Search className="w-3 h-3" />
+                                        Visualizar
+                                    </button>
+                                    <button
+                                        onClick={() => setEditingOrder(os)}
+                                        onMouseEnter={() => handlePrefetchEdit(os)}
+                                        onFocus={() => handlePrefetchEdit(os)}
+                                        onPointerDown={() => handlePrefetchEdit(os)}
+                                        disabled={!editEnabled}
+                                        className={[
+                                            'shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-colors',
+                                            editEnabled
+                                                ? 'border-[#F5A800] text-[#F5A800] hover:bg-[#F5A800]/10 cursor-pointer'
+                                                : 'border-[#D1D1D1] text-[#BBBBBB] dark:border-[#444444] dark:text-[#555555] opacity-50 cursor-not-allowed',
+                                        ].join(' ')}
+                                    >
+                                        <Pencil className="w-3 h-3" />
+                                        Editar
+                                    </button>
                                 </div>
                             </div>
                         );
@@ -457,6 +647,9 @@ export default function ServiceOrdersPage() {
                                         <TableCell className="px-4 py-3">
                                             <button
                                                 onClick={() => setEditingOrder(os)}
+                                                onMouseEnter={() => handlePrefetchEdit(os)}
+                                                onFocus={() => handlePrefetchEdit(os)}
+                                                onPointerDown={() => handlePrefetchEdit(os)}
                                                 disabled={!editEnabled}
                                                 title={editEnabled ? 'Editar OS' : 'Edição disponível somente até 7 dias após a criação'}
                                                 className={[
@@ -504,35 +697,46 @@ export default function ServiceOrdersPage() {
                                                 {os.plate}
                                             </span>
                                         </TableCell>
-                                        <TableCell className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200">
-                                            {os.vehicle_model}{os.vehicle_color ? ` · ${os.vehicle_color}` : ''}
+                                        <TableCell className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200 max-w-[160px]">
+                                            {(() => {
+                                                const veic = `${os.vehicle_model ?? ''}${os.vehicle_color ? ` · ${os.vehicle_color}` : ''}`.trim();
+                                                return <span className="block truncate" title={veic || undefined}>{veic || '—'}</span>;
+                                            })()}
                                         </TableCell>
                                         <TableCell className="px-4 py-3">
                                             <DepartmentBadge department={os.department} />
                                         </TableCell>
-                                        <TableCell className="px-4 py-3">
-                                            <div className="flex flex-wrap gap-1">
-                                                {(os.items ?? [])
+                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[220px]">
+                                            {(() => {
+                                                const list = (os.items ?? [])
                                                     .filter(item => item.service_name)
-                                                    .map((item, i) => (
-                                                        <span
-                                                            key={i}
-                                                            className="inline-block text-xs bg-muted px-1.5 py-0.5 rounded"
-                                                        >
-                                                            {item.service_code ? `${item.service_code} - ${item.service_name}` : item.service_name}
-                                                        </span>
-                                                    ))
-                                                }
-                                                {(!os.items || os.items.filter(item => item.service_name).length === 0) && (
-                                                    <span className="text-muted-foreground text-xs">—</span>
-                                                )}
-                                            </div>
+                                                    .map(item => item.service_code ? `${item.service_code} - ${item.service_name}` : item.service_name!);
+                                                if (list.length === 0) return <span className="text-muted-foreground">—</span>;
+                                                const preview = list.length === 1
+                                                    ? list[0]
+                                                    : `${list[0].length > 22 ? list[0].slice(0, 22) + '…' : list[0]} +${list.length - 1}`;
+                                                return (
+                                                    <TooltipProvider delayDuration={200}>
+                                                        <Tooltip>
+                                                            <TooltipTrigger asChild>
+                                                                <span className="cursor-default truncate block">{preview}</span>
+                                                            </TooltipTrigger>
+                                                            <TooltipContent side="bottom" className="max-w-xs p-2">
+                                                                <ul className="space-y-0.5">
+                                                                    {list.map((name, i) => (
+                                                                        <li key={i} className="text-xs">{name}</li>
+                                                                    ))}
+                                                                </ul>
+                                                            </TooltipContent>
+                                                        </Tooltip>
+                                                    </TooltipProvider>
+                                                );
+                                            })()}
                                         </TableCell>
-                                        <TableCell className="px-4 py-3 text-xs text-[#111111] dark:text-zinc-200 max-w-[180px]">
-                                            {os.notes
-                                                ? <span className="line-clamp-2 leading-snug" title={os.notes}>{os.notes}</span>
-                                                : <span className="text-muted-foreground">—</span>
-                                            }
+                                        <TableCell className="px-4 py-3 text-sm text-[#666666] dark:text-zinc-400 max-w-[180px]">
+                                            <span className="block truncate" title={os.notes || undefined}>
+                                                {os.notes || '—'}
+                                            </span>
                                         </TableCell>
                                     </TableRow>
                                 );
@@ -569,6 +773,12 @@ export default function ServiceOrdersPage() {
                 onClose={() => setQuickCreateOpen(false)}
             />
 
+            <ResumoDiarioDialog
+                open={resumoDiarioOpen}
+                onOpenChange={setResumoDiarioOpen}
+                defaultDate={startDate}
+            />
+
             {editingOrder && (
                 <EditServicesModal
                     serviceOrder={editingOrder}
@@ -576,6 +786,12 @@ export default function ServiceOrdersPage() {
                     onClose={() => setEditingOrder(null)}
                 />
             )}
+
+            <ServiceOrderDetailDialog
+                serviceOrderId={viewingOrderId}
+                open={viewingOrderId !== null}
+                onClose={() => setViewingOrderId(null)}
+            />
         </div>
     );
 }

@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { useCanView } from '@/hooks/useMyPermissions';
 import { useAuthStore } from '@/stores/auth.store';
+import { ADMIN_CADASTROS_ENABLED } from '@/constants/features';
 import type { AdminStackScreenProps } from '@/navigation/types';
 
 /**
@@ -57,17 +58,38 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
     const canViewBrands = useCanView('brands');
     const canViewModels = useCanView('models');
     const canViewServices = useCanView('services');
+    const canViewTimeClockMirror = useCanView('time_clock_mirror');
+
+    // Cadastros puros — só aparecem com a flag ligada (default OFF). Faltas do Dia,
+    // Feriados e Espelho de Ponto NÃO usam a flag (seguem só por permissão).
+    const showUsers = ADMIN_CADASTROS_ENABLED && canViewUsers;
+    const showEmployeesRegistry = ADMIN_CADASTROS_ENABLED && canViewEmployees; // ficha de funcionários (cadastro)
+    const showConsultants = ADMIN_CADASTROS_ENABLED && canViewConsultants;
+    const showStoresRegistry = ADMIN_CADASTROS_ENABLED && canViewStores; // cadastro de lojas
+    const showProfiles = ADMIN_CADASTROS_ENABLED && canViewProfiles;
+    const showBrands = ADMIN_CADASTROS_ENABLED && canViewBrands;
+    const showModels = ADMIN_CADASTROS_ENABLED && canViewModels;
+    const showServices = ADMIN_CADASTROS_ENABLED && canViewServices;
+    const showSuppliers = ADMIN_CADASTROS_ENABLED && isOwner;
+    const showDealerships = ADMIN_CADASTROS_ENABLED && isOwner;
+    const showAudit = ADMIN_CADASTROS_ENABLED && isOwner;
 
     const anyVisible =
-        canViewUsers ||
-        canViewEmployees ||
-        canViewConsultants ||
-        canViewStores ||
-        canViewProfiles ||
-        canViewBrands ||
-        canViewModels ||
-        canViewServices ||
-        isOwner;
+        showUsers ||
+        showEmployeesRegistry ||
+        showConsultants ||
+        showStoresRegistry ||
+        showProfiles ||
+        showBrands ||
+        showModels ||
+        showServices ||
+        showSuppliers ||
+        showDealerships ||
+        showAudit ||
+        // Sempre disponíveis (por permissão), independentes da flag de cadastros:
+        canViewEmployees || // Faltas do Dia
+        canViewStores || // Feriados
+        canViewTimeClockMirror; // Espelho de Ponto
 
     return (
         <View className="flex-1 bg-neutral-50 dark:bg-dark-bg">
@@ -79,7 +101,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
 
             <ScrollView contentContainerStyle={{ paddingVertical: 16 }}>
                 <View className="mx-4 overflow-hidden rounded-2xl border border-neutral-100 bg-white dark:border-dark-border-soft dark:bg-dark-surface">
-                    {canViewUsers ? (
+                    {showUsers ? (
                         <Shortcut
                             icon="people-outline"
                             label="Usuários"
@@ -87,7 +109,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('UsersAdmin')}
                         />
                     ) : null}
-                    {canViewEmployees ? (
+                    {showEmployeesRegistry ? (
                         <Shortcut
                             icon="id-card-outline"
                             label="Funcionários"
@@ -95,7 +117,23 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('EmployeesAdmin')}
                         />
                     ) : null}
-                    {canViewConsultants ? (
+                    {canViewEmployees ? (
+                        <Shortcut
+                            icon="calendar-outline"
+                            label="Faltas do Dia"
+                            description="Presença por loja e dia; marcar falta"
+                            onPress={() => navigation.navigate('DayAbsencesAdmin')}
+                        />
+                    ) : null}
+                    {canViewTimeClockMirror ? (
+                        <Shortcut
+                            icon="finger-print-outline"
+                            label="Espelho de Ponto"
+                            description="Batidas com selfie, distância e geofence"
+                            onPress={() => navigation.navigate('TimeClockMirrorAdmin')}
+                        />
+                    ) : null}
+                    {showConsultants ? (
                         <Shortcut
                             icon="briefcase-outline"
                             label="Consultores"
@@ -103,7 +141,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('ConsultantsAdmin')}
                         />
                     ) : null}
-                    {canViewStores ? (
+                    {showStoresRegistry ? (
                         <Shortcut
                             icon="storefront-outline"
                             label="Lojas"
@@ -111,7 +149,15 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('StoresAdmin')}
                         />
                     ) : null}
-                    {canViewProfiles ? (
+                    {canViewStores ? (
+                        <Shortcut
+                            icon="calendar-clear-outline"
+                            label="Feriados"
+                            description="Feriados nacionais, estaduais e por loja"
+                            onPress={() => navigation.navigate('HolidaysAdmin')}
+                        />
+                    ) : null}
+                    {showProfiles ? (
                         <Shortcut
                             icon="key-outline"
                             label="Perfis de acesso"
@@ -119,7 +165,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('AccessProfilesAdmin')}
                         />
                     ) : null}
-                    {canViewBrands ? (
+                    {showBrands ? (
                         <Shortcut
                             icon="pricetags-outline"
                             label="Marcas"
@@ -127,7 +173,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('BrandsAdmin')}
                         />
                     ) : null}
-                    {canViewModels ? (
+                    {showModels ? (
                         <Shortcut
                             icon="car-outline"
                             label="Modelos"
@@ -135,7 +181,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('VehicleModelsAdmin')}
                         />
                     ) : null}
-                    {canViewServices ? (
+                    {showServices ? (
                         <Shortcut
                             icon="construct-outline"
                             label="Serviços"
@@ -143,7 +189,7 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('ServicesAdmin')}
                         />
                     ) : null}
-                    {isOwner ? (
+                    {showSuppliers ? (
                         <Shortcut
                             icon="cube-outline"
                             label="Fornecedores"
@@ -151,12 +197,20 @@ export function AdminHubScreen({ navigation }: AdminStackScreenProps<'AdminHub'>
                             onPress={() => navigation.navigate('SuppliersAdmin')}
                         />
                     ) : null}
-                    {isOwner ? (
+                    {showDealerships ? (
                         <Shortcut
                             icon="business-outline"
                             label="Concessionárias"
                             description="Ativar/desativar concessionárias"
                             onPress={() => navigation.navigate('DealershipsAdmin')}
+                        />
+                    ) : null}
+                    {showAudit ? (
+                        <Shortcut
+                            icon="shield-checkmark-outline"
+                            label="Auditoria"
+                            description="Trilha de ações do sistema"
+                            onPress={() => navigation.navigate('AuditAdmin')}
                         />
                     ) : null}
                 </View>

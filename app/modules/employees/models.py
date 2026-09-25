@@ -1,9 +1,10 @@
 """
 Employee model - Represents a physical employee who works at a store.
-Employees do NOT have system login; they are tracked for service order assignment.
+Employees podem opcionalmente ser vinculados a um User (user_id) para
+funcionalidades como o Ponto Eletrônico; a maioria não tem login.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Optional
 
@@ -18,6 +19,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
 )
@@ -59,6 +61,9 @@ class Employee(Base, TimestampMixin):
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # CPF do funcionário (só dígitos) — necessário para os arquivos fiscais do
+    # ponto (AFD/AEJ, marcação tipo 7 exige o CPF do trabalhador — Portaria 671).
+    cpf: Mapped[str | None] = mapped_column(String(11), nullable=True)
     pix_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     bank_account: Mapped[str | None] = mapped_column(String(200), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -77,10 +82,29 @@ class Employee(Base, TimestampMixin):
         String(20), nullable=False, default="active", server_default="active", index=True
     )
 
+    # Ponto Eletrônico: vínculo 1:1 com o usuário de login (unique) e horário
+    # de trabalho individual (null = usa o default 08:00/18:00 do módulo)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    work_start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    work_end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+
+    # Ponto Eletrônico — reconhecimento facial 1:1 (embeddings no aparelho).
+    # `face_embedding` é o VETOR de referência do rosto gerado no app (a imagem
+    # crua NÃO é armazenada aqui — só o vetor). `face_enrolled_at` = quando foi
+    # cadastrado; `face_consent_at` = consentimento LGPD para uso do dado biométrico.
+    face_embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    face_enrolled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    face_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     store: Mapped["Store"] = relationship(  # noqa: F821
         "Store", back_populates="employees"
     )
+    user: Mapped["User | None"] = relationship("User", lazy="selectin")  # noqa: F821
     movements: Mapped[list["EmployeeMovement"]] = relationship(
         "EmployeeMovement",
         back_populates="employee",

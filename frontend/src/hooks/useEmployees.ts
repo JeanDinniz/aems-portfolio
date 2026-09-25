@@ -3,6 +3,7 @@ import { employeesService } from '@/services/api/employees.service';
 import { toast } from '@/hooks/use-toast';
 import type { CreateEmployeePayload, UpdateEmployeePayload, EmployeeFilters } from '@/types/employee.types';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { CATALOG_STALE_TIME, CATALOG_GC_TIME, employeesByDepartmentKey, filmInstallersKey } from '@/lib/catalog-queries';
 
 export function useEmployeeStats(storeId?: number) {
     return useQuery({
@@ -167,17 +168,20 @@ export function useEmployeesByStore(storeId: number | undefined) {
 
 export function useEmployeesByDepartment(storeId: number | undefined, department: string | undefined) {
     return useQuery({
-        queryKey: ['employees', 'by-department', storeId, department],
+        queryKey: employeesByDepartmentKey(storeId, department),
         queryFn: () => employeesService.listByStoreAndDepartment(storeId!, department),
         enabled: !!(storeId && department),
+        staleTime: CATALOG_STALE_TIME,
+        gcTime: CATALOG_GC_TIME,
     });
 }
 
 export function useFilmInstallers(department: 'film' | 'security_film' | 'ppf') {
     return useQuery({
-        queryKey: ['employees', 'film-installers', department],
+        queryKey: filmInstallersKey(department),
         queryFn: () => employeesService.listByDepartmentAllStores('film'),
-        staleTime: 5 * 60 * 1000,
+        staleTime: CATALOG_STALE_TIME,
+        gcTime: CATALOG_GC_TIME,
     });
 }
 

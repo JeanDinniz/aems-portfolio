@@ -31,8 +31,7 @@ async def list_dealerships(
     """
     Lista todas as concessionárias.
     - Owner: vê todas as concessionárias
-    - Supervisor: vê apenas concessionárias das lojas sob sua supervisão
-    - Operator: vê apenas concessionárias da sua loja
+    - Demais: veem as concessionárias das lojas do seu perfil de acesso
     """
     dealerships, total = await service.list_dealerships(
         db=db,
@@ -62,15 +61,19 @@ async def get_dealership(
     return DealershipResponse.model_validate(dealership)
 
 
-@router.post("", response_model=DealershipResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DealershipResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(UserRole.OWNER))],
+)
 async def create_dealership(
     data: DealershipCreate,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """
-    Cria uma nova concessionária.
-    Supervisors e Operators podem criar concessionárias para suas lojas.
+    Cria uma nova concessionária (somente Proprietário, igual a editar/excluir).
     """
     dealership = await service.create_dealership(db=db, data=data, user=current_user)
     return DealershipResponse.model_validate(dealership)
@@ -89,7 +92,7 @@ async def update_dealership(
 ):
     """
     Atualiza uma concessionária existente.
-    Apenas Owners e Supervisors podem atualizar concessionárias.
+    Apenas Owners podem atualizar concessionárias.
     """
     dealership = await service.update_dealership(
         db=db, dealership_id=dealership_id, data=data, user=current_user
@@ -109,7 +112,7 @@ async def deactivate_dealership(
 ):
     """
     Desativa uma concessionária.
-    Apenas Owners e Supervisors podem desativar concessionárias.
+    Apenas Owners podem desativar concessionárias.
     A concessionária não é excluída, apenas marcada como inativa.
     """
     dealership = await service.deactivate_dealership(

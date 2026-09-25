@@ -66,7 +66,7 @@ function Providers({ children }: { children: ReactNode }) {
 }
 
 async function renderScreen(id = 5) {
-    const navigation = { navigate: jest.fn(), goBack: jest.fn() };
+    const navigation = { navigate: jest.fn(), goBack: jest.fn(), push: jest.fn() };
     const utils = await render(
         <Providers>
             <AppointmentDetailScreen
@@ -160,6 +160,34 @@ describe('AppointmentDetailScreen — ações', () => {
         await waitFor(() => {
             expect(mockPresentCancel).toHaveBeenCalled();
         });
+    });
+
+    it('mostra a seção "Agendamentos do grupo" e navega para o irmão ao tocar', async () => {
+        mockAppointment = {
+            ...base,
+            appointment_group_id: 'grp-1',
+            group_siblings: [
+                { id: 88, department: 'bodywork', display_status: 'agendado', service_order_id: null },
+                { id: 99, department: 'ppf', display_status: 'em_execucao', service_order_id: 321 },
+            ],
+        };
+        const utils = await renderScreen(5);
+        const { getByText, getByLabelText, navigation } = utils;
+
+        expect(getByText('Agendamentos do grupo')).toBeTruthy();
+        // O.S. do irmão em execução aparece.
+        expect(getByText('O.S. #321')).toBeTruthy();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText(/Abrir agendamento de Funilaria/));
+        });
+        expect(navigation.push).toHaveBeenCalledWith('AppointmentDetail', { id: 88 });
+    });
+
+    it('sem grupo: não mostra a seção "Agendamentos do grupo"', async () => {
+        mockAppointment = { ...base, appointment_group_id: null, group_siblings: null };
+        const utils = await renderScreen(5);
+        expect(() => utils.getByText('Agendamentos do grupo')).toThrow();
     });
 
     it('agendamento cancelado: nenhuma ação aparece', async () => {

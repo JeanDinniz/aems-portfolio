@@ -4,12 +4,17 @@ import { useToast } from '@/hooks/use-toast';
 import { getApiErrorMessage } from '@/lib/api-error';
 import type { SupplierCreate, SupplierFilters, SupplierUpdate } from '@/types/supplier';
 
-/** Lista de fornecedores ativos — ideal para dropdowns */
-export function useSuppliers(params?: SupplierFilters) {
+/** Lista de fornecedores ativos — ideal para dropdowns.
+ *
+ * `options.enabled` permite adiar a busca até o dado ser realmente necessário
+ * (ex.: só quando um modal abre), evitando requisição no mount de telas que só
+ * usam fornecedores sob demanda. Fornecedores mudam pouco → staleTime longo. */
+export function useSuppliers(params?: SupplierFilters, options?: { enabled?: boolean }) {
     return useQuery({
         queryKey: ['suppliers', params],
         queryFn: () => suppliersService.list({ is_active: true, limit: 100, ...params }),
-        staleTime: 1000 * 60 * 5,
+        staleTime: 1000 * 60 * 30,
+        enabled: options?.enabled ?? true,
     });
 }
 

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Alert, Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useConfirm } from '@/components/ui';
 import { TextField } from '@/components/common/TextField';
 import { PrimaryButton } from '@/components/common/PrimaryButton';
 import { authService } from '@/services/api/auth.service';
@@ -38,6 +39,7 @@ export function ChangePasswordScreen({ navigation }: AppStackScreenProps<'Change
     const mustChange = useAuthStore((s) => !!s.user?.must_change_password);
     const updateUser = useAuthStore((s) => s.updateUser);
     const { logout } = useAuth();
+    const { alert } = useConfirm();
     const [submitting, setSubmitting] = useState(false);
 
     const {
@@ -58,20 +60,25 @@ export function ChangePasswordScreen({ navigation }: AppStackScreenProps<'Change
                 // 1º acesso: encerra a sessão e volta ao login para entrar com a
                 // nova senha. (clearAuth → RootNavigator mostra o AuthStack — mesma
                 // reatividade do login, determinística.)
-                Alert.alert(
-                    'Senha definida',
-                    'Sua senha foi alterada. Entre novamente com a nova senha.',
-                    [{ text: 'OK', onPress: () => logout() }]
-                );
+                await alert({
+                    title: 'Senha definida',
+                    message: 'Sua senha foi alterada. Entre novamente com a nova senha.',
+                });
+                logout();
             } else {
                 // Logado: a sessão continua válida; apenas zera o flag e volta.
                 updateUser({ must_change_password: false });
-                Alert.alert('Senha alterada', 'Sua senha foi atualizada com sucesso.', [
-                    { text: 'OK', onPress: () => navigation.goBack() },
-                ]);
+                await alert({
+                    title: 'Senha alterada',
+                    message: 'Sua senha foi atualizada com sucesso.',
+                });
+                navigation.goBack();
             }
         } catch (err) {
-            Alert.alert('Erro', getApiErrorMessage(err as Error, 'Não foi possível alterar a senha.'));
+            await alert({
+                title: 'Erro',
+                message: getApiErrorMessage(err as Error, 'Não foi possível alterar a senha.'),
+            });
         } finally {
             setSubmitting(false);
         }

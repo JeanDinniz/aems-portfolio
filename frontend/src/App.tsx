@@ -3,6 +3,7 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-query';
 import { toast } from '@/hooks/use-toast';
 import { getApiErrorMessage, getApiErrorStatus } from '@/lib/api-error';
+import { TIME_CLOCK_ENABLED, EBOOK_ENABLED, EPI_ENABLED } from '@/constants/features';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { RoleGuard } from '@/components/auth/RoleGuard';
 import { PermissionGuard } from '@/components/auth/PermissionGuard';
@@ -19,15 +20,16 @@ import { AuthLayout } from '@/components/layout/AuthLayout';
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage'));
 const ChangePasswordPage = lazy(() => import('@/pages/auth/ChangePasswordPage'));
 const ForgotPasswordPage = lazy(() => import('@/pages/auth/ForgotPasswordPage').then(m => ({ default: m.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage').then(m => ({ default: m.ResetPasswordPage })));
 const ProfilePage = lazy(() => import('@/pages/profile/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const ServiceOrdersPage = lazy(() => import('@/pages/service-orders/ServiceOrdersPage'));
-const ServiceOrderDetailsPage = lazy(() => import('@/pages/service-orders/ServiceOrderDetailsPage'));
 const EditServiceOrderPage = lazy(() => import('@/pages/service-orders/EditServiceOrderPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const UserManagementPage = lazy(() => import('@/pages/admin/UserManagementPage').then(m => ({ default: m.UserManagementPage })));
 const ConsultantManagementPage = lazy(() => import('@/pages/admin/ConsultantManagementPage').then(m => ({ default: m.ConsultantManagementPage })));
 const EmployeeManagementPage = lazy(() => import('@/pages/admin/EmployeeManagementPage').then(m => ({ default: m.EmployeeManagementPage })));
 const FeriasPage = lazy(() => import('@/pages/admin/FeriasPage'));
+const DayAbsencesPage = lazy(() => import('@/pages/admin/DayAbsencesPage').then(m => ({ default: m.DayAbsencesPage })));
 const StoreManagementPage = lazy(() => import('@/pages/admin/StoreManagementPage').then(m => ({ default: m.StoreManagementPage })));
 const VehicleModelsPage = lazy(() => import('@/pages/admin/VehicleModelsPage').then(m => ({ default: m.VehicleModelsPage })));
 const BrandsManagementPage = lazy(() => import('@/pages/admin/BrandsManagementPage').then(m => ({ default: m.BrandsManagementPage })));
@@ -42,6 +44,21 @@ const AuditPage = lazy(() => import('@/pages/admin/AuditPage').then(m => ({ defa
 const DashboardPage = lazy(() => import('@/pages/dashboard/DashboardPage'));
 const SchedulingPage = lazy(() => import('@/pages/scheduling/SchedulingPage'));
 const SuppliersPage = lazy(() => import('@/pages/admin/SuppliersPage').then(m => ({ default: m.SuppliersPage })));
+const HolidaysManagementPage = lazy(() => import('@/pages/admin/HolidaysManagementPage').then(m => ({ default: m.HolidaysManagementPage })));
+const TimeClockPage = lazy(() => import('@/pages/time-clock/TimeClockPage').then(m => ({ default: m.TimeClockPage })));
+const TimeClockMirrorPage = lazy(() => import('@/pages/admin/TimeClockMirrorPage').then(m => ({ default: m.TimeClockMirrorPage })))
+const EbookListPage = lazy(() => import('@/pages/ebook/EbookListPage'))
+const CertificatesPage = lazy(() => import('@/pages/ebook/CertificatesPage'))
+const EbookManagementPage = lazy(() => import('@/pages/admin/EbookManagementPage').then(m => ({ default: m.EbookManagementPage })));
+const InstallerDailyPage = lazy(() => import('@/pages/installer-performance/InstallerDailyPage'));
+const InstallerIndividualPage = lazy(() => import('@/pages/installer-performance/InstallerIndividualPage'));
+const InstallerSummaryPage = lazy(() => import('@/pages/installer-performance/InstallerSummaryPage'));
+const InstallerReturnsPage = lazy(() => import('@/pages/installer-performance/InstallerReturnsPage'));
+const EpiPage = lazy(() =>
+    import('@/pages/admin/EpiPage').then((m) => ({ default: m.EpiPage }))
+);
+const MaterialRequestsPage = lazy(() => import('@/pages/material-requests/MaterialRequestsPage'));
+const PeliculasPage = lazy(() => import('@/pages/indicators/PeliculasPage'));
 
 const PageFallback = () => (
   <div className="flex items-center justify-center min-h-[200px]">
@@ -73,11 +90,11 @@ const queryClient = new QueryClient({
       // de ficar stale, forçando refetch completo ao voltar para a tela.
       gcTime: 1000 * 60 * 10,
       retry: (failureCount, error) => {
-        // Não retry em erros 4xx (client errors)
-        if (error instanceof Error && 'status' in error) {
-          const status = (error as { status: number }).status;
-          if (status >= 400 && status < 500) return false;
-        }
+        // Não retry em erros 4xx (client errors). W1 (auditoria): o status do
+        // axios vem em error.response.status — usar getApiErrorStatus, senão
+        // TODO 4xx (403/422) era retentado 3× com backoff, martelando o backend.
+        const status = getApiErrorStatus(error);
+        if (status !== undefined && status >= 400 && status < 500) return false;
         return failureCount < 3;
       },
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
@@ -95,6 +112,7 @@ const router = createBrowserRouter([
     children: [
       { path: '/login', element: <Suspense fallback={<PageFallback />}><LoginPage /></Suspense> },
       { path: '/forgot-password', element: <Suspense fallback={<PageFallback />}><ForgotPasswordPage /></Suspense> },
+      { path: '/reset-password', element: <Suspense fallback={<PageFallback />}><ResetPasswordPage /></Suspense> },
       { path: '/change-password', element: <Suspense fallback={<PageFallback />}><ChangePasswordPage /></Suspense> },
     ],
   },
@@ -122,7 +140,6 @@ const router = createBrowserRouter([
                 element: <PermissionGuard subModule="service_orders" />,
                 children: [
                   { path: '/service-orders', element: <Suspense fallback={<PageFallback />}><ServiceOrdersPage /></Suspense> },
-                  { path: '/service-orders/:id', element: <Suspense fallback={<PageFallback />}><ServiceOrderDetailsPage /></Suspense> },
                   { path: '/service-orders/:id/edit', element: <Suspense fallback={<PageFallback />}><EditServiceOrderPage /></Suspense> },
                 ],
               },
@@ -155,6 +172,7 @@ const router = createBrowserRouter([
                 children: [
                   { path: '/admin/employees', element: <Suspense fallback={<PageFallback />}><EmployeeManagementPage /></Suspense> },
                   { path: '/admin/ferias', element: <Suspense fallback={<PageFallback />}><FeriasPage /></Suspense> },
+                  { path: '/admin/faltas', element: <Suspense fallback={<PageFallback />}><DayAbsencesPage /></Suspense> },
                 ],
               },
               {
@@ -167,6 +185,7 @@ const router = createBrowserRouter([
                 element: <PermissionGuard subModule="stores" />,
                 children: [
                   { path: '/admin/stores', element: <Suspense fallback={<PageFallback />}><StoreManagementPage /></Suspense> },
+                  { path: '/admin/feriados', element: <Suspense fallback={<PageFallback />}><HolidaysManagementPage /></Suspense> },
                 ],
               },
               {
@@ -212,8 +231,68 @@ const router = createBrowserRouter([
                   { path: '/scheduling', element: <Suspense fallback={<PageFallback />}><SchedulingPage /></Suspense> },
                 ],
               },
+              {
+                element: <PermissionGuard subModule="material_requests" />,
+                children: [
+                  { path: '/pedidos', element: <Suspense fallback={<PageFallback />}><MaterialRequestsPage /></Suspense> },
+                ],
+              },
               { path: '/admin/tipos-pelicula', element: <Suspense fallback={<PageFallback />}><FilmTypesPage /></Suspense> },
               { path: '/admin/auditoria', element: <Suspense fallback={<PageFallback />}><AuditPage /></Suspense> },
+              ...(TIME_CLOCK_ENABLED
+                ? [
+                    {
+                      element: <PermissionGuard subModule="time_clock" />,
+                      children: [
+                        { path: '/ponto', element: <Suspense fallback={<PageFallback />}><TimeClockPage /></Suspense> },
+                      ],
+                    },
+                    {
+                      element: <PermissionGuard subModule="time_clock_mirror" />,
+                      children: [
+                        { path: '/admin/ponto', element: <Suspense fallback={<PageFallback />}><TimeClockMirrorPage /></Suspense> },
+                      ],
+                    },
+                  ]
+                : []),
+              ...(EBOOK_ENABLED
+                ? [
+                    {
+                      element: <PermissionGuard subModule="ebook" />,
+                      children: [
+                        { path: '/ebook', element: <Suspense fallback={<PageFallback />}><EbookListPage /></Suspense> },
+                        { path: '/ebook/certificados', element: <Suspense fallback={<PageFallback />}><CertificatesPage /></Suspense> },
+                        { path: '/admin/ebook', element: <Suspense fallback={<PageFallback />}><EbookManagementPage /></Suspense> },
+                      ],
+                    },
+                  ]
+                : []),
+              {
+                element: <PermissionGuard subModule="installer_performance" />,
+                children: [
+                  { path: '/desempenho-instaladores', element: <Suspense fallback={<PageFallback />}><InstallerDailyPage /></Suspense> },
+                  { path: '/desempenho-instaladores/individual', element: <Suspense fallback={<PageFallback />}><InstallerIndividualPage /></Suspense> },
+                  { path: '/desempenho-instaladores/resumo', element: <Suspense fallback={<PageFallback />}><InstallerSummaryPage /></Suspense> },
+                  { path: '/desempenho-instaladores/retornos', element: <Suspense fallback={<PageFallback />}><InstallerReturnsPage /></Suspense> },
+                ],
+              },
+              {
+                element: <PermissionGuard subModule="indicadores" />,
+                children: [
+                  { path: '/peliculas', element: <Suspense fallback={<PageFallback />}><PeliculasPage /></Suspense> },
+                  { path: '/indicadores/peliculas', element: <Navigate to="/peliculas" replace /> },
+                ],
+              },
+              ...(EPI_ENABLED
+                ? [
+                    {
+                      element: <PermissionGuard subModule="epi" />,
+                      children: [
+                        { path: '/admin/epi', element: <Suspense fallback={<PageFallback />}><EpiPage /></Suspense> },
+                      ],
+                    },
+                  ]
+                : []),
             ],
           },
         ],

@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
+import { getLocalDateISO } from '@/utils/date'
 import { APPOINTMENT_STATUS_CONFIG } from '@/constants/scheduling'
 import type { TodaySummary, AppointmentDisplayStatus } from '@/types/scheduling.types'
 
@@ -24,6 +25,7 @@ const STATUS_ORDER: AppointmentDisplayStatus[] = [
   'atencao',
   'agendado',
   'em_execucao',
+  'duplicidade',
   'finalizado',
   'cancelado',
 ]
@@ -38,7 +40,7 @@ export function TodaySummaryModal({
 
   const handleClose = () => {
     if (dontShowAgain) {
-      const today = new Date().toISOString().split('T')[0]
+      const today = getLocalDateISO()
       localStorage.setItem(`scheduling_summary_shown_${today}`, 'true')
     }
     onClose()
@@ -46,7 +48,7 @@ export function TodaySummaryModal({
 
   const handleViewAll = () => {
     if (dontShowAgain) {
-      const today = new Date().toISOString().split('T')[0]
+      const today = getLocalDateISO()
       localStorage.setItem(`scheduling_summary_shown_${today}`, 'true')
     }
     onViewAll()
@@ -58,8 +60,7 @@ export function TodaySummaryModal({
     summary.atencao +
     summary.agendado +
     summary.em_execucao +
-    summary.finalizado +
-    summary.cancelado
+    summary.duplicidade
 
   return (
     <Dialog open={open} onOpenChange={(open) => { if (!open) handleClose() }}>
@@ -73,8 +74,8 @@ export function TodaySummaryModal({
         <div className="space-y-1.5 py-2">
           <p className="text-sm text-muted-foreground mb-3">
             {total === 0
-              ? 'Nenhum agendamento para hoje.'
-              : `${total} agendamento${total > 1 ? 's' : ''} para hoje`}
+              ? 'Nenhum agendamento pendente para hoje.'
+              : `${total} agendamento${total > 1 ? 's' : ''} pendente${total > 1 ? 's' : ''} para hoje`}
           </p>
 
           {STATUS_ORDER.map((status) => {
@@ -113,7 +114,7 @@ export function TodaySummaryModal({
             htmlFor="dont-show-today"
             className="text-xs text-muted-foreground cursor-pointer select-none"
           >
-            Nao mostrar novamente hoje
+            Não mostrar novamente hoje
           </label>
         </div>
 

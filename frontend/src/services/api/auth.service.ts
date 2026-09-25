@@ -54,7 +54,7 @@ export const authService = {
     },
 
     async resetPassword(token: string, newPassword: string): Promise<void> {
-        await apiClient.post('/auth/reset-password', { token, password: newPassword });
+        await apiClient.post('/auth/reset-password', { token, new_password: newPassword });
     },
 
     async updateProfile(data: Partial<User>): Promise<User> {

@@ -5,10 +5,33 @@ Tests CRUD operations, RBAC enforcement, and filtering.
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.dealerships.models import Dealership
 from app.modules.stores.models import Store
+
+
+class TestDefaultDealershipUniqueness:
+    """A concessionária fantasma 'Geral' (auto-criada) não pode duplicar por loja."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_geral_same_store_rejected(
+        self, db_session: AsyncSession, test_store: Store
+    ):
+        db_session.add(Dealership(name="A", brand="Geral", store_id=test_store.id))
+        db_session.add(Dealership(name="B", brand="Geral", store_id=test_store.id))
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+
+    @pytest.mark.asyncio
+    async def test_real_brand_duplicate_same_store_allowed(
+        self, db_session: AsyncSession, test_store: Store
+    ):
+        """O índice é PARCIAL (só 'Geral'): marcas reais duplicadas seguem livres."""
+        db_session.add(Dealership(name="Toyota Centro", brand="Toyota", store_id=test_store.id))
+        db_session.add(Dealership(name="Toyota Sul", brand="Toyota", store_id=test_store.id))
+        await db_session.flush()  # não deve levantar
 
 
 @pytest.fixture
@@ -236,10 +259,10 @@ class TestCreateDealership:
         assert data["store_id"] == test_store.id
 
     @pytest.mark.asyncio
-    async def test_create_dealership_as_operator(
+    async def test_create_dealership_nao_owner_forbidden(
         self, authenticated_client: AsyncClient, test_store: Store
     ):
-        """Operator should be able to create dealerships for their store."""
+        """Criar concessionária é Owner-only (coerente com editar/excluir)."""
         response = await authenticated_client.post(
             "/api/v1/dealerships",
             json={
@@ -248,9 +271,7 @@ class TestCreateDealership:
                 "store_id": test_store.id,
             },
         )
-        assert response.status_code == 201
-        data = response.json()
-        assert data["name"] == "Fiat Operador"
+        assert response.status_code == 403
 
     @pytest.mark.asyncio
     async def test_create_dealership_invalid_store(

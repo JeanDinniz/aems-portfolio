@@ -30,6 +30,16 @@ vi.mock('@/components/features/service-orders/QuickCreateModal', () => ({
 // Mock useServiceOrders hook
 vi.mock('@/hooks/useServiceOrders', () => ({
     useServiceOrders: vi.fn(),
+    useServiceOrder: vi.fn(() => ({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+    })),
+    useUpdateServiceOrderStatus: vi.fn(() => ({
+        mutate: vi.fn(),
+        mutateAsync: vi.fn(),
+        isPending: false,
+    })),
     useCreateServiceOrder: vi.fn(() => ({
         mutate: vi.fn(),
         mutateAsync: vi.fn(),
@@ -169,14 +179,16 @@ describe('ServiceOrdersPage', () => {
         it('should render new OS button', () => {
             renderServiceOrdersPage();
 
-            expect(screen.getByRole('button', { name: /lançar os/i })).toBeInTheDocument();
+            // Page renders two "Lançar OS" buttons: one for mobile, one for desktop
+            const buttons = screen.getAllByRole('button', { name: /lançar os/i });
+            expect(buttons.length).toBeGreaterThan(0);
         });
 
         it('should render search input', () => {
             renderServiceOrdersPage();
 
             expect(
-                screen.getByPlaceholderText(/buscar por placa ou nº os/i)
+                screen.getAllByPlaceholderText(/buscar por placa ou nº os/i)[0]
             ).toBeInTheDocument();
         });
 
@@ -185,13 +197,13 @@ describe('ServiceOrdersPage', () => {
             renderServiceOrdersPage();
 
             // Department filter is present instead
-            expect(screen.getByText(/todos depts/i)).toBeInTheDocument();
+            expect(screen.getAllByText(/todos depts/i)[0]).toBeInTheDocument();
         });
 
         it('should render department filter', () => {
             renderServiceOrdersPage();
 
-            expect(screen.getByText(/todos depts/i)).toBeInTheDocument();
+            expect(screen.getAllByText(/todos depts/i)[0]).toBeInTheDocument();
         });
     });
 
@@ -199,18 +211,20 @@ describe('ServiceOrdersPage', () => {
         it('should render table headers', () => {
             renderServiceOrdersPage();
 
-            expect(screen.getByText('Nº OS Conc.')).toBeInTheDocument();
-            expect(screen.getByText('Placa')).toBeInTheDocument();
-            expect(screen.getByText('Veículo')).toBeInTheDocument();
-            expect(screen.getByText('Departamento')).toBeInTheDocument();
-            // Note: current page does not have Status, Semáforo, or Ações columns
+            // Page renders both mobile cards and desktop table — some labels appear in both.
+            // Use getAllByText to handle duplicates.
+            expect(screen.getAllByText('Nº OS Conc.').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Placa').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Veículo').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Departamento').length).toBeGreaterThan(0);
         });
 
         it('should render service orders data', () => {
             renderServiceOrdersPage();
 
-            expect(screen.getByText('ABC1D23')).toBeInTheDocument();
-            expect(screen.getByText('XYZ9W87')).toBeInTheDocument();
+            // Page renders both mobile cards and desktop table — plates appear in both.
+            expect(screen.getAllByText('ABC1D23').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('XYZ9W87').length).toBeGreaterThan(0);
         });
 
         it('should display correct department labels', () => {
@@ -227,8 +241,9 @@ describe('ServiceOrdersPage', () => {
             // Verify that the table with orders renders correctly instead
             renderServiceOrdersPage();
 
-            expect(screen.getByText('ABC1D23')).toBeInTheDocument();
-            expect(screen.getByText('XYZ9W87')).toBeInTheDocument();
+            // Page renders both mobile cards and desktop table — plates appear in both.
+            expect(screen.getAllByText('ABC1D23').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('XYZ9W87').length).toBeGreaterThan(0);
         });
 
         it('should render view action buttons', () => {
@@ -281,7 +296,9 @@ describe('ServiceOrdersPage', () => {
 
             renderServiceOrdersPage();
 
-            expect(screen.getByText(/erro ao carregar ordens de serviço/i)).toBeInTheDocument();
+            // Page renders error in both mobile cards and desktop table — use getAllByText
+            const errors = screen.getAllByText(/erro ao carregar ordens de serviço/i);
+            expect(errors.length).toBeGreaterThan(0);
         });
     });
 
@@ -295,9 +312,9 @@ describe('ServiceOrdersPage', () => {
 
             renderServiceOrdersPage();
 
-            expect(
-                screen.getByText(/nenhuma ordem de serviço/i)
-            ).toBeInTheDocument();
+            // Page renders empty state in both mobile cards and desktop table
+            const emptyMessages = screen.getAllByText(/nenhuma ordem de serviço/i);
+            expect(emptyMessages.length).toBeGreaterThan(0);
         });
     });
 
@@ -306,9 +323,9 @@ describe('ServiceOrdersPage', () => {
             const user = userEvent.setup();
             renderServiceOrdersPage();
 
-            const searchInput = screen.getByPlaceholderText(
+            const searchInput = screen.getAllByPlaceholderText(
                 /buscar por placa ou nº os/i
-            );
+            )[0];
 
             await user.type(searchInput, 'João Silva');
 
@@ -319,9 +336,9 @@ describe('ServiceOrdersPage', () => {
             const user = userEvent.setup();
             renderServiceOrdersPage();
 
-            const searchInput = screen.getByPlaceholderText(
+            const searchInput = screen.getAllByPlaceholderText(
                 /buscar por placa ou nº os/i
-            );
+            )[0];
 
             await user.type(searchInput, 'test');
 
@@ -333,9 +350,9 @@ describe('ServiceOrdersPage', () => {
             const user = userEvent.setup();
             renderServiceOrdersPage();
 
-            const searchInput = screen.getByPlaceholderText(
+            const searchInput = screen.getAllByPlaceholderText(
                 /buscar por placa ou nº os/i
-            );
+            )[0];
 
             await user.type(searchInput, 'ABC');
 
@@ -523,9 +540,9 @@ describe('ServiceOrdersPage', () => {
         it('should render OS data rows in the table', async () => {
             renderServiceOrdersPage();
 
-            // Verify that data rows are rendered in the table
-            expect(screen.getByText('ABC1D23')).toBeInTheDocument();
-            expect(screen.getByText('XYZ9W87')).toBeInTheDocument();
+            // Verify that data rows are rendered — page renders both mobile and desktop views
+            expect(screen.getAllByText('ABC1D23').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('XYZ9W87').length).toBeGreaterThan(0);
         });
     });
 
@@ -541,9 +558,9 @@ describe('ServiceOrdersPage', () => {
         it('should have responsive filter layout', () => {
             renderServiceOrdersPage();
 
-            const filterContainer = screen.getByPlaceholderText(
+            const filterContainer = screen.getAllByPlaceholderText(
                 /buscar por placa ou nº os/i
-            ).closest('div');
+            )[0].closest('div');
             expect(filterContainer).toBeInTheDocument();
         });
     });
@@ -552,11 +569,12 @@ describe('ServiceOrdersPage', () => {
         it('should display plate in monospace font', () => {
             renderServiceOrdersPage();
 
-            const plateText = screen.getByText('ABC1D23');
-            expect(plateText).toBeInTheDocument();
-            // Plate should be in a cell with monospace font
-            const plateCell = plateText.closest('td');
-            expect(plateCell).toBeInTheDocument();
+            // Page renders plates in both mobile cards and desktop table
+            const plateTexts = screen.getAllByText('ABC1D23');
+            expect(plateTexts.length).toBeGreaterThan(0);
+            // Desktop table version renders inside a <td>
+            const inTableCell = plateTexts.some((el) => el.closest('td') !== null);
+            expect(inTableCell).toBe(true);
         });
 
         it('should display external OS number or fallback', () => {
@@ -571,9 +589,9 @@ describe('ServiceOrdersPage', () => {
         it('should render orders in the table', () => {
             renderServiceOrdersPage();
 
-            // Verify that the table with orders is present
-            expect(screen.getByText('ABC1D23')).toBeInTheDocument();
-            expect(screen.getByText('XYZ9W87')).toBeInTheDocument();
+            // Verify that the table with orders is present (desktop + mobile both render)
+            expect(screen.getAllByText('ABC1D23').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('XYZ9W87').length).toBeGreaterThan(0);
         });
     });
 
@@ -594,9 +612,9 @@ describe('ServiceOrdersPage', () => {
         it('should have searchbox role for search input', () => {
             renderServiceOrdersPage();
 
-            const searchInput = screen.getByPlaceholderText(
+            const searchInput = screen.getAllByPlaceholderText(
                 /buscar por placa ou nº os/i
-            );
+            )[0];
             expect(searchInput).toBeInTheDocument();
         });
     });

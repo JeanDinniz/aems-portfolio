@@ -5,7 +5,7 @@ import type { DashboardParams } from '@/services/api/analytics.service';
  * Dashboard 3a — analyticsService (camada de dados do Dashboard executivo).
  * Verifica, para cada método, que o path é o correto e que os params são
  * repassados ao apiClient.get (incluindo department/limit/granularity onde
- * aplica). Destaque: getQueue não tem período — só store_id opcional.
+ * aplica).
  *
  * apiClient é mockado (named export `{ apiClient }`); capturamos os args do get.
  */
@@ -77,12 +77,6 @@ describe('analyticsService — rankings com department/limit', () => {
         await analyticsService.getEmployeesRanking(p);
         expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/employees', { params: p });
     });
-
-    it('getConsultantsRanking repassa limit nos params', async () => {
-        const p = { ...PARAMS, limit: 10 };
-        await analyticsService.getConsultantsRanking(p);
-        expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/consultants', { params: p });
-    });
 });
 
 describe('analyticsService — timeseries com granularity', () => {
@@ -98,26 +92,5 @@ describe('analyticsService — timeseries com granularity', () => {
         expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/timeseries-by-type', {
             params: p,
         });
-    });
-});
-
-describe('analyticsService.getQueue — snapshot ao vivo (sem período)', () => {
-    it('com store_id manda apenas { store_id } nos params', async () => {
-        mockGet.mockResolvedValueOnce({ data: [{ store_id: 7, store_name: 'Loja' }] });
-        const res = await analyticsService.getQueue(7);
-        expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/queue', {
-            params: { store_id: 7 },
-        });
-        expect(res).toEqual([{ store_id: 7, store_name: 'Loja' }]);
-    });
-
-    it('sem store_id manda params vazios (todas as lojas)', async () => {
-        await analyticsService.getQueue();
-        expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/queue', { params: {} });
-    });
-
-    it('store_id 0 (falsy) não é enviado', async () => {
-        await analyticsService.getQueue(0);
-        expect(mockGet).toHaveBeenCalledWith('/analytics/dashboard/queue', { params: {} });
     });
 });

@@ -6,10 +6,12 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Cell,
   ResponsiveContainer,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/utils';
+import { CHART_COLORS } from '@/constants/chartColors';
 import type { StoreRankingItem } from '@/types/dashboard.types';
 
 interface StoreRankingCardProps {
@@ -43,6 +45,7 @@ export function StoreRankingCard({ data }: StoreRankingCardProps) {
   const chartData = sorted.map((item) => ({
     name: item.store_name,
     revenue: item.revenue,
+    pct_return: item.pct_return,
   }));
 
   return (
@@ -98,16 +101,32 @@ export function StoreRankingCard({ data }: StoreRankingCardProps) {
                   color: isDark ? '#e5e5e5' : '#111111',
                   fontSize: '12px',
                 }}
-                formatter={(value) => [formatCurrency((value as number) ?? 0), 'Receita']}
+                formatter={(value, _name, props) => {
+                  const pctReturn = (props as { payload?: { pct_return?: number } })?.payload?.pct_return ?? 0;
+                  const pctLabel = pctReturn > 0 ? ` · ${pctReturn.toFixed(1)}% retorno` : '';
+                  return [`${formatCurrency((value as number) ?? 0)}${pctLabel}`, 'Receita'];
+                }}
               />
               <Bar
                 dataKey="revenue"
-                fill="#F5A800"
                 radius={[0, 4, 4, 0]}
                 maxBarSize={24}
-              />
+              >
+                {chartData.map((entry, index) => (
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={entry.pct_return > 10 ? CHART_COLORS.red : CHART_COLORS.brand}
+                  />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
+        )}
+        {/* Legenda: barra vermelha = % retorno > 10% */}
+        {chartData.some((d) => d.pct_return > 10) && (
+          <p className="mt-2 text-[10px] text-red-500 dark:text-red-400">
+            Barra vermelha = retorno acima de 10%
+          </p>
         )}
       </CardContent>
     </Card>

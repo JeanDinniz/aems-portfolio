@@ -3,6 +3,7 @@ Store schemas - Pydantic models for store data validation.
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +37,10 @@ class StoreUpdate(BaseModel):
     brand_id: int | None = Field(None, gt=0, description="ID da marca da concessionária")
     has_shared_inventory: bool | None = None
     linked_inventory_store_ids: list[int] | None = None
+    # Ponto Eletrônico: geofence (null = sem geofence; nunca bloqueia a batida)
+    latitude: Decimal | None = Field(None, ge=-90, le=90)
+    longitude: Decimal | None = Field(None, ge=-180, le=180)
+    geofence_radius_m: int | None = Field(None, ge=10, le=10000)
 
 
 class StoreResponse(StoreBase):
@@ -54,6 +59,10 @@ class StoreResponse(StoreBase):
     is_galpon_store: bool
     has_shared_inventory: bool
     linked_inventory_store_ids: list[int] = []
+    # Ponto Eletrônico
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    geofence_radius_m: int = 200
     created_at: datetime
     updated_at: datetime | None = None
 

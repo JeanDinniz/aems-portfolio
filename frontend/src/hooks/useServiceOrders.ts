@@ -26,6 +26,11 @@ export const useCreateServiceOrder = () => {
         mutationFn: (data: CreateServiceOrderData) => serviceOrdersService.create(data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['service-orders'] });
+            // Bobina pode ser consumida ao criar O.S. de película
+            queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+            queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+            queryClient.invalidateQueries({ queryKey: ['roll-consumptions'] });
+            queryClient.invalidateQueries({ queryKey: ['indicators'] });
         }
     });
 };
@@ -40,6 +45,13 @@ export const useUpdateServiceOrder = () => {
             queryClient.invalidateQueries({ queryKey: ['service-order'] });
             queryClient.invalidateQueries({ queryKey: ['os-history', variables.id] });
             queryClient.invalidateQueries({ queryKey: ['scheduling'] });
+            // Editar O.S. pode alterar itens de película — reflete no estoque
+            queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+            queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+            queryClient.invalidateQueries({ queryKey: ['roll-consumptions'] });
+            queryClient.invalidateQueries({ queryKey: ['indicators'] });
+            // Conferência e auditoria exibem dados da O.S. editada
+            queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference'] });
         }
     });
 };
@@ -53,6 +65,15 @@ export const useCancelServiceOrder = () => {
             queryClient.invalidateQueries({ queryKey: ['service-orders'] });
             queryClient.invalidateQueries({ queryKey: ['service-order', variables.id] });
             queryClient.invalidateQueries({ queryKey: ['os-history', variables.id] });
+            // Cancelar pode estornar bobina consumida
+            queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+            queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+            queryClient.invalidateQueries({ queryKey: ['roll-consumptions'] });
+            queryClient.invalidateQueries({ queryKey: ['indicators'] });
+            // Remove da fila da conferência
+            queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference'] });
+            // Agendamento vinculado pode ter seu status alterado
+            queryClient.invalidateQueries({ queryKey: ['scheduling'] });
         },
     });
 };
@@ -67,6 +88,13 @@ export const useUpdateServiceOrderStatus = () => {
             queryClient.invalidateQueries({ queryKey: ['service-orders'] });
             queryClient.invalidateQueries({ queryKey: ['service-order', variables.id] });
             queryClient.invalidateQueries({ queryKey: ['os-history', variables.id] });
+            // Mudança de status afeta conferência (is_verified é limpo em algumas transições)
+            queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference'] });
+            // Finalizar/reverter pode estornar bobina
+            queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+            queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+            queryClient.invalidateQueries({ queryKey: ['roll-consumptions'] });
+            queryClient.invalidateQueries({ queryKey: ['indicators'] });
         },
         onError: () => {
             toast({
@@ -86,14 +114,28 @@ export const useFinalizeServiceOrder = () => {
             id: number
             payload: {
                 completion_photos: string[]
-                film_roll_assignments: Array<{ service_id: number; film_roll_id: number }>
+                film_roll_assignments: Array<{
+                    service_id: number
+                    film_roll_id?: number | null
+                    tonality?: string
+                    used_scrap?: boolean
+                    scrap_source_roll_id?: number | null
+                }>
                 employee_ids: number[]
+                employee_assignments?: Array<{ service_id: number; employee_ids: number[] }>
             }
         }) => serviceOrdersService.finalize(id, payload),
         onSuccess: (_, variables) => {
             queryClient.invalidateQueries({ queryKey: ['service-orders'] });
             queryClient.invalidateQueries({ queryKey: ['service-order', variables.id] });
             queryClient.invalidateQueries({ queryKey: ['os-history', variables.id] });
+            // Finalizar consome bobina — reflete imediatamente no estoque
+            queryClient.invalidateQueries({ queryKey: ['inventory-rolls'] });
+            queryClient.invalidateQueries({ queryKey: ['inventory-critical'] });
+            queryClient.invalidateQueries({ queryKey: ['roll-consumptions'] });
+            queryClient.invalidateQueries({ queryKey: ['indicators'] });
+            // O.S. finalizada aparece na conferência
+            queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference'] });
         },
         onError: () => {
             toast({

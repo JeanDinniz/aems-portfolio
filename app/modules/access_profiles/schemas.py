@@ -5,21 +5,27 @@ Access Profile schemas - Pydantic models for access profile validation.
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.schemas import PaginationMeta
+from app.modules.services.enums import ServiceDepartment
 
-# Sub-módulos válidos por grupo
-MODULE_GROUP_ADM = "ADM"
-MODULE_GROUP_OPERACIONAL = "OPERACIONAL"
+# Códigos de departamento aceitos em scheduling_departments
+VALID_DEPARTMENTS = {d.value for d in ServiceDepartment}
 
-ADM_SUB_MODULES = frozenset(
-    ["users", "stores", "consultants", "employees", "brands", "models", "services", "profiles"]
-)
-OPERACIONAL_SUB_MODULES = frozenset(
-    ["service_orders", "conference", "fechamento", "scheduling", "scheduling_os"]
-)
-ALL_SUB_MODULES = ADM_SUB_MODULES | OPERACIONAL_SUB_MODULES
+
+def _validate_departments(value: list[str] | None) -> list[str] | None:
+    """Valida que todos os itens são departamentos conhecidos."""
+    if value is None:
+        return value
+    invalid = [d for d in value if d not in VALID_DEPARTMENTS]
+    if invalid:
+        raise ValueError(
+            f"Departamento(s) inválido(s): {', '.join(invalid)}. "
+            f"Valores aceitos: {', '.join(sorted(VALID_DEPARTMENTS))}"
+        )
+    # Remove duplicados preservando ordem
+    return list(dict.fromkeys(value))
 
 
 # ---------------------------------------------------------------------------
@@ -63,10 +69,16 @@ class AccessProfileCreate(BaseModel):
     description: str | None = Field(None, max_length=500)
     is_galpon_profile: bool = False
     hide_galpon_option: bool = False
+    scheduling_departments: list[str] = Field(default_factory=list)
     is_active: bool = True
     permissions: list[ModulePermissionIn] = Field(default_factory=list)
     store_ids: list[int] = Field(default_factory=list)
     user_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("scheduling_departments")
+    @classmethod
+    def _check_departments(cls, v: list[str]) -> list[str]:
+        return _validate_departments(v) or []
 
 
 class AccessProfileUpdate(BaseModel):
@@ -76,10 +88,16 @@ class AccessProfileUpdate(BaseModel):
     description: str | None = Field(None, max_length=500)
     is_galpon_profile: bool | None = None
     hide_galpon_option: bool | None = None
+    scheduling_departments: list[str] | None = None
     is_active: bool | None = None
     permissions: list[ModulePermissionIn] | None = None
     store_ids: list[int] | None = None
     user_ids: list[int] | None = None
+
+    @field_validator("scheduling_departments")
+    @classmethod
+    def _check_departments(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_departments(v)
 
 
 class StoreInfo(BaseModel):
@@ -99,6 +117,7 @@ class AccessProfileOut(BaseModel):
     description: str | None
     is_galpon_profile: bool
     hide_galpon_option: bool
+    scheduling_departments: list[str] = Field(default_factory=list)
     is_active: bool
     permissions: list[ModulePermissionOut]
     store_ids: list[int] = Field(default_factory=list)
@@ -116,6 +135,7 @@ class AccessProfileOut(BaseModel):
             "description": profile.description,
             "is_galpon_profile": profile.is_galpon_profile,
             "hide_galpon_option": profile.hide_galpon_option,
+            "scheduling_departments": profile.scheduling_departments or [],
             "is_active": profile.is_active,
             "permissions": profile.permissions,
             "store_ids": [s.id for s in profile.stores],
@@ -169,3 +189,4 @@ class UserEffectivePermissions(BaseModel):
     store_ids: list[int]
     is_galpon_profile: bool
     hide_galpon_option: bool = False
+    scheduling_departments: list[str] = Field(default_factory=list)

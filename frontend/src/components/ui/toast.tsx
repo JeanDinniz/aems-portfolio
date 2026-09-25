@@ -16,7 +16,10 @@ const ToastViewport = React.forwardRef<
   <ToastPrimitives.Viewport
     ref={ref}
     className={cn(
-      "fixed top-0 z-[100] flex max-h-screen w-full flex-col-reverse p-4 sm:bottom-0 sm:right-0 sm:top-auto sm:flex-col md:max-w-[420px]",
+      // z-[320]: acima do drawer de agendamento (z-[201]) e do Photo/VideoDialog
+      // (z-[310]); o toast é a camada de feedback e deve ficar no topo. Sem isto,
+      // o toast de erro do Finalizar renderiza atrás do drawer e some.
+      "fixed top-0 z-[320] flex max-h-screen w-full flex-col-reverse p-4 sm:bottom-0 sm:right-0 sm:top-auto sm:flex-col md:max-w-[420px]",
       className
     )}
     {...props}

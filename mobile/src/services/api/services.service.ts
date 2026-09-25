@@ -16,7 +16,9 @@ export interface ServiceItem {
     name: string;
     description: string | null;
     department: string;
-    base_price: number;
+    // Decimal do backend → chega como STRING (Pydantic v2). Formatar via
+    // formatDecimalBRL; nunca aritmética/`.toFixed` direto.
+    base_price: string;
     has_variable_price: boolean;
     is_active: boolean;
     brand_id: number;

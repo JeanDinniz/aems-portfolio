@@ -16,6 +16,8 @@ import type {
     CreateAppointmentPayload,
     UpdateAppointmentPayload,
     SchedulingStoreSummary,
+    CombinedAppointmentPayload,
+    AddDepartmentsPayload,
 } from '@/types/scheduling.types';
 
 /**
@@ -179,6 +181,45 @@ export function useCreateAppointment() {
         onSuccess: () => {
             invalidateSchedulingQueries(queryClient);
             toast.success('Agendamento criado com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error));
+        },
+    });
+}
+
+export function useCreateCombinedAppointment() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: (payload: CombinedAppointmentPayload) =>
+            schedulingService.createCombined(payload),
+        onSuccess: () => {
+            invalidateSchedulingQueries(queryClient);
+            toast.success('Agendamentos criados com sucesso.');
+        },
+        onError: (error: Error) => {
+            toast.error(getApiErrorMessage(error));
+        },
+    });
+}
+
+export function useAddDepartments() {
+    const queryClient = useQueryClient();
+    const toast = useToast();
+
+    return useMutation({
+        mutationFn: ({ id, payload }: { id: number; payload: AddDepartmentsPayload }) =>
+            schedulingService.addDepartments(id, payload),
+        onSuccess: (result) => {
+            invalidateSchedulingQueries(queryClient);
+            const count = result.items?.length ?? 0;
+            toast.success(
+                count > 1
+                    ? `${count} agendamentos combinados criados.`
+                    : 'Agendamento combinado criado.'
+            );
         },
         onError: (error: Error) => {
             toast.error(getApiErrorMessage(error));

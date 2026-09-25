@@ -9,7 +9,7 @@ Tests:
 5. overdue counts correctly (in_progress AND start_time > 3h ago)
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -226,62 +226,6 @@ async def dashboard_orders(
     return orders
 
 
-@pytest_asyncio.fixture
-async def overdue_order(
-    db_session: AsyncSession,
-    test_store: Store,
-    test_user: User,
-) -> ServiceOrder:
-    """
-    O.S. overdue: status=in_progress, start_time = 4h ago (> 3h threshold).
-    """
-    now = datetime.now(tz=UTC)
-    so = ServiceOrder(
-        store_id=test_store.id,
-        vehicle_plate="OVR1D01",
-        department="film",
-        status="in_progress",
-        is_courtesy=False,
-        is_galpon=False,
-        is_return=False,
-        entry_time=now - timedelta(hours=5),
-        start_time=now - timedelta(hours=4),  # started 4h ago → overdue
-        created_by_id=test_user.id,
-    )
-    db_session.add(so)
-    await db_session.commit()
-    await db_session.refresh(so)
-    return so
-
-
-@pytest_asyncio.fixture
-async def recent_in_progress_order(
-    db_session: AsyncSession,
-    test_store: Store,
-    test_user: User,
-) -> ServiceOrder:
-    """
-    O.S. in_progress but NOT overdue: start_time = 1h ago (< 3h threshold).
-    """
-    now = datetime.now(tz=UTC)
-    so = ServiceOrder(
-        store_id=test_store.id,
-        vehicle_plate="OKI1D02",
-        department="film",
-        status="in_progress",
-        is_courtesy=False,
-        is_galpon=False,
-        is_return=False,
-        entry_time=now - timedelta(hours=2),
-        start_time=now - timedelta(hours=1),  # started 1h ago → not overdue
-        created_by_id=test_user.id,
-    )
-    db_session.add(so)
-    await db_session.commit()
-    await db_session.refresh(so)
-    return so
-
-
 # ===========================================================================
 # Tests — 403 for non-owner
 # ===========================================================================
@@ -320,20 +264,8 @@ class TestDashboardForbiddenForUser:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_consultants_forbidden(self, authenticated_client: AsyncClient):
-        response = await authenticated_client.get(
-            f"/api/v1/analytics/dashboard/consultants?{PARAMS}"
-        )
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
     async def test_sla_forbidden(self, authenticated_client: AsyncClient):
         response = await authenticated_client.get(f"/api/v1/analytics/dashboard/sla?{PARAMS}")
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_queue_forbidden(self, authenticated_client: AsyncClient):
-        response = await authenticated_client.get("/api/v1/analytics/dashboard/queue")
         assert response.status_code == 403
 
     @pytest.mark.asyncio
@@ -382,24 +314,12 @@ class TestDashboardOwnerEmptyDB:
         assert response.json() == []
 
     @pytest.mark.asyncio
-    async def test_consultants_ok(self, owner_client: AsyncClient):
-        response = await owner_client.get(f"/api/v1/analytics/dashboard/consultants?{PARAMS}")
-        assert response.status_code == 200
-        assert response.json() == []
-
-    @pytest.mark.asyncio
     async def test_sla_ok(self, owner_client: AsyncClient):
         response = await owner_client.get(f"/api/v1/analytics/dashboard/sla?{PARAMS}")
         assert response.status_code == 200
         data = response.json()
         assert data["avg_wait_minutes"] == 0.0
         assert data["avg_execution_minutes"] == 0.0
-
-    @pytest.mark.asyncio
-    async def test_queue_ok(self, owner_client: AsyncClient):
-        response = await owner_client.get("/api/v1/analytics/dashboard/queue")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
 
     @pytest.mark.asyncio
     async def test_timeseries_ok(self, owner_client: AsyncClient):
@@ -440,7 +360,7 @@ class TestDeltaPct:
         """
         Jan 2026 has 4 orders. Previous period has 0 orders.
         delta_pct for total_orders should be None (previous == 0).
-        Revenue Jan = 700 (500 non-courtesy + 200 non-courtesy; so2 courtesy excluded).
+        Revenue Jan = 500 (só so1; so2 cortesia e so4 retorno excluídos da receita).
         """
         response = await owner_client.get(f"/api/v1/analytics/dashboard/overview?{PARAMS}")
         assert response.status_code == 200
@@ -451,9 +371,9 @@ class TestDeltaPct:
         assert data["total_orders"]["previous"] == 0
         assert data["total_orders"]["delta_pct"] is None
 
-        # Revenue: only non-courtesy O.S.
-        # so1=500, so4=200 → revenue=700 (so2 is courtesy → excluded)
-        assert data["revenue"]["current"] == 700.0
+        # Revenue: exclui cortesia (so2) E retorno (so4) — não são cobrados
+        # so1=500 → revenue=500
+        assert data["revenue"]["current"] == 500.0
         assert data["revenue"]["delta_pct"] is None  # previous == 0
 
     @pytest.mark.asyncio
@@ -587,73 +507,6 @@ class TestPctFlags:
 
 
 # ===========================================================================
-# Tests — overdue in queue
-# ===========================================================================
-
-
-class TestLiveQueueOverdue:
-    """Verify overdue counter in live queue snapshot."""
-
-    @pytest.mark.asyncio
-    async def test_overdue_counted(
-        self,
-        owner_client: AsyncClient,
-        test_store: Store,
-        overdue_order: ServiceOrder,
-    ):
-        """
-        1 overdue order (start_time 4h ago) → overdue=1 for that store.
-        """
-        response = await owner_client.get("/api/v1/analytics/dashboard/queue")
-        assert response.status_code == 200
-        items = response.json()
-
-        store_item = next((i for i in items if i["store_id"] == test_store.id), None)
-        assert store_item is not None
-        assert store_item["overdue"] == 1
-        assert store_item["in_progress"] == 1
-
-    @pytest.mark.asyncio
-    async def test_overdue_not_counted_for_recent(
-        self,
-        owner_client: AsyncClient,
-        test_store: Store,
-        recent_in_progress_order: ServiceOrder,
-    ):
-        """
-        1 in_progress order started 1h ago → overdue=0.
-        """
-        response = await owner_client.get("/api/v1/analytics/dashboard/queue")
-        assert response.status_code == 200
-        items = response.json()
-
-        store_item = next((i for i in items if i["store_id"] == test_store.id), None)
-        assert store_item is not None
-        assert store_item["overdue"] == 0
-        assert store_item["in_progress"] == 1
-
-    @pytest.mark.asyncio
-    async def test_overdue_mixed(
-        self,
-        owner_client: AsyncClient,
-        test_store: Store,
-        overdue_order: ServiceOrder,
-        recent_in_progress_order: ServiceOrder,
-    ):
-        """
-        2 in_progress orders: 1 overdue (4h), 1 not overdue (1h) → overdue=1.
-        """
-        response = await owner_client.get("/api/v1/analytics/dashboard/queue")
-        assert response.status_code == 200
-        items = response.json()
-
-        store_item = next((i for i in items if i["store_id"] == test_store.id), None)
-        assert store_item is not None
-        assert store_item["in_progress"] == 2
-        assert store_item["overdue"] == 1
-
-
-# ===========================================================================
 # Tests — Stores ranking
 # ===========================================================================
 
@@ -669,8 +522,8 @@ class TestStoresRanking:
         test_store: Store,
     ):
         """
-        Revenue for the store must exclude courtesy O.S.
-        so1=500, so4=200 → store revenue=700 (so2 courtesy excluded).
+        Revenue for the store must exclude courtesy AND return O.S.
+        so1=500 → store revenue=500 (so2 cortesia e so4 retorno excluídos).
         """
         response = await owner_client.get(f"/api/v1/analytics/dashboard/stores?{PARAMS}")
         assert response.status_code == 200
@@ -679,8 +532,8 @@ class TestStoresRanking:
 
         store_item = next((i for i in items if i["store_id"] == test_store.id), None)
         assert store_item is not None
-        assert store_item["revenue"] == 700.0
-        assert store_item["orders_count"] == 4  # includes all, even courtesy
+        assert store_item["revenue"] == 500.0
+        assert store_item["orders_count"] == 4  # includes all, even courtesy/return
 
 
 # ===========================================================================
@@ -801,15 +654,15 @@ class TestTimeseries:
         dashboard_orders: list[ServiceOrder],
     ):
         """
-        Timeseries revenue must exclude courtesy O.S.
-        so1=500, so4=200 → total=700 (so2 courtesy excluded; so3 has no items).
+        Timeseries revenue must exclude courtesy AND return O.S.
+        so1=500 → total=500 (so2 cortesia e so4 retorno excluídos; so3 sem itens).
         """
         response = await owner_client.get(
             f"/api/v1/analytics/dashboard/timeseries?{PARAMS}&granularity=month"
         )
         points = response.json()
         assert len(points) == 1
-        assert points[0]["revenue"] == 700.0
+        assert points[0]["revenue"] == 500.0
 
     @pytest.mark.asyncio
     async def test_timeseries_day_granularity(
@@ -896,30 +749,545 @@ class TestEmployeesRanking:
         assert emp["hours_worked"] == 1.5
         assert emp["avg_hours_per_order"] == 1.5
 
+    @pytest.mark.asyncio
+    async def test_employees_ranking_only_counts_completed(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_user: User,
+        test_service: Service,
+        test_employee: Employee,
+    ):
+        """
+        Ranking segue a régua do Desempenho: O.S. NÃO finalizada com instalador
+        vinculado não entra. Antes o Dashboard contava waiting/in_progress e
+        inflava serviços/receita frente à tela de Desempenho.
+        """
+        # O.S. finalizada em Jan/2026 com o instalador → conta
+        done = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="CMP1A01",
+            department="film",
+            status="completed",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 8, 8, 0, tzinfo=UTC),
+            start_time=datetime(2026, 1, 8, 8, 30, tzinfo=UTC),
+            completion_time=datetime(2026, 1, 8, 10, 0, tzinfo=UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(done)
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=done.id, service_id=test_service.id, unit_price=500.00, quantity=1
+            )
+        )
+        db_session.add(
+            ServiceOrderWorker(service_order_id=done.id, employee_id=test_employee.id)
+        )
+
+        # O.S. em andamento (entrou no período) com o MESMO instalador → NÃO conta
+        wip = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="CMP1A02",
+            department="film",
+            status="in_progress",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 9, 8, 0, tzinfo=UTC),
+            start_time=datetime(2026, 1, 9, 8, 30, tzinfo=UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(wip)
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=wip.id, service_id=test_service.id, unit_price=900.00, quantity=1
+            )
+        )
+        db_session.add(
+            ServiceOrderWorker(service_order_id=wip.id, employee_id=test_employee.id)
+        )
+        await db_session.commit()
+
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/employees?{PARAMS}")
+        assert response.status_code == 200
+        emp = next(
+            (i for i in response.json() if i["employee_id"] == test_employee.id), None
+        )
+        assert emp is not None
+        # Só a O.S. finalizada conta: 1 serviço, R$ 500 (a in_progress de R$ 900 fica fora)
+        assert emp["orders_count"] == 1
+        assert emp["services_count"] == 1.0
+        assert emp["revenue"] == 500.0
+
 
 # ===========================================================================
-# Tests — Consultants ranking
+# Tests — Excluded statuses (cancelled/wrong/duplicate fora das métricas)
 # ===========================================================================
 
 
-class TestConsultantsRanking:
-    """Verify consultants ranking."""
+@pytest_asyncio.fixture
+async def invalid_status_orders(
+    db_session: AsyncSession,
+    test_store: Store,
+    test_user: User,
+    test_service: Service,
+) -> list[ServiceOrder]:
+    """O.S. cancelada, lançada errada e duplicada em Jan 2026, todas com item."""
+    orders: list[ServiceOrder] = []
+    for i, status in enumerate(("cancelled", "wrong", "duplicate")):
+        so = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate=f"INV{i}A0{i}",
+            department="film",
+            status=status,
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 5 + i, 8, 0, tzinfo=UTC),
+            start_time=datetime(2026, 1, 5 + i, 9, 0, tzinfo=UTC),
+            completion_time=datetime(2026, 1, 5 + i, 19, 0, tzinfo=UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(so)
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=so.id,
+                service_id=test_service.id,
+                unit_price=1000.00,
+                quantity=1,
+            )
+        )
+        orders.append(so)
+    await db_session.commit()
+    return orders
+
+
+class TestExcludedStatuses:
+    """O.S. cancelada/errada/duplicada não conta em receita, totais nem séries."""
 
     @pytest.mark.asyncio
-    async def test_consultants_ranking_returns_data(
+    async def test_overview_excludes_invalid_statuses(
         self,
         owner_client: AsyncClient,
         dashboard_orders: list[ServiceOrder],
-        test_consultant: Consultant,
+        invalid_status_orders: list[ServiceOrder],
+    ):
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/overview?{PARAMS}")
+        assert response.status_code == 200
+        data = response.json()
+        # Apenas as 4 O.S. válidas contam; R$ 3000 das inválidas fica fora.
+        # Receita = só so1 (500); so2 cortesia e so4 retorno fora da receita.
+        assert data["total_orders"]["current"] == 4
+        assert data["revenue"]["current"] == 500.0
+
+    @pytest.mark.asyncio
+    async def test_stores_ranking_excludes_invalid_statuses(
+        self,
+        owner_client: AsyncClient,
+        dashboard_orders: list[ServiceOrder],
+        invalid_status_orders: list[ServiceOrder],
+        test_store: Store,
+    ):
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/stores?{PARAMS}")
+        items = response.json()
+        store_item = next((i for i in items if i["store_id"] == test_store.id), None)
+        assert store_item is not None
+        assert store_item["orders_count"] == 4
+        assert store_item["revenue"] == 500.0
+
+    @pytest.mark.asyncio
+    async def test_timeseries_excludes_invalid_statuses(
+        self,
+        owner_client: AsyncClient,
+        dashboard_orders: list[ServiceOrder],
+        invalid_status_orders: list[ServiceOrder],
+    ):
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/timeseries?{PARAMS}&granularity=month"
+        )
+        points = response.json()
+        assert sum(p["orders_count"] for p in points) == 4
+        assert sum(p["revenue"] for p in points) == 500.0
+
+
+# ===========================================================================
+# Tests — Normalização de período (último dia inteiro conta)
+# ===========================================================================
+
+
+class TestPeriodEndOfDay:
+    """end_date enviado como data pura (meia-noite) deve cobrir o dia inteiro."""
+
+    @pytest.mark.asyncio
+    async def test_last_day_orders_are_included(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_user: User,
+        test_service: Service,
+    ):
+        # O.S. às 18h do último dia do período
+        so = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="EOD1A01",
+            department="film",
+            status="completed",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 31, 18, 0, tzinfo=UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(so)
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=so.id,
+                service_id=test_service.id,
+                unit_price=400.00,
+                quantity=1,
+            )
+        )
+        await db_session.commit()
+
+        # end_date como o frontend envia: data pura → meia-noite
+        response = await owner_client.get(
+            "/api/v1/analytics/dashboard/overview"
+            "?start_date=2026-01-01T00:00:00Z&end_date=2026-01-31T00:00:00Z"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_orders"]["current"] == 1
+        assert data["revenue"]["current"] == 400.0
+
+
+# ===========================================================================
+# Tests — SLA considera execução apenas de O.S. concluídas
+# ===========================================================================
+
+
+class TestSlaOnlyCompleted:
+    """O.S. não concluída com completion_time residual não entra na execução."""
+
+    @pytest.mark.asyncio
+    async def test_execution_ignores_non_completed(
+        self,
+        owner_client: AsyncClient,
+        dashboard_orders: list[ServiceOrder],
+        invalid_status_orders: list[ServiceOrder],
+    ):
+        """
+        Execução válida: so1 = 90 min (8:30→10:00), so2 = 100 min (9:20→11:00).
+        As inválidas têm 10h de "execução" e devem ficar fora.
+        avg_execution = (90 + 100) / 2 = 95.0
+        """
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/sla?{PARAMS}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["avg_execution_minutes"] == 95.0
+
+
+# ===========================================================================
+# Tests — Dealerships ranking
+# ===========================================================================
+
+
+class TestDealershipsRanking:
+    """Ranking de concessionárias parceiras."""
+
+    @pytest.mark.asyncio
+    async def test_dealerships_forbidden_for_user(self, authenticated_client: AsyncClient):
+        response = await authenticated_client.get(
+            f"/api/v1/analytics/dashboard/dealerships?{PARAMS}"
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_dealerships_empty_ok(self, owner_client: AsyncClient):
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/dealerships?{PARAMS}")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_dealerships_ranking_revenue(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_user: User,
+        test_service: Service,
         test_dealership: Dealership,
     ):
-        """Should return the test consultant in ranking."""
-        response = await owner_client.get(f"/api/v1/analytics/dashboard/consultants?{PARAMS}")
+        """O.S. vinculada à concessionária soma receita; cortesia fica fora."""
+        so = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="DLR1A01",
+            department="film",
+            status="completed",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 12, 8, 0, tzinfo=UTC),
+            dealership_id=test_dealership.id,
+            created_by_id=test_user.id,
+        )
+        so_courtesy = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="DLR2C02",
+            department="film",
+            status="completed",
+            is_courtesy=True,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 13, 8, 0, tzinfo=UTC),
+            dealership_id=test_dealership.id,
+            created_by_id=test_user.id,
+        )
+        db_session.add_all([so, so_courtesy])
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=so.id,
+                service_id=test_service.id,
+                unit_price=800.00,
+                quantity=1,
+            )
+        )
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=so_courtesy.id,
+                service_id=test_service.id,
+                unit_price=999.00,
+                quantity=1,
+            )
+        )
+        await db_session.commit()
+
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/dealerships?{PARAMS}")
         assert response.status_code == 200
         items = response.json()
-        assert len(items) >= 1
-        cons = next((i for i in items if i["consultant_id"] == test_consultant.id), None)
-        assert cons is not None
-        # so1 is linked to consultant, non-courtesy, revenue=500
-        assert cons["revenue"] == 500.0
-        assert cons["dealership_name"] == test_dealership.name
+        item = next((i for i in items if i["dealership_id"] == test_dealership.id), None)
+        assert item is not None
+        assert item["orders_count"] == 1
+        assert item["revenue"] == 800.0
+        assert item["avg_ticket"] == 800.0
+
+
+# ===========================================================================
+# Tests — timeseries-by-type com receita por tipo (Valor Bruto)
+# ===========================================================================
+
+
+class TestTimeseriesByTypeRevenue:
+    """Receita por tipo acompanha a contagem (regra: itens, sem cortesia)."""
+
+    @pytest.mark.asyncio
+    async def test_counts_and_revenue_per_type(
+        self, owner_client: AsyncClient, dashboard_orders: list[ServiceOrder]
+    ):
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/timeseries-by-type?{PARAMS}&granularity=month"
+        )
+        assert response.status_code == 200
+        points = response.json()
+        assert len(points) == 1
+        p = points[0]
+        # film: so1 (500, ok) + so2 (300, CORTESIA) + so4 (200, RETORNO); estética: so3 (sem itens)
+        assert p["film_count"] == 3
+        assert p["estetica_count"] == 1
+        assert p["ppf_count"] == 0
+        # cortesia (so2) e retorno (so4) fora da receita, dentro da contagem → só so1
+        assert p["film_revenue"] == 500.0
+        assert p["estetica_revenue"] == 0.0
+        assert p["ppf_revenue"] == 0.0
+
+
+# ===========================================================================
+# Tests — previsão de faturamento (run-rate por dias úteis)
+# ===========================================================================
+
+
+class TestRevenueForecast:
+    @pytest.mark.asyncio
+    async def test_forbidden_for_user(self, authenticated_client: AsyncClient):
+        response = await authenticated_client.get("/api/v1/analytics/dashboard/revenue-forecast")
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_empty_month_returns_zero(self, owner_client: AsyncClient):
+        response = await owner_client.get("/api/v1/analytics/dashboard/revenue-forecast")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["revenue_so_far"] == 0.0
+        assert data["forecast"] == 0.0
+        assert data["business_days_total"] >= data["business_days_elapsed"] > 0
+
+    @pytest.mark.asyncio
+    async def test_run_rate_projection(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_user: User,
+        test_service: Service,
+    ):
+        """Receita de hoje projetada para o mês inteiro por dias úteis."""
+        from datetime import date as date_type, time as time_type
+
+        # Meio-dia da DATA LOCAL: a janela do forecast usa date.today() local;
+        # now(UTC) à noite já seria o dia seguinte e cairia fora da janela.
+        entry = datetime.combine(date_type.today(), time_type(12, 0), tzinfo=UTC)
+        so = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="FRC1A23",
+            department="film",
+            status="completed",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=entry,
+            created_by_id=test_user.id,
+        )
+        db_session.add(so)
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderItem(
+                service_order_id=so.id,
+                service_id=test_service.id,
+                unit_price=1000.00,
+                quantity=1,
+            )
+        )
+        await db_session.commit()
+
+        response = await owner_client.get("/api/v1/analytics/dashboard/revenue-forecast")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["revenue_so_far"] == 1000.0
+        expected = round(
+            1000.0 / data["business_days_elapsed"] * data["business_days_total"], 2
+        )
+        assert data["forecast"] == pytest.approx(expected)
+        assert data["forecast"] >= 1000.0
+
+
+# ===========================================================================
+# Tests — ranking de funcionários: valor + filtro por departamento da O.S.
+# ===========================================================================
+
+
+class TestEmployeesRankingRevenueAndFilter:
+    @pytest.mark.asyncio
+    async def test_legacy_worker_gets_order_total(
+        self, owner_client: AsyncClient, dashboard_orders: list[ServiceOrder]
+    ):
+        """Worker legado (sem vínculo de item) soma o total da O.S."""
+        response = await owner_client.get(f"/api/v1/analytics/dashboard/employees?{PARAMS}")
+        assert response.status_code == 200
+        items = response.json()
+        assert len(items) == 1  # só so1 tem worker
+        assert items[0]["revenue"] == 500.0
+        assert items[0]["services_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_item_worker_gets_item_value(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_user: User,
+        test_service: Service,
+        test_employee: Employee,
+        dashboard_orders: list[ServiceOrder],
+    ):
+        """Instalador por serviço soma só o valor do SEU item."""
+        so = ServiceOrder(
+            store_id=test_store.id,
+            vehicle_plate="RNK1A11",
+            department="security_film",
+            status="completed",
+            is_courtesy=False,
+            is_galpon=False,
+            is_return=False,
+            entry_time=datetime(2026, 1, 18, 9, 0, tzinfo=UTC),
+            completion_time=datetime(2026, 1, 18, 11, 0, tzinfo=UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(so)
+        await db_session.flush()
+        item1 = ServiceOrderItem(
+            service_order_id=so.id, service_id=test_service.id, unit_price=400.00, quantity=1
+        )
+        item2 = ServiceOrderItem(
+            service_order_id=so.id, service_id=test_service.id, unit_price=150.00, quantity=1
+        )
+        db_session.add_all([item1, item2])
+        await db_session.flush()
+        db_session.add(
+            ServiceOrderWorker(
+                service_order_id=so.id,
+                employee_id=test_employee.id,
+                service_order_item_id=item1.id,
+            )
+        )
+        await db_session.commit()
+
+        # Filtro multi: só security_film → aparece com o valor do item vinculado
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/employees?{PARAMS}&departments=security_film"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        assert len(items) == 1
+        assert items[0]["revenue"] == 400.0
+        assert items[0]["services_count"] == 1
+
+        # Multi combinado film + security_film → soma legado (500) + item (400)
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/employees?{PARAMS}"
+            "&departments=film&departments=security_film"
+        )
+        items = response.json()
+        assert items[0]["revenue"] == 900.0
+        assert items[0]["services_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_filter_by_os_department_not_employee_registry(
+        self, owner_client: AsyncClient, dashboard_orders: list[ServiceOrder]
+    ):
+        """Funcionário é 'film' no cadastro; sem trabalho em ppf, filtro ppf vazio."""
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/employees?{PARAMS}&departments=ppf"
+        )
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+# ===========================================================================
+# Tests — ranking Película × PPF: coluna Serviços
+# ===========================================================================
+
+
+class TestFilmPpfRankingServicesCount:
+    @pytest.mark.asyncio
+    async def test_services_count_counts_items(
+        self, owner_client: AsyncClient, dashboard_orders: list[ServiceOrder], test_store: Store
+    ):
+        """so1 + so2 + so4 (film): 3 O.S., 3 itens, receita sem cortesia nem retorno = 500 (só so1)."""
+        response = await owner_client.get(
+            f"/api/v1/analytics/dashboard/film-ppf-ranking?{PARAMS}"
+        )
+        assert response.status_code == 200
+        items = response.json()
+        row = next(i for i in items if i["store_id"] == test_store.id)
+        assert row["orders_count"] == 3
+        assert row["services_count"] == 3
+        assert row["revenue"] == 500.0

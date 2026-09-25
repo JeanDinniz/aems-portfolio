@@ -6,8 +6,10 @@ import { CreateRollScreen } from '@/screens/inventory/CreateRollScreen';
 import { FilmTypesScreen } from '@/screens/inventory/FilmTypesScreen';
 import { FilmTypeServicesScreen } from '@/screens/inventory/FilmTypeServicesScreen';
 import { TransferRollScreen } from '@/screens/inventory/TransferRollScreen';
+import { EditRollScreen } from '@/screens/inventory/EditRollScreen';
 import { CriticalRollsScreen } from '@/screens/inventory/CriticalRollsScreen';
 import { ForecastScreen } from '@/screens/inventory/ForecastScreen';
+import { WithdrawalsScreen } from '@/screens/inventory/WithdrawalsScreen';
 
 import type { InventoryStackParamList } from './types';
 
@@ -31,8 +33,10 @@ export function InventoryStack() {
             <Stack.Screen name="FilmTypes" component={FilmTypesScreen} />
             <Stack.Screen name="FilmTypeServices" component={FilmTypeServicesScreen} />
             <Stack.Screen name="TransferRoll" component={TransferRollScreen} />
+            <Stack.Screen name="EditRoll" component={EditRollScreen} />
             <Stack.Screen name="CriticalRolls" component={CriticalRollsScreen} />
             <Stack.Screen name="Forecast" component={ForecastScreen} />
+            <Stack.Screen name="Withdrawals" component={WithdrawalsScreen} />
         </Stack.Navigator>
     );
 }

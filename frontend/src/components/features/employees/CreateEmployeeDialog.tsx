@@ -1,6 +1,9 @@
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { useToast } from '@/hooks/use-toast';
+import { getApiErrorStatus } from '@/lib/api-error';
 import {
     Dialog,
     DialogContent,
@@ -14,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { useEmployees } from '@/hooks/useEmployees';
 import { useStores } from '@/hooks/useStores';
+import { UserCombobox } from './UserCombobox';
 import { EMPLOYEE_POSITIONS, positionToDepartment } from '@/constants/employees';
 
 function formatPhone(value: string): string {
@@ -42,6 +46,7 @@ const schema = z.object({
     entry_date: z.string().optional(),
     phone: z.string().max(20, 'Maximo 20 caracteres').optional().or(z.literal('')),
     email: z.string().email('E-mail invalido').optional().or(z.literal('')),
+    cpf: z.string().max(14).optional().or(z.literal('')),
     address: z.string().optional().or(z.literal('')),
     // Financeiro
     pix_key: z.string().optional().or(z.literal('')),
@@ -49,6 +54,8 @@ const schema = z.object({
     transport_allowance: z.string().optional().or(z.literal('')),
     // RH
     vacation_month: z.number().min(1).max(12).nullable().optional(),
+    // Vínculo com usuário
+    user_id: z.number().nullable().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -64,11 +71,18 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    initialValues?: Partial<{
+        first_name: string;
+        email: string;
+        store_id: number;
+    }>;
+    onCreated?: (employee: import('@/types/employee.types').Employee) => void;
 }
 
-export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
+export function CreateEmployeeDialog({ open, onOpenChange, initialValues, onCreated }: Props) {
     const { createEmployee, isCreating } = useEmployees();
     const { stores } = useStores();
+    const { toast } = useToast();
 
     const {
         register,
@@ -84,6 +98,19 @@ export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
 
     const isVolante = watch('is_volante');
     const worksInGalpon = watch('works_in_galpon');
+    const selectedUserId = watch('user_id') ?? null;
+
+    // Preencher com initialValues quando o dialog abre
+    useEffect(() => {
+        if (open && initialValues) {
+            if (initialValues.first_name) setValue('first_name', initialValues.first_name);
+            if (initialValues.email) setValue('email', initialValues.email);
+            if (initialValues.store_id) setValue('store_id', initialValues.store_id);
+        }
+        if (!open) {
+            reset();
+        }
+    }, [open, initialValues, setValue, reset]);
 
     const onSubmit = (data: FormData) => {
         const lastName = data.last_name?.trim() ?? '';
@@ -99,13 +126,28 @@ export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
             entry_date: data.entry_date || null,
             phone: data.phone || null,
             email: data.email || null,
+            cpf: data.cpf || null,
             address: data.address || null,
             pix_key: data.pix_key || null,
             bank_account: data.bank_account || null,
             transport_allowance: data.transport_allowance || null,
             vacation_month: data.vacation_month ?? null,
-        } as Parameters<typeof createEmployee>[0], {
-            onSuccess: () => { reset(); onOpenChange(false); },
+            user_id: data.user_id ?? undefined,
+        }, {
+            onSuccess: (emp) => {
+                reset();
+                onOpenChange(false);
+                onCreated?.(emp);
+            },
+            onError: (err) => {
+                if (getApiErrorStatus(err as Error) === 409) {
+                    toast({
+                        variant: 'destructive',
+                        title: 'Usuário já vinculado',
+                        description: 'Usuário já vinculado a outro funcionário.',
+                    });
+                }
+            },
         });
     };
 
@@ -185,7 +227,7 @@ export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
                                     <SelectContent>
                                         {stores?.map((store) => (
                                             <SelectItem key={store.id} value={store.id.toString()}>
-                                                {store.code} - {store.name}
+                                                {store.name}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
@@ -252,6 +294,22 @@ export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
                                 {errors.email && <p className="text-sm text-red-500">{errors.email.message}</p>}
                             </div>
                         </div>
+
+                        <div className="space-y-2 sm:max-w-[50%]">
+                            <label htmlFor="cre-cpf" className="text-sm font-medium">
+                                CPF
+                                <span className="ml-1.5 text-xs text-muted-foreground font-normal">
+                                    (necessário para arquivos fiscais do ponto)
+                                </span>
+                            </label>
+                            <Input
+                                id="cre-cpf"
+                                {...register('cpf')}
+                                placeholder="000.000.000-00"
+                                inputMode="numeric"
+                            />
+                            {errors.cpf && <p className="text-sm text-red-500">{errors.cpf.message}</p>}
+                        </div>
                     </div>
 
                     {/* Financeiro */}
@@ -295,6 +353,22 @@ export function CreateEmployeeDialog({ open, onOpenChange }: Props) {
                                     ))}
                                 </SelectContent>
                             </Select>
+                        </div>
+                    </div>
+
+                    {/* Ponto Eletrônico */}
+                    <div className="space-y-3">
+                        <SectionLabel>Ponto Eletrônico</SectionLabel>
+
+                        <div className="space-y-2">
+                            <p className="text-sm font-medium">Vincular usuário (opcional)</p>
+                            <UserCombobox
+                                value={selectedUserId}
+                                onChange={(userId) => setValue('user_id', userId)}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Vincula o funcionário a um usuário para que ele possa bater ponto.
+                            </p>
                         </div>
                     </div>
 

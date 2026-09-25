@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useMutation } from '@tanstack/react-query';
 
+import { useConfirm } from '@/components/ui';
 import { TextField } from '@/components/common/TextField';
 import { PrimaryButton } from '@/components/common/PrimaryButton';
 import { authService } from '@/services/api/auth.service';
@@ -27,6 +28,7 @@ export function ProfileScreen({ navigation }: AppStackScreenProps<'Profile'>) {
     const user = useAuthStore((s) => s.user);
     const updateUser = useAuthStore((s) => s.updateUser);
     const { logout, isLoggingOut } = useAuth();
+    const { confirm, alert } = useConfirm();
 
     const {
         control,
@@ -52,7 +54,10 @@ export function ProfileScreen({ navigation }: AppStackScreenProps<'Profile'>) {
             setSaved(true);
         },
         onError: (err) => {
-            Alert.alert('Erro', getApiErrorMessage(err as Error, 'Não foi possível salvar.'));
+            void alert({
+                title: 'Erro',
+                message: getApiErrorMessage(err as Error, 'Não foi possível salvar.'),
+            });
         },
     });
 
@@ -62,11 +67,14 @@ export function ProfileScreen({ navigation }: AppStackScreenProps<'Profile'>) {
         updateMutation.mutate(values);
     };
 
-    const confirmLogout = () => {
-        Alert.alert('Sair', 'Deseja encerrar a sessão?', [
-            { text: 'Cancelar', style: 'cancel' },
-            { text: 'Sair', style: 'destructive', onPress: () => logout() },
-        ]);
+    const confirmLogout = async () => {
+        const ok = await confirm({
+            title: 'Sair',
+            message: 'Deseja encerrar a sessão?',
+            confirmLabel: 'Sair',
+            destructive: true,
+        });
+        if (ok) logout();
     };
 
     return (

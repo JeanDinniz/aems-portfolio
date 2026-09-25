@@ -1,4 +1,4 @@
-import { downloadAndShareExcel } from '@/utils/exportShare';
+import { downloadAndShareExcel, downloadAndSharePdf } from '@/utils/exportShare';
 import * as Sharing from 'expo-sharing';
 
 /**
@@ -92,6 +92,43 @@ describe('downloadAndShareExcel', () => {
         ).rejects.toThrow('Compartilhamento indisponível');
 
         // Não deve baixar nem compartilhar se indisponível.
+        expect(mockGet).not.toHaveBeenCalled();
+        expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    });
+});
+
+describe('downloadAndSharePdf', () => {
+    it('grava o arquivo no cache em base64 e compartilha com mime/UTI de PDF', async () => {
+        await downloadAndSharePdf({
+            path: '/service-orders/export/resumo-diario',
+            params: { store_id: 7, date: '2026-07-20' },
+            filename: 'resumo-diario_7.pdf',
+        });
+
+        // Baixou como arraybuffer, repassando path/params.
+        const [path, config] = mockGet.mock.calls[0];
+        expect(path).toBe('/service-orders/export/resumo-diario');
+        expect(config.responseType).toBe('arraybuffer');
+        expect(config.params).toEqual({ store_id: 7, date: '2026-07-20' });
+
+        // Escreveu o .pdf em base64 ("AEMS").
+        expect(global.mockFileWrites).toHaveLength(1);
+        expect(global.mockFileWrites[0].content).toBe('QUVNUw==');
+
+        // Compartilhou com mime/UTI de PDF.
+        const [uri, opts] = (Sharing.shareAsync as jest.Mock).mock.calls[0];
+        expect(uri).toContain('resumo-diario_7.pdf');
+        expect(opts.mimeType).toBe('application/pdf');
+        expect(opts.UTI).toBe('com.adobe.pdf');
+    });
+
+    it('lança erro amigável quando o compartilhamento é indisponível', async () => {
+        global.mockSharing.available = false;
+
+        await expect(
+            downloadAndSharePdf({ path: '/x', filename: 'x.pdf' })
+        ).rejects.toThrow('Compartilhamento indisponível');
+
         expect(mockGet).not.toHaveBeenCalled();
         expect(Sharing.shareAsync).not.toHaveBeenCalled();
     });

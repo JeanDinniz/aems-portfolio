@@ -16,6 +16,12 @@ export const SUB_MODULE_LABELS: Record<SubModule, string> = {
     scheduling: 'Agendamentos',
     scheduling_os: 'Gerar O.S. (Agendamento)',
     inventory: 'Estoque',
+    time_clock: 'Ponto Eletrônico',
+    time_clock_mirror: 'Espelho de Ponto',
+    installer_performance: 'Desempenho de Instaladores',
+    ebook: 'E-book',
+    epi: 'Controle de EPIs',
+    material_requests: 'Pedidos de Material',
 };
 
 /** Ordem de exibição dos submódulos na matriz (ADM primeiro, depois OPERACIONAL). */
@@ -34,4 +40,10 @@ export const SUB_MODULE_ORDER: SubModule[] = [
     'scheduling',
     'scheduling_os',
     'inventory',
+    'time_clock',
+    'time_clock_mirror',
+    'installer_performance',
+    'ebook',
+    'epi',
+    'material_requests',
 ];

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Alert, Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useConfirm } from '@/components/ui';
 import { TextField } from '@/components/common/TextField';
 import { PrimaryButton } from '@/components/common/PrimaryButton';
 import { authService } from '@/services/api/auth.service';
@@ -30,6 +31,7 @@ type FormValues = z.infer<typeof schema>;
 
 export function ResetPasswordScreen({ route, navigation }: AuthStackScreenProps<'ResetPassword'>) {
     const tokenFromLink = route.params?.token ?? '';
+    const { alert } = useConfirm();
     const [submitting, setSubmitting] = useState(false);
 
     const {
@@ -46,11 +48,16 @@ export function ResetPasswordScreen({ route, navigation }: AuthStackScreenProps<
         setSubmitting(true);
         try {
             await authService.resetPassword(values.token, values.password);
-            Alert.alert('Senha redefinida', 'Faça login com sua nova senha.', [
-                { text: 'OK', onPress: () => navigation.navigate('Login') },
-            ]);
+            await alert({
+                title: 'Senha redefinida',
+                message: 'Faça login com sua nova senha.',
+            });
+            navigation.navigate('Login');
         } catch (err) {
-            Alert.alert('Erro', getApiErrorMessage(err as Error, 'Token inválido ou expirado.'));
+            await alert({
+                title: 'Erro',
+                message: getApiErrorMessage(err as Error, 'Token inválido ou expirado.'),
+            });
         } finally {
             setSubmitting(false);
         }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import type { Resolver } from 'react-hook-form';
@@ -33,6 +33,7 @@ import { DEPARTMENTS } from '@/constants/service-orders';
 import type { CreateServiceOrderData } from '@/types/service-order.types';
 import { isValidPlateOrChassi, PLATE_ERROR_MESSAGE } from '@/utils/plate';
 import { logger } from '@/lib/logger';
+import { VideoCapture } from '@/components/features/service-orders/VideoCapture';
 
 const editServiceOrderSchema = z.object({
     // Vehicle — always required
@@ -74,7 +75,8 @@ export default function EditServiceOrderPage() {
     const { toast } = useToast();
     const { data: os, isLoading: isLoadingOS } = useServiceOrder(Number(id));
     const updateServiceOrder = useUpdateServiceOrder();
-    const { allStores, selectedStoreId } = useStores();
+    const [videoUrl, setVideoUrl] = useState<string | null>(null);
+    const { allStores } = useStores();
 
     // Determine store type from the OS's location_id
     const osStore = useMemo(() => {
@@ -104,7 +106,7 @@ export default function EditServiceOrderPage() {
             form.reset({
                 vehicle_model: os.vehicle_model ?? '',
                 vehicle_color: os.vehicle_color ?? '',
-                plate: os.plate ?? 'ABC1234',
+                plate: os.plate ?? '',
                 department: os.department ?? 'film',
                 location_id: os.location_id,
                 external_os_number: os.external_os_number ?? '',
@@ -113,11 +115,12 @@ export default function EditServiceOrderPage() {
                 technician_id: os.technician_id ?? undefined,
                 consultant_id: os.consultant_id ?? undefined,
             });
+            setVideoUrl(os.video_url ?? null);
         }
     }, [os, form]);
 
     const onSubmit = (data: EditServiceOrderFormValues) => {
-        const payload = { ...data } as Record<string, unknown>;
+        const payload = { ...data, video_url: videoUrl } as Record<string, unknown>;
 
         updateServiceOrder.mutate(
             { id: Number(id), data: payload as Partial<CreateServiceOrderData> },
@@ -127,7 +130,7 @@ export default function EditServiceOrderPage() {
                         title: 'OS atualizada com sucesso',
                         description: 'As alterações foram salvas.',
                     });
-                    navigate(`/service-orders/${id}`);
+                    navigate('/service-orders');
                 },
                 onError: (error) => {
                     logger.error(error);
@@ -143,8 +146,8 @@ export default function EditServiceOrderPage() {
 
     const selectedDepartment = form.watch('department') ?? 'film';
 
-    // storeId: uses the OS's store once loaded, falls back to the globally selected store
-    const storeId = os?.location_id || selectedStoreId || undefined;
+    // storeId: usa a loja da própria O.S. assim que carrega
+    const storeId = os?.location_id || undefined;
 
     // Fetch consultants filtered by the store
     const { consultants, isLoading: isLoadingConsultants } = useConsultants(
@@ -175,7 +178,7 @@ export default function EditServiceOrderPage() {
                     variant="ghost"
                     size="icon"
                     aria-label="Voltar"
-                    onClick={() => navigate(`/service-orders/${id}`)}
+                    onClick={() => navigate('/service-orders')}
                     className="text-[#666666] dark:text-zinc-400 hover:text-[#111111] dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-700/50"
                 >
                     <ChevronLeft className="h-4 w-4" />
@@ -331,6 +334,14 @@ export default function EditServiceOrderPage() {
                                                     </SelectTrigger>
                                                 </FormControl>
                                                 <SelectContent className="bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white">
+                                                    {/* Rede de segurança anti-flicker: se o consultor atual da O.S. ainda
+                                                        não está na lista carregada, mostra o nome já conhecido (os.consultant_name)
+                                                        em vez do trigger ficar em branco. */}
+                                                    {field.value != null && !consultants?.some((c) => c.id === Number(field.value)) && (
+                                                        <SelectItem value={field.value.toString()} className="focus:bg-zinc-700 focus:text-white">
+                                                            {os?.consultant_name ?? `Consultor #${field.value}`}
+                                                        </SelectItem>
+                                                    )}
                                                     {isLoadingConsultants ? (
                                                         <div className="p-2 text-sm text-[#666666] dark:text-zinc-400">Carregando...</div>
                                                     ) : consultants?.length === 0 ? (
@@ -372,6 +383,12 @@ export default function EditServiceOrderPage() {
                                                     </SelectTrigger>
                                                 </FormControl>
                                                 <SelectContent className="bg-white dark:bg-[#252525] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white">
+                                                    {/* Rede de segurança anti-flicker: idem consultor, usando os.technician_name */}
+                                                    {field.value != null && !workers?.some((w) => w.id === Number(field.value)) && (
+                                                        <SelectItem value={field.value.toString()} className="focus:bg-zinc-700 focus:text-white">
+                                                            {os?.technician_name ?? `Funcionário #${field.value}`}
+                                                        </SelectItem>
+                                                    )}
                                                     {isLoadingWorkers ? (
                                                         <div className="p-2 text-sm text-[#666666] dark:text-zinc-400">Carregando...</div>
                                                     ) : workers?.length === 0 ? (
@@ -426,6 +443,10 @@ export default function EditServiceOrderPage() {
                                     />
                                 )}
                             </div>
+                            <div className="mt-4 space-y-1">
+                                <span className="text-sm text-[#666666] dark:text-zinc-300">Vídeo da vistoria</span>
+                                <VideoCapture videoUrl={videoUrl} onChange={setVideoUrl} />
+                            </div>
                         </div>
 
                         <FormField
@@ -448,7 +469,7 @@ export default function EditServiceOrderPage() {
                         <div className="flex justify-end gap-4">
                             <Button
                                 type="button"
-                                onClick={() => navigate(`/service-orders/${id}`)}
+                                onClick={() => navigate('/service-orders')}
                                 className="border border-[#D1D1D1] dark:border-[#333333] text-[#666666] dark:text-zinc-300 hover:border-[#F5A800] hover:text-[#F5A800] bg-transparent"
                             >
                                 Cancelar

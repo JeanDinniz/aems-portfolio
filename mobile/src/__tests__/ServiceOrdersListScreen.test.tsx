@@ -45,6 +45,96 @@ jest.mock('@/hooks/useMyPermissions', () => ({
     useCanEdit: () => mockCanEdit,
 }));
 
+// ─── Resumo Diário (PDF): loja, permissões de perfil e exportShare ────────────
+let mockStores: { id: number; name: string; is_galpon_store: boolean }[] = [];
+let mockGlobalStoreId: number | null = null;
+jest.mock('@/hooks/useStores', () => ({
+    useStores: () => ({
+        stores: mockStores,
+        selectedStoreId: mockGlobalStoreId,
+        isMultiStore: mockStores.length > 1,
+        selectStore: jest.fn(),
+    }),
+}));
+
+let mockIsGalponProfile = false;
+jest.mock('@/stores/auth.store', () => ({
+    useAuthStore: (
+        selector: (s: { effectivePermissions: { is_galpon_profile: boolean } | null }) => unknown
+    ) => selector({ effectivePermissions: { is_galpon_profile: mockIsGalponProfile } }),
+}));
+
+const mockDownloadPdf = jest.fn().mockResolvedValue(undefined);
+jest.mock('@/utils/exportShare', () => ({
+    downloadAndSharePdf: (...args: unknown[]) => mockDownloadPdf(...args),
+}));
+
+const mockToastError = jest.fn();
+jest.mock('@/components/ui/Toast', () => {
+    const actual = jest.requireActual('@/components/ui/Toast');
+    return {
+        ...actual,
+        useToast: () => ({
+            success: jest.fn(),
+            error: mockToastError,
+            info: jest.fn(),
+            show: jest.fn(),
+        }),
+    };
+});
+
+jest.mock('@/lib/api-error', () => ({
+    getApiErrorMessage: (_e: unknown, fallback: string) => fallback,
+}));
+
+// Sheet (test-double: renderiza filhos inline).
+jest.mock('@/components/ui/Sheet', () => {
+    const React = require('react');
+    const { View } = require('react-native');
+    const Sheet = React.forwardRef(
+        ({ children }: { children: React.ReactNode }, ref: React.Ref<unknown>) => {
+            React.useImperativeHandle(ref, () => ({ present: jest.fn(), dismiss: jest.fn() }));
+            return React.createElement(View, null, children);
+        }
+    );
+    Sheet.displayName = 'Sheet';
+    return { __esModule: true, Sheet };
+});
+
+// Select (test-double: expõe cada opção como Pressable "opt-<label>").
+jest.mock('@/components/ui/Select', () => {
+    const React = require('react');
+    const { Pressable, Text, View } = require('react-native');
+    const Select = React.forwardRef(
+        (
+            props: {
+                options: { value: number | string; label: string }[];
+                onChange: (v: unknown) => void;
+            },
+            ref: React.Ref<unknown>
+        ) => {
+            React.useImperativeHandle(ref, () => ({ present: jest.fn(), dismiss: jest.fn() }));
+            return React.createElement(
+                View,
+                null,
+                props.options.map((opt) =>
+                    React.createElement(
+                        Pressable,
+                        {
+                            key: String(opt.value),
+                            accessibilityLabel: `opt-${opt.label}`,
+                            onPress: () => props.onChange(opt.value),
+                        },
+                        React.createElement(Text, null, opt.label)
+                    )
+                )
+            );
+        }
+    );
+    Select.displayName = 'Select';
+    return { __esModule: true, Select };
+});
+
 const metrics = {
     frame: { x: 0, y: 0, width: 390, height: 844 },
     insets: { top: 47, left: 0, right: 0, bottom: 34 },
@@ -117,7 +207,21 @@ beforeEach(() => {
     mockListState.isError = false;
     mockCanEdit = false;
     lastFilters = null;
+    mockStores = [
+        { id: 1, name: 'Loja Centro', is_galpon_store: false },
+        { id: 2, name: 'Loja Sul', is_galpon_store: false },
+        { id: 9, name: 'Galpão Central', is_galpon_store: true },
+    ];
+    mockGlobalStoreId = null;
+    mockIsGalponProfile = false;
 });
+
+function todayYMD(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+        d.getDate()
+    ).padStart(2, '0')}`;
+}
 
 describe('ServiceOrdersListScreen — estados', () => {
     it('Loading: mostra subtítulo "Carregando..." (skeleton)', async () => {
@@ -213,5 +317,98 @@ describe('ServiceOrdersListScreen — permissões', () => {
         mockListState.total = 1;
         const { getByText } = await renderScreen();
         expect(getByText('Nova O.S')).toBeTruthy();
+    });
+});
+
+describe('ServiceOrdersListScreen — Resumo Diário (PDF)', () => {
+    it('exige loja: sem loja selecionada, o botão desabilitado não baixa o PDF', async () => {
+        mockGlobalStoreId = null; // "Todas as lojas" + várias lojas → sem pré-seleção
+        const { getByLabelText, getByText } = await renderScreen();
+
+        // Abre o sheet (test-double renderiza inline).
+        await act(async () => {
+            fireEvent.press(getByLabelText('Resumo Diário (PDF)'));
+        });
+
+        // Sem loja escolhida, o botão "Gerar PDF" fica desabilitado: pressioná-lo
+        // não dispara o handler (nem download, nem toast).
+        await act(async () => {
+            fireEvent.press(getByText('Gerar PDF'));
+        });
+        expect(mockDownloadPdf).not.toHaveBeenCalled();
+        expect(mockToastError).not.toHaveBeenCalled();
+    });
+
+    it('gera com store_id (loja global pré-selecionada) e only_completed', async () => {
+        mockGlobalStoreId = 2; // pré-seleciona "Loja Sul"
+        const { getByLabelText, getByText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Resumo Diário (PDF)'));
+        });
+        // Marca "Apenas finalizadas".
+        await act(async () => {
+            fireEvent.press(getByLabelText('Apenas finalizadas'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Gerar PDF'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        const arg = mockDownloadPdf.mock.calls[0][0];
+        expect(arg.path).toBe('/service-orders/export/resumo-diario');
+        expect(arg.params.store_id).toBe(2);
+        expect(arg.params.date).toBe(todayYMD());
+        expect(arg.params.only_completed).toBe(true);
+        expect(arg.filename).toContain('resumo-diario-finalizados');
+    });
+
+    it('sem only_completed: não envia a flag e usa o nome padrão', async () => {
+        mockGlobalStoreId = 1;
+        const { getByLabelText, getByText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Resumo Diário (PDF)'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Gerar PDF'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        const arg = mockDownloadPdf.mock.calls[0][0];
+        expect(arg.params.store_id).toBe(1);
+        expect(arg.params.only_completed).toBeUndefined();
+        expect(arg.filename).toBe(`resumo-diario-${todayYMD()}.pdf`);
+    });
+
+    it('escolher loja no sheet (Todas as lojas) permite gerar', async () => {
+        mockGlobalStoreId = null;
+        const { getByLabelText, getByText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Resumo Diário (PDF)'));
+        });
+        // Seleciona "Loja Centro" via Select-double.
+        await act(async () => {
+            fireEvent.press(getByLabelText('opt-Loja Centro'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Gerar PDF'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        expect(mockDownloadPdf.mock.calls[0][0].params.store_id).toBe(1);
+    });
+
+    it('perfil galpão só oferece a loja de galpão no seletor', async () => {
+        mockGlobalStoreId = null;
+        mockIsGalponProfile = true;
+        const { getByLabelText, queryByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Resumo Diário (PDF)'));
+        });
+        expect(getByLabelText('opt-Galpão Central')).toBeTruthy();
+        expect(queryByLabelText('opt-Loja Centro')).toBeNull();
     });
 });

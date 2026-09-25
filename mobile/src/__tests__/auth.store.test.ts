@@ -45,9 +45,11 @@ describe('auth.store — permissões', () => {
         expect(hasPermission('inventory', 'delete')).toBe(true);
     });
 
-    it('usuário sem permissões carregadas é liberado (evita tela em branco)', () => {
+    it('M2: usuário sem permissões carregadas NEGA (fail-closed)', () => {
+        // O flicker de carregamento é tratado nos hooks useCanView/Edit/Delete
+        // (isLoading libera). hasPermission em si nunca deve liberar sem dados.
         useAuthStore.setState({ user: plainUser, effectivePermissions: null });
-        expect(useAuthStore.getState().hasPermission('service_orders', 'view')).toBe(true);
+        expect(useAuthStore.getState().hasPermission('service_orders', 'view')).toBe(false);
     });
 
     it('usuário respeita as permissões efetivas por ação', () => {

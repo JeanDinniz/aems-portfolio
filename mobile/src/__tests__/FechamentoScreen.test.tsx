@@ -49,9 +49,18 @@ jest.mock('@/services/api/service-orders.service', () => ({
 }));
 
 // ─── Permissão / loja / toast / api-error ────────────────────────────────────
-let mockCanView = true;
+// Conjunto de submódulos visíveis (controlável por teste). `fechamento` = gate
+// da tela; `conference` = trava do botão "Visualizar" por carro (HML-246).
+let mockVisible = new Set<string>(['fechamento', 'conference']);
 jest.mock('@/hooks/useMyPermissions', () => ({
-    useCanView: () => mockCanView,
+    useCanView: (sub: string) => mockVisible.has(sub),
+}));
+// Flag de módulo da Conferência (default OFF em produção) — getter mutável.
+let mockConferenceEnabled = true;
+jest.mock('@/constants/features', () => ({
+    get CONFERENCE_ENABLED() {
+        return mockConferenceEnabled;
+    },
 }));
 jest.mock('@/stores/store.store', () => ({
     useStoreStore: (
@@ -151,12 +160,13 @@ async function renderScreen() {
 
 beforeEach(() => {
     jest.clearAllMocks();
-    mockCanView = true;
+    mockVisible = new Set<string>(['fechamento', 'conference']);
+    mockConferenceEnabled = true;
 });
 
 describe('FechamentoScreen', () => {
     it('gate: sem permissão mostra "Acesso restrito"', async () => {
-        mockCanView = false;
+        mockVisible = new Set<string>();
         setupData([], []);
         const { getByText, queryByLabelText } = await renderScreen();
 
@@ -497,5 +507,124 @@ describe('FechamentoScreen', () => {
 
         expect(getByText('Canceladas')).toBeTruthy();
         expect(getByLabelText('Exportar Canceladas')).toBeTruthy();
+    });
+
+    // ─── HML-246: linhas por carro + botão "Visualizar" ──────────────────────
+    it('expande o card e lista as O.S. por carro (placa, nº OS e valor)', async () => {
+        const verified = [
+            makeOrder({
+                id: 21,
+                department: 'film',
+                plate: 'XYZ7A88',
+                external_os_number: '12345',
+                items: [{ service_id: 1, quantity: 1, unit_price: 150, service_name: 'Película' }],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByText, getAllByText, getByLabelText, queryByText } = await renderScreen();
+
+        // Colapsado: a placa ainda não está visível.
+        expect(queryByText('XYZ7A88')).toBeNull();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Expandir Película'));
+        });
+
+        // Linha por carro visível: placa, nº OS e valor roteado.
+        expect(getByText('XYZ7A88')).toBeTruthy();
+        expect(getByText('OS 12345')).toBeTruthy();
+        // R$ 150,00 aparece na linha (e no total do card).
+        expect(getAllByText('R$ 150,00').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('sem nº OS externo, a linha mostra OS —', async () => {
+        const verified = [
+            makeOrder({
+                id: 22,
+                department: 'film',
+                plate: 'AAA1B22',
+                external_os_number: null,
+                items: [{ service_id: 1, quantity: 1, unit_price: 100, service_name: 'Película' }],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByText, getByLabelText } = await renderScreen();
+        await act(async () => {
+            fireEvent.press(getByLabelText('Expandir Película'));
+        });
+
+        expect(getByText('OS —')).toBeTruthy();
+    });
+
+    it('com acesso à Conferência, o botão "Visualizar" navega para o editor da O.S.', async () => {
+        const verified = [
+            makeOrder({
+                id: 33,
+                department: 'film',
+                plate: 'CAR9J99',
+                external_os_number: '999',
+                items: [{ service_id: 1, quantity: 1, unit_price: 100, service_name: 'Película' }],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByLabelText, navigation } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Expandir Película'));
+        });
+        await act(async () => {
+            fireEvent.press(getByLabelText('Visualizar O.S. CAR9J99'));
+        });
+
+        expect(navigation.navigate).toHaveBeenCalledWith('Tabs', {
+            screen: 'ServiceOrders',
+            params: { screen: 'EditServiceOrder', params: { id: 33 } },
+        });
+    });
+
+    it('sem acesso à Conferência, o botão "Visualizar" NÃO aparece', async () => {
+        // Permissão de conferência ausente (mas fechamento presente).
+        mockVisible = new Set<string>(['fechamento']);
+        const verified = [
+            makeOrder({
+                id: 44,
+                department: 'film',
+                plate: 'NOP4Q44',
+                external_os_number: '444',
+                items: [{ service_id: 1, quantity: 1, unit_price: 100, service_name: 'Película' }],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByLabelText, queryByLabelText } = await renderScreen();
+        await act(async () => {
+            fireEvent.press(getByLabelText('Expandir Película'));
+        });
+
+        expect(queryByLabelText('Visualizar O.S. NOP4Q44')).toBeNull();
+    });
+
+    it('flag CONFERENCE_ENABLED off esconde o botão "Visualizar" mesmo com permissão', async () => {
+        mockConferenceEnabled = false;
+        const verified = [
+            makeOrder({
+                id: 55,
+                department: 'film',
+                plate: 'FLG5R55',
+                external_os_number: '555',
+                items: [{ service_id: 1, quantity: 1, unit_price: 100, service_name: 'Película' }],
+            }),
+        ];
+        setupData(verified, []);
+
+        const { getByLabelText, queryByLabelText } = await renderScreen();
+        await act(async () => {
+            fireEvent.press(getByLabelText('Expandir Película'));
+        });
+
+        expect(queryByLabelText('Visualizar O.S. FLG5R55')).toBeNull();
     });
 });

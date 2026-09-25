@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ExternalLink, Edit, XCircle, Zap, Clock, History, Camera, ImageIcon, Loader2, CheckCircle, Check, ChevronDown } from 'lucide-react'
+import { X, ExternalLink, Edit, XCircle, Zap, Clock, History, Camera, ImageIcon, Loader2, CheckCircle, Check, ChevronDown, Link2, Wrench } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -19,8 +19,10 @@ import { servicesService } from '@/services/api/services.service'
 import { employeesService } from '@/services/api/employees.service'
 import { uploadService } from '@/services/api/upload.service'
 import { useAppointmentHistory, useGenerateOS, useFinalizeOS } from '@/hooks/useScheduling'
+import { useFinalizeRules } from '@/hooks/useFinalizeRules'
 import { useCanView } from '@/hooks/useMyPermissions'
 import { FilmRollSelector } from './FilmRollSelector'
+import { ServiceInstallerSelect } from '@/components/features/service-orders/ServiceInstallerSelect'
 import { CameraCapture } from '@/components/common/CameraCapture'
 import { PhotoDialog } from '@/components/common/PhotoDialog'
 import { compressImage } from '@/utils/imageCompression'
@@ -30,10 +32,27 @@ import { logger } from '@/lib/logger'
 import type { Appointment, FilmEntryItem } from '@/types/scheduling.types'
 import type { Photo } from '@/types/photo.types'
 import type { ServiceItem } from '@/services/api/services.service'
+import { useFormDraft } from '@/hooks/useFormDraft'
+import { DraftRestoredBanner } from '@/components/common/DraftRestoredBanner'
+import { cleanConsultantNotes } from '@/utils/serviceOrderNotes'
 
 // ─── Step type ────────────────────────────────────────────────────────────────
 
 type DrawerStep = 'detail' | 'finalize'
+
+// ─── Rascunho local (localStorage) do step "finalize" ──────────────────────────
+// Chave única — 1 rascunho por vez, restaurado só quando `appointmentId` casa
+// com o agendamento aberto no momento (evita vazar o rascunho de finalização
+// de um agendamento em outro). Nunca inclui fotos (chancelaPhotos/vehiclePhotos).
+const FINALIZE_DRAFT_KEY = 'aems-draft:finalize'
+
+interface FinalizeDraftState {
+  appointmentId: number | null
+  filmRollMap: Record<string, number | undefined>
+  scrapMap: Record<string, boolean>
+  installerMap: Record<number, number[]>
+  selectedEmployeeIds: number[]
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +65,7 @@ interface AppointmentDetailDrawerProps {
   canEdit?: boolean
   canCancel?: boolean
   canGenerateOS?: boolean
+  onOpenSibling?: (id: number) => void
 }
 
 // ─── Helper components ────────────────────────────────────────────────────────
@@ -77,6 +97,8 @@ function formatDateTime(isoStr: string): string {
     minute: '2-digit',
   })
 }
+
+const EXECUTION_NOTES_MAX_LENGTH = 2000
 
 const ACTION_LABELS: Record<string, string> = {
   create: 'Criado',
@@ -137,6 +159,39 @@ function buildServiceLabel(
   }
   if (fe.tonality) parts.push(fe.tonality)
   return parts.join(' ')
+}
+
+// ─── Slots de bobina no Finalizar ─────────────────────────────────────────────
+// Item de tonalidade única = 1 slot (tonality null, comportamento legado).
+// Item com tonalidades por região (applications) = 1 slot POR tonalidade distinta.
+
+interface RollSlot {
+  entry: FilmEntryItem
+  tonality: string | null
+  regions: string[]
+}
+
+function rollSlotKey(serviceId: number, tonality: string | null): string {
+  return `${serviceId}|${tonality ?? ''}`
+}
+
+function buildRollSlots(entries: FilmEntryItem[]): RollSlot[] {
+  return entries.flatMap((fe): RollSlot[] => {
+    const apps = fe.applications ?? []
+    if (apps.length === 0) return [{ entry: fe, tonality: null, regions: [] }]
+    const byTonality = new Map<string, string[]>()
+    for (const app of apps) {
+      if (!app.tonality) continue
+      const regions = byTonality.get(app.tonality) ?? []
+      if (app.region) regions.push(app.region)
+      byTonality.set(app.tonality, regions)
+    }
+    return [...byTonality.entries()].map(([tonality, regions]) => ({
+      entry: fe,
+      tonality,
+      regions,
+    }))
+  })
 }
 
 // ─── PhotoSlot ────────────────────────────────────────────────────────────────
@@ -257,6 +312,7 @@ export function AppointmentDetailDrawer({
   canEdit = true,
   canCancel = true,
   canGenerateOS = true,
+  onOpenSibling,
 }: AppointmentDetailDrawerProps) {
   const overlayRef = useRef<HTMLDivElement>(null)
 
@@ -271,15 +327,22 @@ export function AppointmentDetailDrawer({
 
   // Tela 2 — Generate OS
   const [vehiclePhotos, setVehiclePhotos] = useState<(Photo | undefined)[]>(EMPTY_VEHICLE_PHOTOS)
-  const [notes, setNotes] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
 
   // Tela 4 — Finalize OS
   const [chancelaPhotos, setChancelaPhotos] = useState<(Photo | undefined)[]>(EMPTY_CHANCELA_PHOTOS)
-  const [filmRollMap, setFilmRollMap] = useState<Record<number, number | undefined>>({})
+  // Chave composta `${service_id}|${tonality}` — itens multi-tonalidade têm
+  // um slot de bobina por tonalidade; legados usam tonality vazia
+  const [filmRollMap, setFilmRollMap] = useState<Record<string, number | undefined>>({})
+  const [scrapMap, setScrapMap] = useState<Record<string, boolean>>({})
+  // installerMap: service_id → employee_ids (para depts film/security_film/ppf;
+  // mais de um instalador no mesmo serviço divide a produção igualmente)
+  const [installerMap, setInstallerMap] = useState<Record<number, number[]>>({})
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<number[]>([])
   const [employeesPopoverOpen, setEmployeesPopoverOpen] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
+  // Relato técnico do instalador na finalização — visível na Conferência.
+  const [executionNotes, setExecutionNotes] = useState('')
 
   const generateOS = useGenerateOS()
   const finalizeOS = useFinalizeOS()
@@ -291,15 +354,52 @@ export function AppointmentDetailDrawer({
       prev.forEach((p) => p && URL.revokeObjectURL(p.preview))
       return EMPTY_VEHICLE_PHOTOS.slice()
     })
-    setNotes(appointment?.notes ?? '')
     setChancelaPhotos((prev) => {
       prev.forEach((p) => p && URL.revokeObjectURL(p.preview))
       return EMPTY_CHANCELA_PHOTOS.slice()
     })
     setFilmRollMap({})
+    setScrapMap({})
+    setInstallerMap({})
     setSelectedEmployeeIds([])
+    setExecutionNotes('')
     setViewPhotoUrl(null)
   }, [appointment?.id, open])
+
+  // ─── Rascunho local (localStorage) do step finalize ──────────────────────
+  // Habilitado só ao entrar no step "finalize" — o efeito acima já zerou os
+  // maps ao abrir/trocar de agendamento; quando o rascunho é compatível
+  // (mesmo appointmentId), ele hidrata os maps por cima do estado zerado.
+  const finalizeDraftValue = useMemo<FinalizeDraftState>(() => ({
+    appointmentId: appointment?.id ?? null,
+    filmRollMap,
+    scrapMap,
+    installerMap,
+    selectedEmployeeIds,
+  }), [appointment?.id, filmRollMap, scrapMap, installerMap, selectedEmployeeIds])
+
+  const { discard: discardFinalizeDraft, restored: finalizeDraftRestored } = useFormDraft<FinalizeDraftState>({
+    key: FINALIZE_DRAFT_KEY,
+    enabled: open && step === 'finalize',
+    value: finalizeDraftValue,
+    onRestore: (draft) => {
+      if (draft.appointmentId !== (appointment?.id ?? null)) return false
+      setFilmRollMap(draft.filmRollMap)
+      setScrapMap(draft.scrapMap)
+      setInstallerMap(draft.installerMap)
+      setSelectedEmployeeIds(draft.selectedEmployeeIds)
+      return true
+    },
+    // Só persiste quando há seleção REAL — checa o valor, não só a presença da
+    // chave: togglar retalho ou limpar bobina/instalador deixa `{chave: false}`
+    // / `{chave: []}` / `{chave: undefined}` residual, que não deve gravar um
+    // rascunho semanticamente vazio (senão o banner reaparece num finalize limpo).
+    shouldPersist: (v) =>
+      Object.values(v.filmRollMap).some((r) => r != null) ||
+      Object.values(v.scrapMap).some(Boolean) ||
+      Object.values(v.installerMap).some((ids) => ids.length > 0) ||
+      v.selectedEmployeeIds.length > 0,
+  })
 
   // ── Keyboard / scroll lock ────────────────────────────────────────────────
   useEffect(() => {
@@ -323,11 +423,17 @@ export function AppointmentDetailDrawer({
   const serviceIds = appointment?.service_ids ?? []
   const dept = appointment?.department ?? ''
   const isFilmDept = dept === 'film' || dept === 'security_film' || dept === 'ppf'
+  // Owner pode finalizar sem foto da chancela e sem bobina (limpeza de backlog).
+  // Regras centralizadas em useFinalizeRules (paridade com o FinalizeOSModal).
+  // Backend também isenta o Owner; instalador segue obrigatório para todos.
+  const { isOwner, requiredPhotos: requiredChancela, isRollRequired } = useFinalizeRules()
   const filmEntries = appointment?.film_entries ?? []
+  const rollSlots = useMemo(() => buildRollSlots(filmEntries), [filmEntries])
 
   const { data: allServicesData } = useQuery({
     queryKey: ['services', 'all-for-drawer'],
-    queryFn: () => servicesService.list({ limit: 500 }),
+    // limit 1000 = teto do endpoint; catálogo completo (com 500 já ficavam serviços de fora)
+    queryFn: () => servicesService.list({ limit: 1000 }),
     staleTime: 1000 * 60 * 10,
     enabled: serviceIds.length > 0 || isFilmDept,
   })
@@ -339,7 +445,13 @@ export function AppointmentDetailDrawer({
   }, [allServicesData])
 
   // Bobina obrigatória só para Película comum. PPF e Película de Segurança têm bobina opcional.
-  const isPpfEntry = (fe: FilmEntryItem) => allServiceMap[fe.service_id]?.department === 'ppf'
+  // Serviço fora do mapa (catálogo ainda carregando etc.) herda o departamento da O.S. —
+  // na dúvida, EXIGE a bobina em vez de liberar.
+  // Categoria efetiva do item: a do serviço (catálogo) e, na dúvida, a da O.S.
+  const effectiveCategory = (fe: FilmEntryItem) =>
+    allServiceMap[fe.service_id]?.department ?? dept
+  const isRollRequiredEntry = (fe: FilmEntryItem) =>
+    isRollRequired(effectiveCategory(fe))
 
   const { data: historyData } = useAppointmentHistory(appointment?.id ?? null)
 
@@ -415,7 +527,13 @@ export function AppointmentDetailDrawer({
   const config = APPOINTMENT_STATUS_CONFIG[appointment.display_status]
   const deptLabel = DEPARTMENT_LABELS[appointment.department] ?? appointment.department
   const deptBadge = DEPARTMENT_BADGE_COLORS[appointment.department] ?? ''
+  // isActive: sem O.S. vinculada — mostra formulário de fotos + botão Gerar O.S.
   const isActive = appointment.status === 'scheduled' && !appointment.service_order_id
+  // isEditable: pode abrir o formulário de edição — permitido enquanto a O.S. não está
+  // finalizada/cancelada (o backend aceita edição mesmo com O.S. gerada em andamento)
+  const isEditable =
+    appointment.display_status !== 'finalizado' &&
+    appointment.display_status !== 'cancelado'
   const isInProgress = !!appointment.service_order_id &&
     (appointment.display_status === 'em_execucao' || appointment.display_status === 'atrasado')
   const isLinkedToOS = !!appointment.service_order_id
@@ -433,7 +551,7 @@ export function AppointmentDetailDrawer({
       generateOS.mutate(
         {
           id: appointment.id,
-          payload: { photos: photoUrls, notes: notes.trim() || undefined },
+          payload: { photos: photoUrls, notes: appointment.notes?.trim() || undefined },
         },
         {
           onSuccess: () => {
@@ -448,40 +566,92 @@ export function AppointmentDetailDrawer({
     }
   }
 
+  // Bobina obrigatória: falta quando o slot exige bobina e nem filme nem
+  // retalho (scrap) foram selecionados. Compartilhado entre a validação do
+  // handler e o `disabled` do botão para não divergir (recalcula a cada render).
+  const hasMissingRequiredRoll = rollSlots
+    .filter((slot) => isRollRequiredEntry(slot.entry))
+    .some((slot) => {
+      const key = rollSlotKey(slot.entry.service_id, slot.tonality)
+      return !filmRollMap[key] && !scrapMap[key]
+    })
+
   // ── Finalize OS handler ───────────────────────────────────────────────────
   const handleSubmitFinalize = async () => {
     if (!appointment.service_order_id) return
     const filledChancela = chancelaPhotos.filter(Boolean) as Photo[]
-    if (filledChancela.length < 1) {
+    if (filledChancela.length < requiredChancela) {
       toast({ variant: 'destructive', title: 'Foto obrigatoria', description: 'Adicione pelo menos 1 foto da chancela.' })
       return
     }
-    if (appointment.department === 'film' && filmEntries.filter((fe) => !isPpfEntry(fe)).some((fe) => !filmRollMap[fe.service_id])) {
-      toast({ variant: 'destructive', title: 'Bobina obrigatoria', description: 'Selecione uma bobina para cada película.' })
+    if (hasMissingRequiredRoll) {
+      toast({ variant: 'destructive', title: 'Bobina obrigatoria', description: 'Selecione uma bobina para cada película (e cada tonalidade).' })
       return
     }
-    if (selectedEmployeeIds.length === 0) {
-      toast({ variant: 'destructive', title: 'Funcionário obrigatorio', description: 'Selecione pelo menos um funcionário para finalizar.' })
-      return
+    // Validação de instalador: para film/security_film/ppf cada serviço precisa
+    // de um instalador. P1 (auditoria): departamentos NÃO-película não exigem
+    // funcionário para finalizar — igual ao FinalizeOSModal e ao backend
+    // (finalize_service_order). Antes o drawer travava a finalização de estética
+    // sem funcionário, divergindo do caminho da tela de O.S.
+    if (isFilmDept) {
+      const filmDeptEntries = filmEntries.length > 0
+        ? filmEntries
+        : (appointment.service_ids ?? []).map((id) => ({ service_id: id }))
+      const missingInstaller = filmDeptEntries.some(
+        (fe) => (installerMap[fe.service_id]?.length ?? 0) === 0
+      )
+      if (missingInstaller) {
+        toast({ variant: 'destructive', title: 'Instalador obrigatório', description: 'Selecione um instalador para cada serviço.' })
+        return
+      }
     }
     setIsFinalizing(true)
     try {
       const uploaded = await uploadService.uploadPhotos(filledChancela)
       const photoUrls = uploaded.map((u) => u.url)
-      const assignments = Object.entries(filmRollMap)
-        .filter(([, rollId]) => rollId !== undefined)
-        .map(([serviceId, rollId]) => ({ service_id: Number(serviceId), film_roll_id: rollId! }))
+      const assignments = rollSlots
+        .map((slot) => {
+          const key = rollSlotKey(slot.entry.service_id, slot.tonality)
+          return {
+            slot,
+            rollId: filmRollMap[key],
+            isScrap: scrapMap[key] ?? false
+          }
+        })
+        .filter(({ rollId, isScrap }) => rollId !== undefined || isScrap)
+        .map(({ slot, rollId, isScrap }) => ({
+          service_id: slot.entry.service_id,
+          used_scrap: isScrap,
+          ...(isScrap ? {} : { film_roll_id: rollId! }),
+          ...(slot.tonality ? { tonality: slot.tonality } : {}),
+        }))
+
+      // Para film/security_film/ppf: employee_assignments por serviço
+      // Para demais depts: employee_ids (multi-select geral)
+      const employeeAssignments = isFilmDept
+        ? Object.entries(installerMap)
+            .filter(([, employeeIds]) => employeeIds.length > 0)
+            .map(([serviceId, employeeIds]) => ({
+              service_id: Number(serviceId),
+              employee_ids: employeeIds,
+            }))
+        : undefined
+
       finalizeOS.mutate(
         {
           serviceOrderId: appointment.service_order_id,
           payload: {
             completion_photos: photoUrls,
             film_roll_assignments: assignments,
-            employee_ids: selectedEmployeeIds,
+            employee_ids: isFilmDept ? [] : selectedEmployeeIds,
+            ...(employeeAssignments ? { employee_assignments: employeeAssignments } : {}),
+            // Vazio = omitir (preserva relato já gravado, ex.: pelo editor da Conferência)
+            ...(executionNotes.trim() ? { execution_notes: executionNotes.trim() } : {}),
           },
         },
         {
           onSuccess: () => {
+            discardFinalizeDraft()
             onClose()
           },
           onSettled: () => setIsFinalizing(false),
@@ -496,6 +666,9 @@ export function AppointmentDetailDrawer({
   // ── Derived counts ────────────────────────────────────────────────────────
   const vehicleFilledCount = vehiclePhotos.filter(Boolean).length
   const chancelaFilledCount = chancelaPhotos.filter(Boolean).length
+  // Briefing do consultor (copiado para a O.S. ao gerar) — exibido read-only
+  // acima do relato técnico do instalador, na finalização.
+  const consultantBriefing = cleanConsultantNotes(appointment.notes || appointment.service_order_notes)
 
   // ── Render ────────────────────────────────────────────────────────────────
   return createPortal(
@@ -611,15 +784,31 @@ export function AppointmentDetailDrawer({
                             const baseLabel = fe.service_name
                               ? `${fe.service_code ? `[${fe.service_code}] ` : ''}${fe.service_name}`
                               : (svc ? `${svc.code ? `[${svc.code}] ` : ''}${svc.name}` : `Serviço #${fe.service_id}`)
-                            const label = `${baseLabel}${fe.tonality ? ` — ${fe.tonality}` : ''}`
+                            const hasApplications = !!fe.applications && fe.applications.length > 0
+                            const label = hasApplications
+                              ? baseLabel
+                              : `${baseLabel}${fe.tonality ? ` — ${fe.tonality}` : ''}`
                             return (
                               <span
                                 key={fe.service_id}
                                 className="inline-flex flex-col items-start text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-md px-2 py-0.5 border border-blue-200 dark:border-blue-800"
                               >
                                 <span>{label}</span>
+                                {/* Tonalidades por região — destaque para o instalador */}
+                                {hasApplications &&
+                                  fe.applications!.map((app, appIdx) => (
+                                    <span key={appIdx} className="font-semibold">
+                                      {app.tonality}
+                                      {app.region ? ` — ${app.region}` : ''}
+                                      {app.film_roll_code && (
+                                        <span className="font-mono font-normal text-[11px] opacity-80 ml-1">
+                                          ({app.film_roll_code})
+                                        </span>
+                                      )}
+                                    </span>
+                                  ))}
                                 {/* Bobina utilizada (atribuída no Finalizar da O.S.) */}
-                                {fe.film_roll_code && (
+                                {!hasApplications && fe.film_roll_code && (
                                   <span className="font-mono text-[11px] opacity-80">
                                     {fe.film_roll_code}
                                   </span>
@@ -698,32 +887,13 @@ export function AppointmentDetailDrawer({
                   </div>
                 )}
 
-                {/* Notes field — only on isActive (Tela 2) */}
-                {isActive && (
-                  <div className="space-y-1.5">
-                    <Label
-                      htmlFor="drawer-notes"
-                      className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                    >
-                      Observacoes
-                    </Label>
-                    <Textarea
-                      id="drawer-notes"
-                      placeholder="Observacoes adicionais para a O.S. (opcional)"
-                      value={notes}
-                      onChange={(e) => setNotes(e.target.value)}
-                      rows={3}
-                      className="resize-none text-sm border border-gray-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 focus-visible:ring-[#F5A800]"
-                    />
-                  </div>
-                )}
-
-                {/* Saved notes (displayed when not active) — fallback para as
+                {/* Observações — SOMENTE LEITURA. A alteração é feita exclusivamente
+                    pelo botão "Editar" (abre o AppointmentForm). Fallback para as
                     observações da O.S. (incluem as digitadas ao Gerar O.S.) */}
-                {!isActive && (appointment.notes || appointment.service_order_notes) && (
+                {(appointment.notes || appointment.service_order_notes) && (
                   <div className="rounded-lg border dark:border-zinc-700 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1">
-                      Observacoes
+                      Observações
                     </p>
                     <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
                       {appointment.notes || appointment.service_order_notes}
@@ -799,6 +969,60 @@ export function AppointmentDetailDrawer({
                     </div>
                   )}
                 </div>
+
+                {/* Agendamentos vinculados (mesmo grupo combinado) */}
+                {(appointment.group_siblings?.length ?? 0) > 0 && (
+                  <div className="rounded-lg border dark:border-zinc-700 p-3 space-y-2">
+                    <div className="flex items-center gap-1.5">
+                      <Link2 className="h-3.5 w-3.5 text-violet-500" />
+                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                        Agendamentos vinculados (mesmo carro)
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      {appointment.group_siblings!.map((sibling) => {
+                        const siblingDeptLabel = DEPARTMENT_LABELS[sibling.department] ?? sibling.department
+                        const siblingDeptBadge = DEPARTMENT_BADGE_COLORS[sibling.department] ?? 'bg-gray-100 text-gray-700'
+                        const siblingStatusConfig = APPOINTMENT_STATUS_CONFIG[sibling.display_status]
+                        return (
+                          <button
+                            key={sibling.id}
+                            type="button"
+                            onClick={() => onOpenSibling?.(sibling.id)}
+                            className="w-full flex items-center justify-between gap-2 rounded-md border dark:border-zinc-600 px-2.5 py-2 bg-white dark:bg-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-700/50 transition-colors text-left group"
+                            aria-label={`Abrir agendamento de ${siblingDeptLabel}`}
+                          >
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={cn(
+                                  'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium',
+                                  siblingDeptBadge
+                                )}
+                              >
+                                {siblingDeptLabel}
+                              </span>
+                              <span
+                                className="text-[10px] font-semibold rounded-full px-2 py-0.5"
+                                style={{
+                                  backgroundColor: `${siblingStatusConfig.color}20`,
+                                  color: siblingStatusConfig.color,
+                                }}
+                              >
+                                {siblingStatusConfig.label}
+                              </span>
+                              {sibling.service_order_id && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  O.S. #{sibling.service_order_id}
+                                </span>
+                              )}
+                            </div>
+                            <ExternalLink className="h-3 w-3 text-muted-foreground group-hover:text-gray-700 dark:group-hover:text-gray-300 shrink-0 transition-colors" />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -855,7 +1079,7 @@ export function AppointmentDetailDrawer({
                   </>
                 )}
 
-                {/* Tela 3: in progress (OS gerada, em execucao) */}
+                {/* Tela 3: in progress (OS gerada, em execucao / atrasado) */}
                 {isInProgress && (
                   <>
                     <Button
@@ -865,18 +1089,59 @@ export function AppointmentDetailDrawer({
                       <CheckCircle className="h-4 w-4 mr-2" />
                       Finalizar
                     </Button>
+                    <div className="flex gap-2">
+                      {canEdit && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onEdit(appointment)}
+                          className="flex items-center gap-1.5"
+                        >
+                          <Edit className="h-3.5 w-3.5" />
+                          Editar
+                        </Button>
+                      )}
+                      {canCancel && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onCancel(appointment)}
+                          className="self-start flex items-center gap-1.5 text-red-600 border-red-200 hover:bg-red-50 dark:text-red-400 dark:border-red-700 dark:hover:bg-red-900/20"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          Cancelar
+                        </Button>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* Tela com OS gerada mas não em execução nem terminal (ex.: duplicidade) */}
+                {isLinkedToOS && !isInProgress && !isActive && isEditable && (
+                  <div className="flex gap-2">
+                    {canEdit && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onEdit(appointment)}
+                        className="flex items-center gap-1.5"
+                      >
+                        <Edit className="h-3.5 w-3.5" />
+                        Editar
+                      </Button>
+                    )}
                     {canCancel && (
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => onCancel(appointment)}
-                        className="self-start flex items-center gap-1.5 text-red-600 border-red-200 hover:bg-red-50 dark:text-red-400 dark:border-red-700 dark:hover:bg-red-900/20"
+                        className="flex items-center gap-1.5 text-red-600 border-red-200 hover:bg-red-50 dark:text-red-400 dark:border-red-700 dark:hover:bg-red-900/20"
                       >
                         <XCircle className="h-3.5 w-3.5" />
                         Cancelar
                       </Button>
                     )}
-                  </>
+                  </div>
                 )}
 
                 {/* Linked but not in progress (e.g. completed) — abre a O.S. na
@@ -907,6 +1172,11 @@ export function AppointmentDetailDrawer({
           <>
             <div className="flex-1 overflow-y-auto">
               <div className="px-4 py-4 space-y-4">
+                {finalizeDraftRestored && (
+                  <DraftRestoredBanner
+                    onDiscard={() => { discardFinalizeDraft(); setFilmRollMap({}); setScrapMap({}); setInstallerMap({}); setSelectedEmployeeIds([]) }}
+                  />
+                )}
                 {/* Vehicle summary */}
                 <div className="space-y-3">
                   <div className="flex items-baseline gap-3">
@@ -936,20 +1206,29 @@ export function AppointmentDetailDrawer({
                   </div>
                 </div>
 
+                {isOwner && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                    Como proprietário, foto da chancela e bobina são opcionais nesta finalização.
+                  </div>
+                )}
                 {/* Chancela photos */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Foto da chancela <span className="text-destructive">*</span>
+                      Foto da chancela {!isOwner && <span className="text-destructive">*</span>}
                     </Label>
-                    <span
-                      className={cn(
-                        'text-xs font-medium',
-                        chancelaFilledCount >= 1 ? 'text-green-600' : 'text-muted-foreground'
-                      )}
-                    >
-                      {chancelaFilledCount}/1 minimo
-                    </span>
+                    {isOwner ? (
+                      <span className="text-xs font-medium text-muted-foreground">opcional</span>
+                    ) : (
+                      <span
+                        className={cn(
+                          'text-xs font-medium',
+                          chancelaFilledCount >= 1 ? 'text-green-600' : 'text-muted-foreground'
+                        )}
+                      >
+                        {chancelaFilledCount}/1 minimo
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-4 gap-2">
                     {chancelaPhotos.map((photo, i) => (
@@ -970,81 +1249,149 @@ export function AppointmentDetailDrawer({
                     <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Bobinas
                     </Label>
-                    {filmEntries.map((fe) => (
-                      <FilmRollSelector
-                        key={fe.service_id}
-                        storeId={appointment.store_id}
-                        isGalpon={appointment.is_galpon}
-                        department={dept}
-                        serviceId={fe.service_id}
-                        tonality={fe.tonality}
-                        serviceName={buildServiceLabel(fe, allServiceMap)}
-                        filmTypeId={fe.film_type_id ?? appointment.film_type_id ?? undefined}
-                        value={filmRollMap[fe.service_id]}
-                        onChange={(rollId) =>
-                          setFilmRollMap((prev) => ({ ...prev, [fe.service_id]: rollId }))
-                        }
-                        required={appointment.department === 'film' && !isPpfEntry(fe)}
-                        showLabel={true}
-                      />
-                    ))}
+                    {rollSlots.map((slot) => {
+                      const key = rollSlotKey(slot.entry.service_id, slot.tonality)
+                      const baseLabel = buildServiceLabel(
+                        slot.tonality ? { ...slot.entry, tonality: slot.tonality } : slot.entry,
+                        allServiceMap
+                      )
+                      const label = slot.regions.length > 0
+                        ? `${baseLabel} (${slot.regions.join(', ')})`
+                        : baseLabel
+                      return (
+                        <FilmRollSelector
+                          key={key}
+                          storeId={appointment.store_id}
+                          isGalpon={appointment.is_galpon}
+                          department={dept}
+                          serviceId={slot.entry.service_id}
+                          tonality={slot.tonality ?? slot.entry.tonality}
+                          serviceName={label}
+                          filmTypeId={slot.entry.film_type_id ?? appointment.film_type_id ?? undefined}
+                          value={filmRollMap[key]}
+                          onChange={(rollId) =>
+                            setFilmRollMap((prev) => ({ ...prev, [key]: rollId }))
+                          }
+                          usedScrap={scrapMap[key] ?? false}
+                          onUsedScrapChange={(v) =>
+                            setScrapMap((prev) => ({ ...prev, [key]: v }))
+                          }
+                          allowNoRoll={effectiveCategory(slot.entry) !== 'film'}
+                          showLabel={true}
+                        />
+                      )
+                    })}
                   </div>
                 )}
 
-                {/* Employee selector */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Funcionarios <span className="text-destructive">*</span>
+                {/* Employee selector — por serviço para film/security_film/ppf; multi-select para demais */}
+                {isFilmDept ? (
+                  <div className="space-y-3">
+                    <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Instaladores <span className="text-destructive">*</span>
+                    </Label>
+                    {(filmEntries.length > 0
+                      ? filmEntries
+                      : (appointment.service_ids ?? []).map((id) => ({ service_id: id, service_name: null, service_code: null, tonality: null, film_type_id: null }))
+                    ).map((fe) => (
+                      <ServiceInstallerSelect
+                        key={fe.service_id}
+                        label={buildServiceLabel(fe as FilmEntryItem, allServiceMap)}
+                        employees={filteredEmployees}
+                        value={installerMap[fe.service_id] ?? []}
+                        onChange={(ids) =>
+                          setInstallerMap((prev) => ({ ...prev, [fe.service_id]: ids }))
+                        }
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Funcionários <span className="text-destructive">*</span>
+                    </Label>
+                    <Popover open={employeesPopoverOpen} onOpenChange={setEmployeesPopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={employeesPopoverOpen}
+                          className="w-full justify-between font-normal"
+                        >
+                          <span className="truncate">
+                            {selectedEmployeeIds.length === 0
+                              ? 'Selecionar funcionário...'
+                              : `${selectedEmployeeIds.length} funcionário(s) selecionado(s)`}
+                          </span>
+                          <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[--radix-popover-trigger-width] p-1" align="start">
+                        <div className="max-h-48 overflow-y-auto space-y-0.5">
+                          {filteredEmployees.length === 0 ? (
+                            <p className="px-2 py-1.5 text-sm text-muted-foreground">Nenhum funcionário disponível</p>
+                          ) : (
+                            filteredEmployees.map((emp) => {
+                              const isSelected = selectedEmployeeIds.includes(emp.id)
+                              return (
+                                <button
+                                  key={emp.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedEmployeeIds((prev) =>
+                                      isSelected ? prev.filter((id) => id !== emp.id) : [...prev, emp.id]
+                                    )
+                                  }
+                                  className="flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 cursor-pointer hover:bg-accent select-none text-left transition-colors"
+                                >
+                                  <div className={cn(
+                                    'w-4 h-4 rounded-sm border-2 flex items-center justify-center shrink-0',
+                                    isSelected ? 'border-[#F5A800] bg-[#F5A800]' : 'border-[#D1D1D1] dark:border-[#555555]'
+                                  )}>
+                                    {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                  </div>
+                                  <span className="text-sm">{emp.name}{emp.last_name ? ` ${emp.last_name}` : ''}</span>
+                                </button>
+                              )
+                            })
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                )}
+
+                {/* Relato técnico do instalador (opcional) */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Wrench className="h-3.5 w-3.5" aria-hidden />
+                    Relato técnico (opcional)
                   </Label>
-                  <Popover open={employeesPopoverOpen} onOpenChange={setEmployeesPopoverOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        role="combobox"
-                        aria-expanded={employeesPopoverOpen}
-                        className="w-full justify-between font-normal"
-                      >
-                        <span className="truncate">
-                          {selectedEmployeeIds.length === 0
-                            ? 'Selecionar funcionario...'
-                            : `${selectedEmployeeIds.length} funcionário(s) selecionado(s)`}
-                        </span>
-                        <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-[--radix-popover-trigger-width] p-1" align="start">
-                      <div className="max-h-48 overflow-y-auto space-y-0.5">
-                        {filteredEmployees.length === 0 ? (
-                          <p className="px-2 py-1.5 text-sm text-muted-foreground">Nenhum funcionário disponível</p>
-                        ) : (
-                          filteredEmployees.map((emp) => {
-                            const isSelected = selectedEmployeeIds.includes(emp.id)
-                            return (
-                              <button
-                                key={emp.id}
-                                type="button"
-                                onClick={() =>
-                                  setSelectedEmployeeIds((prev) =>
-                                    isSelected ? prev.filter((id) => id !== emp.id) : [...prev, emp.id]
-                                  )
-                                }
-                                className="flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 cursor-pointer hover:bg-accent select-none text-left transition-colors"
-                              >
-                                <div className={cn(
-                                  'w-4 h-4 rounded-sm border-2 flex items-center justify-center shrink-0',
-                                  isSelected ? 'border-[#F5A800] bg-[#F5A800]' : 'border-[#D1D1D1] dark:border-[#555555]'
-                                )}>
-                                  {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
-                                </div>
-                                <span className="text-sm">{emp.name}{emp.last_name ? ` ${emp.last_name}` : ''}</span>
-                              </button>
-                            )
-                          })
-                        )}
+                  <p className="text-xs text-muted-foreground">
+                    Registre avarias prévias, dificuldades na aplicação ou qualquer ocorrência da execução. Visível para a conferência.
+                  </p>
+                  {consultantBriefing && (
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                        Briefing do Consultor
+                      </span>
+                      <div className="max-h-24 overflow-y-auto rounded-md border border-[#D1D1D1] bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap dark:border-[#333333]">
+                        {consultantBriefing}
                       </div>
-                    </PopoverContent>
-                  </Popover>
+                    </div>
+                  )}
+                  <Textarea
+                    value={executionNotes}
+                    onChange={(e) => setExecutionNotes(e.target.value.slice(0, EXECUTION_NOTES_MAX_LENGTH))}
+                    rows={3}
+                    maxLength={EXECUTION_NOTES_MAX_LENGTH}
+                    placeholder="Ex.: risco pré-existente na porta traseira esquerda; borracha do vidro ressecada."
+                    className="resize-none text-sm"
+                  />
+                  <div className="text-right text-[11px] text-muted-foreground">
+                    {executionNotes.length}/{EXECUTION_NOTES_MAX_LENGTH}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1056,9 +1403,12 @@ export function AppointmentDetailDrawer({
                 onClick={handleSubmitFinalize}
                 disabled={
                   isFinalizing ||
-                  chancelaFilledCount < 1 ||
-                  selectedEmployeeIds.length === 0 ||
-                  (appointment.department === 'film' && filmEntries.filter((fe) => !isPpfEntry(fe)).some((fe) => !filmRollMap[fe.service_id]))
+                  chancelaFilledCount < requiredChancela ||
+                  // P1 (auditoria): instalador obrigatório só para película; estética
+                  // não exige funcionário (paridade com FinalizeOSModal/backend).
+                  (isFilmDept &&
+                    (filmEntries.length > 0 ? filmEntries : (appointment.service_ids ?? []).map((id) => ({ service_id: id }))).some((fe) => (installerMap[fe.service_id]?.length ?? 0) === 0)) ||
+                  hasMissingRequiredRoll
                 }
               >
                 {isFinalizing ? (
@@ -1076,7 +1426,7 @@ export function AppointmentDetailDrawer({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setStep('detail')}
+                onClick={() => { discardFinalizeDraft(); setStep('detail') }}
                 className="self-start"
               >
                 Cancelar

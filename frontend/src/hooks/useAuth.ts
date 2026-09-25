@@ -1,19 +1,23 @@
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth.store';
 import { authService } from '@/services/api/auth.service';
 import type { LoginCredentials } from '@/types/auth.types';
 import { useToast } from '@/hooks/use-toast';
+import { unsubscribeWebPush } from '@/services/webPush';
 
 export function useAuth() {
     const navigate = useNavigate();
     const { toast } = useToast();
+    const queryClient = useQueryClient();
     const { user, tokens, isAuthenticated, setAuth, clearAuth } = useAuthStore();
 
     const loginMutation = useMutation({
         mutationFn: (credentials: LoginCredentials) => authService.login(credentials),
         onSuccess: (data) => {
+            // Zera o cache de dados do usuário anterior (troca de conta na mesma aba)
+            queryClient.clear();
             setAuth(data.user, data.tokens);
 
             if (data.user.must_change_password) {
@@ -36,8 +40,10 @@ export function useAuth() {
 
     const logoutMutation = useMutation({
         mutationFn: async () => authService.logout(),
-        onSettled: () => {
+        onSettled: async () => {
+            try { await unsubscribeWebPush() } catch { /* best-effort */ }
             clearAuth();
+            queryClient.clear();
             navigate('/login');
             toast({
                 title: 'Logout realizado',

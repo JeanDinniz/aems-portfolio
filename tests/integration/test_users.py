@@ -26,16 +26,43 @@ class TestListUsers:
         assert len(data["items"]) >= 2
 
     @pytest.mark.asyncio
-    async def test_list_users_as_operator(
+    async def test_list_users_non_owner_without_grant_denied(
         self, authenticated_client: AsyncClient, test_user: User, test_store: Store
     ):
-        """Operator should only see users from their store."""
+        """A2 (auditoria): GET /users agora exige users:can_view (ou Owner).
+
+        `authenticated_client` só tem grant de service_orders → 403. Antes qualquer
+        autenticado listava os usuários da sua loja (vazamento de dados pessoais).
+        Comboboxes de vínculo/perfil migraram para GET /users/selectable.
+        """
+        response = await authenticated_client.get("/api/v1/users")
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_list_users_non_owner_with_users_grant(
+        self,
+        authenticated_client: AsyncClient,
+        test_user: User,
+        test_user_profile,
+        db_session,
+    ):
+        """Não-owner COM grant users:can_view pode listar."""
+        from app.modules.access_profiles.models import AccessProfileModulePermission
+
+        db_session.add(
+            AccessProfileModulePermission(
+                profile_id=test_user_profile.id,
+                module_group="ADMINISTRATIVO",
+                sub_module="users",
+                can_view=True,
+                can_edit=False,
+                can_delete=False,
+            )
+        )
+        await db_session.commit()
+
         response = await authenticated_client.get("/api/v1/users")
         assert response.status_code == 200
-        data = response.json()
-        # Should only see users from their store
-        for user in data["items"]:
-            assert user["store_id"] == test_store.id or user["store_id"] is None
 
     @pytest.mark.asyncio
     async def test_list_users_filter_by_role(
@@ -53,6 +80,50 @@ class TestListUsers:
         """Unauthenticated request should return 401."""
         response = await client.get("/api/v1/users")
         assert response.status_code == 401
+
+
+class TestListUsersEmployeeLink:
+    """Tests for GET /api/v1/users?has_employee=... e employee_name no response."""
+
+    @pytest.mark.asyncio
+    async def test_has_employee_filter_and_employee_fields(
+        self,
+        owner_client: AsyncClient,
+        test_user: User,
+        test_employee,
+        db_session,
+    ):
+        """Linked user appears in has_employee=true with employee_id/name filled."""
+        test_employee.user_id = test_user.id
+        await db_session.commit()
+
+        response = await owner_client.get("/api/v1/users?has_employee=true")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == test_user.id
+        assert items[0]["employee_id"] == test_employee.id
+        assert items[0]["employee_name"] == test_employee.name
+
+        # has_employee=false não inclui o vinculado (owner segue aparecendo)
+        response = await owner_client.get("/api/v1/users?has_employee=false")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert all(u["id"] != test_user.id for u in items)
+        assert all(u["employee_id"] is None for u in items)
+
+    @pytest.mark.asyncio
+    async def test_unlinked_users_have_null_employee_fields(
+        self,
+        owner_client: AsyncClient,
+        test_user: User,
+    ):
+        """Sem vínculo, employee_id/employee_name vêm nulos na listagem."""
+        response = await owner_client.get("/api/v1/users")
+        assert response.status_code == 200
+        for user in response.json()["items"]:
+            assert user["employee_id"] is None
+            assert user["employee_name"] is None
 
 
 class TestGetUser:
@@ -99,6 +170,39 @@ class TestCreateUser:
         assert data["email"] == "newuser@test.com"
         assert data["must_change_password"] is True
         assert data["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_create_user_dispatches_welcome_email(
+        self, owner_client: AsyncClient, test_store: Store
+    ):
+        """Criar usuário enfileira e-mail de boas-vindas com link para definir senha."""
+        from unittest.mock import AsyncMock, patch
+
+        # Mocka o issue_password_token (evita o Redis, que também é usado pelo auth
+        # da request — mockar o Redis direto quebraria a autenticação do owner_client).
+        with (
+            patch(
+                "app.modules.auth.service.issue_password_token",
+                new=AsyncMock(return_value="tok123"),
+            ),
+            patch("app.workers.tasks.send_transactional_email.delay") as mock_delay,
+        ):
+            response = await owner_client.post(
+                "/api/v1/users",
+                json={
+                    "email": "welcome@test.com",
+                    "password": "NewUser123!@",
+                    "full_name": "Welcome User",
+                    "role": "user",
+                    "store_id": test_store.id,
+                },
+            )
+
+        assert response.status_code == 201
+        mock_delay.assert_called_once()
+        kwargs = mock_delay.call_args.kwargs
+        assert kwargs["to"] == "welcome@test.com"
+        assert "/reset-password?token=tok123" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_create_user_as_operator_denied(
@@ -496,10 +600,10 @@ class TestListWorkers:
 
     @pytest.mark.asyncio
     async def test_list_users_for_workers_via_filter(
-        self, authenticated_client: AsyncClient, test_user: User, test_store: Store
+        self, owner_client: AsyncClient, test_user: User, test_store: Store
     ):
-        """Users can be found via list users filtered by role and store."""
-        response = await authenticated_client.get(
+        """Users can be found via list users filtered by role and store (Owner only)."""
+        response = await owner_client.get(
             f"/api/v1/users?role=user&store_id={test_store.id}&is_active=true"
         )
         assert response.status_code == 200
@@ -548,24 +652,28 @@ class TestCreateUserValidation:
 
 
 class TestListWorkersServicePaths:
-    """Tests for list_workers service function covering department-based filtering."""
+    """Tests for list_workers service — store-scoped for non-owners (list_workers fix)."""
 
     @pytest.mark.asyncio
-    async def test_workers_film_department_returns_all_operators(
+    async def test_workers_film_department_non_owner_cannot_see_other_stores(
         self,
         authenticated_client: AsyncClient,
         test_user,
         second_store,
         db_session,
     ):
-        """Film department workers should include operators from all stores."""
+        """list_workers fix: film department must NOT give non-owners cross-store visibility.
+
+        Before the fix, department=film bypassed the store filter entirely. After the fix,
+        non-owners only see workers from their own store(s), regardless of department.
+        """
         from app.core.security import get_password_hash
         from app.modules.auth.models import User
 
-        # Create user in second store
+        # Create a worker in the second store (different from test_user's store)
         op2 = User(
             email="op2secondstore@test.com",
-            hashed_password=get_password_hash("pass123456"),
+            hashed_password=get_password_hash("Sec0ndPass!@#"),
             full_name="User Second Store",
             role="user",
             store_id=second_store.id,
@@ -575,18 +683,22 @@ class TestListWorkersServicePaths:
         db_session.add(op2)
         await db_session.commit()
 
-        # Workers endpoint with film department - may use /{user_id} path
+        # Non-owner requests workers with department=film — route may resolve as /workers
+        # or be captured as /{user_id} (422). We test only if 200.
         response = await authenticated_client.get(
             "/api/v1/users/workers",
             params={"department": "film"},
         )
-        # If route resolves (200), verify all operators returned
-        # If captured as /{user_id} (422), that is also acceptable
         assert response.status_code in [200, 422]
         if response.status_code == 200:
             data = response.json()
-            # Should include operators from any store for film department
             assert isinstance(data, list)
+            ids_returned = [u["id"] for u in data]
+            # The worker from the second store must NOT appear for a non-owner user
+            # whose store is different.
+            assert op2.id not in ids_returned, (
+                "Non-owner must not see workers from stores they do not manage"
+            )
 
     @pytest.mark.asyncio
     async def test_workers_non_film_department_filters_by_store(
@@ -617,6 +729,36 @@ class TestListWorkersServicePaths:
             params={"store_id": test_store.id},
         )
         assert response.status_code in [200, 422]
+
+    @pytest.mark.asyncio
+    async def test_workers_owner_sees_all_stores(
+        self,
+        owner_client: AsyncClient,
+        test_user,
+        second_store,
+        db_session,
+    ):
+        """Owner must still see workers from all stores (no regression)."""
+        from app.core.security import get_password_hash
+        from app.modules.auth.models import User
+
+        op_store2 = User(
+            email="opstore2owner@test.com",
+            hashed_password=get_password_hash("Store2Pass!@#"),
+            full_name="Owner Visible Worker",
+            role="user",
+            store_id=second_store.id,
+            is_active=True,
+            must_change_password=False,
+        )
+        db_session.add(op_store2)
+        await db_session.commit()
+
+        response = await owner_client.get("/api/v1/users/workers")
+        assert response.status_code in [200, 422]
+        if response.status_code == 200:
+            ids_returned = [u["id"] for u in response.json()]
+            assert op_store2.id in ids_returned, "Owner must see workers from all stores"
 
 
 class TestCreateUserServicePaths:
@@ -761,3 +903,95 @@ class TestActivateDeactivateUserPaths:
         data = response.json()
         for user in data["items"]:
             assert user["store_id"] == test_store.id
+
+
+def _add_grant(profile_id, sub_module, *, can_view=True, can_edit=False):
+    """Helper: monta um AccessProfileModulePermission para um submódulo."""
+    from app.modules.access_profiles.models import AccessProfileModulePermission
+
+    return AccessProfileModulePermission(
+        profile_id=profile_id,
+        module_group="ADMINISTRATIVO",
+        sub_module=sub_module,
+        can_view=can_view,
+        can_edit=can_edit,
+        can_delete=False,
+    )
+
+
+class TestListUsersSelectable:
+    """A2: GET /users/selectable — lista leve para comboboxes de vínculo/perfil.
+
+    Acessível a Owner OU a quem gerencia usuários/funcionários/perfis. Fecha o
+    vazamento do GET /users (que agora exige users:can_view) sem quebrar o
+    UserCombobox (grant employees) nem o ProfileUsersTab (grant profiles).
+    """
+
+    @pytest.mark.asyncio
+    async def test_selectable_as_owner(
+        self, owner_client: AsyncClient, test_user: User
+    ):
+        response = await owner_client.get("/api/v1/users/selectable")
+        assert response.status_code == 200
+        data = response.json()
+        assert "items" in data
+
+    @pytest.mark.asyncio
+    async def test_selectable_unauthenticated(self, client: AsyncClient):
+        response = await client.get("/api/v1/users/selectable")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_selectable_service_orders_only_denied(
+        self, authenticated_client: AsyncClient
+    ):
+        """Só service_orders (sem users/employees/profiles) → 403."""
+        response = await authenticated_client.get("/api/v1/users/selectable")
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_selectable_with_employees_grant(
+        self,
+        authenticated_client: AsyncClient,
+        test_user_profile,
+        db_session,
+    ):
+        """Grant employees:can_edit libera o selectable (UserCombobox)."""
+        db_session.add(_add_grant(test_user_profile.id, "employees", can_edit=True))
+        await db_session.commit()
+
+        response = await authenticated_client.get("/api/v1/users/selectable")
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_selectable_with_profiles_grant(
+        self,
+        authenticated_client: AsyncClient,
+        test_user_profile,
+        db_session,
+    ):
+        """Grant profiles:can_view libera o selectable (ProfileUsersTab)."""
+        db_session.add(_add_grant(test_user_profile.id, "profiles", can_view=True))
+        await db_session.commit()
+
+        response = await authenticated_client.get("/api/v1/users/selectable")
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_selectable_has_employee_filter(
+        self,
+        owner_client: AsyncClient,
+        test_user: User,
+        test_employee,
+        db_session,
+    ):
+        """has_employee=false exclui usuários já vinculados a funcionário."""
+        test_employee.user_id = test_user.id
+        await db_session.commit()
+
+        response = await owner_client.get(
+            "/api/v1/users/selectable", params={"has_employee": "false"}
+        )
+        assert response.status_code == 200
+        ids = [u["id"] for u in response.json()["items"]]
+        assert test_user.id not in ids

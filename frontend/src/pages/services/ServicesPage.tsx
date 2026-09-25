@@ -44,7 +44,7 @@ import type { ServiceItem, ServiceCategory } from '@/services/api/services.servi
 import { CategoryBadge } from '@/components/common/DepartmentBadge';
 import brandsService from '@/services/api/brands.service';
 import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/hooks/useAuth';
+import { useHasPermission, useCanView } from '@/hooks/useMyPermissions';
 import { DEPARTMENTS } from '@/constants/service-orders';
 import { getApiErrorMessage } from '@/lib/api-error';
 
@@ -65,6 +65,7 @@ interface AddServiceForm {
     is_courtesy_only: boolean;
     category: ServiceCategory | '';
     execution_time_minutes: string;
+    points: string;
 }
 
 interface ServiceFormFieldsProps {
@@ -244,6 +245,19 @@ function ServiceFormFields({
                         className="bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
                     />
                 </div>
+                <div className="space-y-1.5">
+                    <Label htmlFor="svc-points" className="text-[#666666] dark:text-zinc-300">Pontos</Label>
+                    <Input
+                        id="svc-points"
+                        type="number"
+                        min="0"
+                        step="0.25"
+                        placeholder="Ex: 1.00"
+                        value={form.points}
+                        onChange={(e) => setForm((prev) => ({ ...prev, points: e.target.value }))}
+                        className="bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
+                    />
+                </div>
             </div>
         </div>
     );
@@ -259,10 +273,17 @@ const INITIAL_FORM: AddServiceForm = {
     is_courtesy_only: false,
     category: '',
     execution_time_minutes: '',
+    points: '',
 };
 
 export default function ServicesPage() {
-    const { user } = useAuth();
+    // Cadastro "por perfil" (decisão 2026-08-22): não é mais Owner-only.
+    // Guard da página via useCanView (isLoading-safe, evita flash de redirect);
+    // botões via useHasPermission (reativo).
+    const canViewPage = useCanView('services');
+    const hasPermission = useHasPermission();
+    const canEdit = hasPermission('services', 'edit');
+    const canDelete = hasPermission('services', 'delete');
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
@@ -379,6 +400,7 @@ export default function ServicesPage() {
                 execution_time_minutes: form.execution_time_minutes
                     ? parseInt(form.execution_time_minutes, 10) || null
                     : null,
+                points: form.points === '' ? 0 : (parseFloat(form.points) || 0),
             });
         },
         onSuccess: () => {
@@ -411,6 +433,7 @@ export default function ServicesPage() {
                 execution_time_minutes: form.execution_time_minutes
                     ? parseInt(form.execution_time_minutes, 10) || null
                     : null,
+                points: form.points === '' ? 0 : (parseFloat(form.points) || 0),
             }),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['services'] });
@@ -428,7 +451,9 @@ export default function ServicesPage() {
         },
     });
 
-    if (user?.role !== 'owner') {
+    // Sem permissão de ver serviços → fora (useCanView libera durante o load e
+    // para Owner). View-only vê o catálogo; editar/excluir gateados por canEdit/canDelete.
+    if (!canViewPage) {
         return <Navigate to="/" replace />;
     }
 
@@ -447,6 +472,7 @@ export default function ServicesPage() {
             execution_time_minutes: svc.execution_time_minutes != null
                 ? String(svc.execution_time_minutes)
                 : '',
+            points: String(svc.points ?? 0),
         });
     };
 
@@ -544,21 +570,23 @@ export default function ServicesPage() {
                             <Download className="h-4 w-4" />
                             Exportar
                         </button>
-                        <Button
-                            onClick={() => {
-                                setForm({
-                                    ...INITIAL_FORM,
-                                    brand_id: resolvedBrandId !== null ? String(resolvedBrandId) : '',
-                                });
-                                setCodeDuplicateWarning(false);
-                                setAddDialogOpen(true);
-                            }}
-                            className="font-semibold"
-                            style={{ backgroundColor: '#F5A800', color: '#1A1A1A' }}
-                        >
-                            <Plus className="h-4 w-4 mr-2" />
-                            Novo Serviço
-                        </Button>
+                        {canEdit && (
+                            <Button
+                                onClick={() => {
+                                    setForm({
+                                        ...INITIAL_FORM,
+                                        brand_id: resolvedBrandId !== null ? String(resolvedBrandId) : '',
+                                    });
+                                    setCodeDuplicateWarning(false);
+                                    setAddDialogOpen(true);
+                                }}
+                                className="font-semibold"
+                                style={{ backgroundColor: '#F5A800', color: '#1A1A1A' }}
+                            >
+                                <Plus className="h-4 w-4 mr-2" />
+                                Novo Serviço
+                            </Button>
+                        )}
                     </div>
                 </div>
 
@@ -682,13 +710,14 @@ export default function ServicesPage() {
                     ) : (
                         <div className="border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-hidden">
                             {/* Header da tabela */}
-                            <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_auto] gap-x-4 px-4 py-2.5 bg-gray-100 dark:bg-zinc-800/60 border-b border-[#D1D1D1] dark:border-[#333333]">
+                            <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_1fr_auto] gap-x-4 px-4 py-2.5 bg-gray-100 dark:bg-zinc-800/60 border-b border-[#D1D1D1] dark:border-[#333333]">
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Nome do Serviço</span>
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Código</span>
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Departamento</span>
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Categoria</span>
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Marca</span>
                                 <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Valor</span>
+                                <span className="text-xs font-medium text-[#666666] dark:text-zinc-400">Pontos</span>
                                 <span className="w-16" />
                             </div>
                             {/* Linhas */}
@@ -696,7 +725,7 @@ export default function ServicesPage() {
                                 {brandServices.map((svc) => (
                                     <div
                                         key={svc.id}
-                                        className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_auto] gap-x-4 items-center px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-zinc-800/40 transition-colors"
+                                        className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_1fr_auto] gap-x-4 items-center px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-zinc-800/40 transition-colors"
                                     >
                                         <span className="text-sm text-[#111111] dark:text-zinc-200 truncate">{svc.name}</span>
                                         <span className="text-sm text-[#666666] dark:text-zinc-400 truncate">
@@ -722,7 +751,13 @@ export default function ServicesPage() {
                                                 svc.base_price.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
                                             )}
                                         </span>
+                                        <span className="text-sm text-[#666666] dark:text-zinc-400">
+                                            {svc.points != null
+                                                ? Number(svc.points).toLocaleString('pt-BR', { minimumFractionDigits: 2 })
+                                                : '—'}
+                                        </span>
                                         <div className="flex items-center justify-end shrink-0">
+                                            {(canEdit || canDelete) && (
                                             <DropdownMenu>
                                                 <DropdownMenuTrigger asChild>
                                                     <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
@@ -730,16 +765,21 @@ export default function ServicesPage() {
                                                     </Button>
                                                 </DropdownMenuTrigger>
                                                 <DropdownMenuContent align="end">
-                                                    <DropdownMenuItem onClick={() => handleEdit(svc)}>
-                                                        <Edit className="h-4 w-4 mr-2" />
-                                                        Editar
-                                                    </DropdownMenuItem>
-                                                    <DropdownMenuItem onClick={() => setConfirmDeleteId(svc.id)} className="text-red-600 focus:text-red-600">
-                                                        <Trash2 className="h-4 w-4 mr-2" />
-                                                        Excluir
-                                                    </DropdownMenuItem>
+                                                    {canEdit && (
+                                                        <DropdownMenuItem onClick={() => handleEdit(svc)}>
+                                                            <Edit className="h-4 w-4 mr-2" />
+                                                            Editar
+                                                        </DropdownMenuItem>
+                                                    )}
+                                                    {canDelete && (
+                                                        <DropdownMenuItem onClick={() => setConfirmDeleteId(svc.id)} className="text-red-600 focus:text-red-600">
+                                                            <Trash2 className="h-4 w-4 mr-2" />
+                                                            Excluir
+                                                        </DropdownMenuItem>
+                                                    )}
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
+                                            )}
                                         </div>
                                     </div>
                                 ))}

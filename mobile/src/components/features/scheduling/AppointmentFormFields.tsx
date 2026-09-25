@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, Modal, Platform, Pressable, Text, View } from 'react-native';
+import { Keyboard, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useForm, Controller } from 'react-hook-form';
@@ -18,10 +18,18 @@ import type { FilmDepartment } from '@/services/api/inventory.service';
 import { useAppointmentCapacity } from '@/hooks/useScheduling';
 import { useStoreStore } from '@/stores/store.store';
 import { useGalponFlags } from '@/navigation/guards';
-import { DEPARTMENT_LABELS, getTonalityOptionsForFilmType } from '@/constants/scheduling';
+import { useTheme } from '@/theme';
+import {
+    DEPARTMENT_LABELS,
+    FILM_REGION_SUGGESTIONS,
+    getTonalityOptionsForFilmType,
+} from '@/constants/scheduling';
 import type {
     Appointment,
+    CombinedAppointmentPayload,
+    CombinedDepartmentEntry,
     CreateAppointmentPayload,
+    FilmApplication,
     FilmEntryItem,
 } from '@/types/scheduling.types';
 
@@ -42,7 +50,16 @@ import type {
  *   (no Create, se for perfil galpão, o toggle fica travado em galpão — igual
  *   ao web/CreateServiceOrderScreen).
  *
- * O componente NÃO chama mutations: monta o payload e delega via `onSubmit`.
+ * AGENDAMENTO COMBINADO (2C) — só na CRIAÇÃO:
+ * - Toggle "Combinado (múltiplos departamentos)". Ligado, o mesmo carro recebe
+ *   VÁRIOS departamentos (chips multi-seleção), cada um com sua própria seção de
+ *   serviços/películas (reusa `DepartmentServicesSection`). O submit monta
+ *   `departments[]` e chama `onSubmitCombined` → POST /scheduling/combined.
+ * - Espelha o web: ao ligar, semeia `combinedDepts` com o departamento atual; ao
+ *   desligar, volta ao modo simples e limpa a seleção combinada.
+ *
+ * O componente NÃO chama mutations: monta o payload e delega via
+ * `onSubmit`/`onSubmitCombined`; o caller (screen) chama a mutation.
  */
 
 // ─── Validação de placa / chassi (regex do CreateServiceOrderScreen) ──────────
@@ -57,13 +74,19 @@ export function isValidPlateOrChassi(value: string): boolean {
 }
 
 const DEPARTMENTS = Object.entries(DEPARTMENT_LABELS) as [string, string][];
-const DEPT_VALUES = DEPARTMENTS.map(([value]) => value) as [string, ...string[]];
+
+const FILM_DEPTS = ['film', 'security_film', 'ppf'];
+const isFilmDepartment = (dept: string) => FILM_DEPTS.includes(dept);
+const deptRequiresTonality = (dept: string) => dept === 'film' || dept === 'security_film';
 
 // ─── Schema Zod (espelha o web AppointmentForm) ───────────────────────────────
 export const appointmentSchema = z
     .object({
         store_id: z.number({ error: 'Selecione a loja' }).int().positive('Selecione a loja'),
-        department: z.enum(DEPT_VALUES, { error: 'Selecione o departamento' }),
+        // No modo combinado, `department` fica com o sentinel 'combined' (a seleção
+        // real está em `combinedDepts`); por isso aceitamos qualquer string aqui e
+        // validamos a seleção fora do schema (espelha o web).
+        department: z.string().min(1, 'Selecione o departamento'),
         // Tipo (Normal/Cortesia/Retorno) exige escolha explícita — espelha a O.S.
         is_courtesy: z.boolean(),
         is_return: z.boolean(),
@@ -104,12 +127,34 @@ interface FilmEntryLocal extends FilmEntryItem {
     service_code: string | null;
 }
 
+/** Estado de serviços de UM departamento (não-película: serviceIds; película: filmEntries). */
+interface ServiceSelectionState {
+    serviceIds: number[];
+    filmEntries: FilmEntryLocal[];
+}
+
+const EMPTY_SELECTION: ServiceSelectionState = { serviceIds: [], filmEntries: [] };
+
 export interface AppointmentFormFieldsProps {
     mode: 'create' | 'edit';
     /** Agendamento existente (modo edit) — para popular o form. */
     appointment?: Appointment | null;
     /** Recebe o payload já montado; o caller chama a mutation. */
     onSubmit: (payload: CreateAppointmentPayload) => void;
+    /**
+     * Recebe o payload combinado (múltiplos departamentos). Obrigatório para
+     * habilitar o modo combinado na CRIAÇÃO; se ausente, o toggle não aparece.
+     */
+    onSubmitCombined?: (payload: CombinedAppointmentPayload) => void;
+    /**
+     * Modo EDIÇÃO combinada: recebe o payload de atualização do agendamento
+     * atual + os departamentos NOVOS a criar como irmãos. Obrigatório para
+     * habilitar o toggle "Combinar" na edição; se ausente, o toggle não aparece.
+     */
+    onSubmitEditCombined?: (
+        updatePayload: CreateAppointmentPayload,
+        newDepartments: CombinedDepartmentEntry[]
+    ) => void;
     /** Mutation em andamento (desabilita campos/ações). */
     submitting: boolean;
 }
@@ -121,10 +166,13 @@ const COURTESY_RETURN_OPTIONS: { value: CourtesyReturnValue; label: string }[] =
     { value: 'return', label: 'Retorno' },
 ];
 
-const FILM_DEPTS = ['film', 'security_film', 'ppf'];
-
 function todayISO(): string {
-    return new Date().toISOString().split('T')[0];
+    // Data LOCAL (não UTC): `toISOString()` volta a data em UTC e, perto da
+    // meia-noite, empurra a previsão de entrega para o dia seguinte (bug de +1).
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
 }
 
 /** "AAAA-MM-DD" → "DD/MM/AAAA". */
@@ -162,10 +210,55 @@ function dateToTime(date: Date): string {
     return `${h}:${m}`;
 }
 
+/** Mapeia `filmEntries` locais → payload de `film_entries` (inclui applications). */
+function buildFilmEntriesPayload(entries: FilmEntryLocal[]): FilmEntryItem[] {
+    return entries.map(({ service_id, tonality, film_roll_id, film_type_id, applications }) => ({
+        service_id,
+        tonality,
+        film_roll_id: film_roll_id ?? undefined,
+        film_type_id: film_type_id ?? undefined,
+        // Só envia applications quando o usuário detalhou por região; caso
+        // contrário mantém a tonalidade única (comportamento atual).
+        applications:
+            applications && applications.length > 0
+                ? applications.map(({ tonality: appTonality, region }) => ({
+                      tonality: appTonality,
+                      region: region?.trim() || undefined,
+                  }))
+                : undefined,
+    }));
+}
+
+/**
+ * Valida os serviços de um departamento (espelha `validateDeptSelection` do web).
+ * Retorna a mensagem de erro ou `null` se estiver ok.
+ */
+function validateDeptSelection(dept: string, sel: ServiceSelectionState): string | null {
+    const isFilm = isFilmDepartment(dept);
+    const hasServices = isFilm ? sel.filmEntries.length > 0 : sel.serviceIds.length > 0;
+    const label = DEPARTMENT_LABELS[dept] ?? dept;
+    if (!hasServices) {
+        return `Adicione ao menos 1 serviço para "${label}".`;
+    }
+    if (
+        deptRequiresTonality(dept) &&
+        sel.filmEntries.some((e) =>
+            e.applications && e.applications.length > 0
+                ? e.applications.some((app) => !app.tonality)
+                : !e.tonality
+        )
+    ) {
+        return `Informe a tonalidade de todas as películas em "${label}" (incluindo cada região adicionada).`;
+    }
+    return null;
+}
+
 export function AppointmentFormFields({
     mode,
     appointment,
     onSubmit,
+    onSubmitCombined,
+    onSubmitEditCombined,
     submitting,
 }: AppointmentFormFieldsProps) {
     const { stores } = useStores();
@@ -179,13 +272,22 @@ export function AppointmentFormFields({
     // Loja default (Create): loja global selecionada; senão a primeira acessível.
     const defaultStoreId = selectedStoreId ?? stores[0]?.id ?? undefined;
 
-    const [filmEntries, setFilmEntries] = useState<FilmEntryLocal[]>([]);
-    const [pendingFilmServiceId, setPendingFilmServiceId] = useState<number | null>(null);
-    const [pendingFilmTonality, setPendingFilmTonality] = useState<string | null>(null);
-    const [pendingFilmTypeId, setPendingFilmTypeId] = useState<number | null>(null);
+    // Modo combinado: na criação combina do zero; na edição adiciona
+    // departamentos-irmãos ao agendamento atual. Só habilita se o caller
+    // souber tratar o modo correspondente.
+    const combinedSupported =
+        (mode === 'create' && !!onSubmitCombined) || (mode === 'edit' && !!onSubmitEditCombined);
+    // Departamento do agendamento em edição (travado no modo combinado).
+    const editingDept = mode === 'edit' ? (appointment?.department ?? '') : '';
+    const [isCombined, setIsCombined] = useState(false);
+    // Departamentos selecionados no modo combinado.
+    const [combinedDepts, setCombinedDepts] = useState<string[]>([]);
+    // Estado de serviços POR departamento: Record<department, ServiceSelectionState>.
+    // Usado tanto no modo simples (chave = departamento único) quanto no combinado.
+    const [serviceSelections, setServiceSelections] = useState<
+        Record<string, ServiceSelectionState>
+    >({});
     const [serviceError, setServiceError] = useState<string | null>(null);
-    // Serviços (departamentos não-película) — lista de ids.
-    const [serviceIds, setServiceIds] = useState<number[]>([]);
 
     const {
         control,
@@ -225,19 +327,13 @@ export function AppointmentFormFields({
     const vehicleModelId = watch('vehicle_model_id');
     const deliveryDate = watch('delivery_date');
     const deliveryTime = watch('delivery_time');
-
-    const isFilmDept = FILM_DEPTS.includes(department);
-    // Tonalidade é obrigatória por película nesses departamentos (PPF usa marca).
-    const requiresTonality = department === 'film' || department === 'security_film';
+    const vehiclePlate = watch('vehicle_plate');
 
     // Loja resolvida + marca (derivada 1:1 da loja — filtra modelo/serviços).
-    const currentStore = useMemo(
-        () => stores.find((s) => s.id === storeId),
-        [stores, storeId]
-    );
+    const currentStore = useMemo(() => stores.find((s) => s.id === storeId), [stores, storeId]);
     const storeBrandId = currentStore?.brand_id ?? undefined;
 
-    // Pickers de dados.
+    // Pickers de dados (loja/modelo/consultor).
     const { data: vehicleModels = [], isLoading: modelsLoading } = useVehicleModels(
         storeBrandId ? { brand_id: storeBrandId, active_only: true } : {}
     );
@@ -246,29 +342,9 @@ export function AppointmentFormFields({
         1,
         200
     );
-    const { data: allServices = [], isLoading: servicesLoading } = useServices(
-        department || undefined,
-        storeBrandId
-    );
-    // A8 — serviços exclusivos de cortesia só aparecem quando o agendamento é cortesia.
-    const services = useMemo(
-        () => (isCourtesy ? allServices : allServices.filter((s) => !s.is_courtesy_only)),
-        [allServices, isCourtesy]
-    );
-    // Tipos de película do departamento atual (film/security_film/ppf).
-    // - PPF: usados como "Marca PPF" (seleção por entrada → `ppfBrands`).
-    // - film/security_film: usados para derivar as tonalidades disponíveis (A7),
-    //   já que esses departamentos não selecionam um FilmType por entrada.
-    const { data: filmTypes = [] } = useFilmTypes(
-        isFilmDept ? (department as FilmDepartment) : undefined
-    );
-    const ppfBrands = filmTypes;
 
     // Capacidade (aviso amarelo não-bloqueante).
-    const { data: capacityCount } = useAppointmentCapacity(
-        storeId ?? null,
-        deliveryDate
-    );
+    const { data: capacityCount } = useAppointmentCapacity(storeId ?? null, deliveryDate);
 
     // ─── Popular o form no modo edit (uma vez, ao chegar o appointment) ────────
     const populatedRef = useRef(false);
@@ -292,36 +368,46 @@ export function AppointmentFormFields({
             consultant_id: appointment.consultant_id ?? undefined,
             notes: appointment.notes ?? '',
         });
-        setServiceIds(appointment.service_ids ?? []);
-        if (appointment.film_entries && appointment.film_entries.length > 0) {
-            const ids = appointment.service_ids ?? [];
-            const names = appointment.service_names ?? [];
-            setFilmEntries(
-                appointment.film_entries.map((fe, idx) => {
-                    const pos = ids.indexOf(fe.service_id);
-                    const name = (pos >= 0 ? names[pos] : names[idx]) ?? `Serviço ${fe.service_id}`;
-                    return {
-                        service_id: fe.service_id,
-                        tonality: fe.tonality,
-                        film_type_id: fe.film_type_id ?? undefined,
-                        film_roll_id: fe.film_roll_id ?? null,
-                        service_name: name,
-                        service_code: null,
-                    };
-                })
-            );
-        }
+        // Popula o slice do departamento do agendamento (serviços + películas).
+        const dept = appointment.department;
+        const ids = appointment.service_ids ?? [];
+        const names = appointment.service_names ?? [];
+        const filmEntries: FilmEntryLocal[] =
+            appointment.film_entries && appointment.film_entries.length > 0
+                ? appointment.film_entries.map((fe, idx) => {
+                      const pos = ids.indexOf(fe.service_id);
+                      const name = (pos >= 0 ? names[pos] : names[idx]) ?? `Serviço ${fe.service_id}`;
+                      return {
+                          service_id: fe.service_id,
+                          tonality: fe.tonality,
+                          film_type_id: fe.film_type_id ?? undefined,
+                          film_roll_id: fe.film_roll_id ?? null,
+                          // Preserva só tonalidade/região (bobina resolve na finalização).
+                          applications:
+                              fe.applications && fe.applications.length > 0
+                                  ? fe.applications.map((app) => ({
+                                        tonality: app.tonality,
+                                        region: app.region ?? '',
+                                    }))
+                                  : undefined,
+                          service_name: name,
+                          service_code: null,
+                      };
+                  })
+                : [];
+        setServiceSelections({
+            [dept]: {
+                serviceIds: appointment.service_ids ?? [],
+                filmEntries,
+            },
+        });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mode, appointment]);
 
-    // ─── Refs dos sheets ──────────────────────────────────────────────────────
+    // ─── Refs dos sheets (loja/modelo/consultor) ───────────────────────────────
     const storeSheetRef = useRef<SelectRef>(null);
     const modelSheetRef = useRef<SelectRef>(null);
     const consultantSheetRef = useRef<SelectRef>(null);
-    const serviceSheetRef = useRef<SelectRef>(null);
-    const filmServiceSheetRef = useRef<SelectRef>(null);
-    const filmTonalitySheetRef = useRef<SelectRef>(null);
-    const filmBrandSheetRef = useRef<SelectRef>(null);
 
     // Date/time pickers.
     const [showDatePicker, setShowDatePicker] = useState(false);
@@ -334,12 +420,10 @@ export function AppointmentFormFields({
           : isReturn
             ? 'return'
             : 'normal';
+    const isCourtesyAppointment = isCourtesy;
 
     // ─── Opções dos sheets ────────────────────────────────────────────────────
-    const storeOptions = useMemo(
-        () => stores.map((s) => ({ value: s.id, label: s.name })),
-        [stores]
-    );
+    const storeOptions = useMemo(() => stores.map((s) => ({ value: s.id, label: s.name })), [stores]);
     const modelOptions = useMemo(
         () => vehicleModels.map((m) => ({ value: m.id, label: m.name })),
         [vehicleModels]
@@ -348,107 +432,128 @@ export function AppointmentFormFields({
         () => consultants.map((c) => ({ value: c.id, label: c.name })),
         [consultants]
     );
-    const sortByLabel = (a: { label: string }, b: { label: string }) =>
-        a.label.localeCompare(b.label, 'pt-BR');
-
-    // Serviços para o multi-select (não-película).
-    const serviceOptions = useMemo(
-        () =>
-            services
-                .map((s) => ({ value: s.id, label: s.code ? `${s.code} — ${s.name}` : s.name }))
-                .sort(sortByLabel),
-        [services]
-    );
-    // Serviços disponíveis para adicionar como película (exclui já adicionados).
-    const filmServiceOptions = useMemo(
-        () =>
-            services
-                .filter((s) => !filmEntries.some((e) => e.service_id === s.id))
-                .map((s) => ({ value: s.id, label: s.code ? `${s.code} — ${s.name}` : s.name }))
-                .sort(sortByLabel),
-        [services, filmEntries]
-    );
-    const pendingFilmService = services.find((s) => s.id === pendingFilmServiceId);
-    // A7 — tonalidades dirigidas pelo tipo de película. Como film/security_film
-    // não selecionam um FilmType por entrada, unimos as `available_tonalities` de
-    // todos os tipos do departamento (na ordem canônica). Sem tipos configurados,
-    // `getTonalityOptionsForFilmType` cai no fallback por serviço/departamento.
-    const departmentTonalities = useMemo(() => {
-        const set = new Set<string>();
-        for (const ft of filmTypes) {
-            for (const t of ft.available_tonalities ?? []) set.add(t);
-        }
-        return [...set];
-    }, [filmTypes]);
-    const tonalityOptions = useMemo(
-        () =>
-            getTonalityOptionsForFilmType({
-                serviceCode: pendingFilmService?.code,
-                department,
-                availableTonalities: departmentTonalities,
-            }),
-        [pendingFilmService, department, departmentTonalities]
-    );
-    const ppfBrandOptions = useMemo(
-        () => ppfBrands.map((ft) => ({ value: ft.id, label: ft.name })),
-        [ppfBrands]
-    );
 
     const selectedConsultantName = consultants.find((c) => c.id === consultantId)?.name;
-    const selectedServices = useMemo(
-        () => services.filter((s) => serviceIds.includes(s.id)),
-        [services, serviceIds]
-    );
 
-    // ─── Película: adicionar / remover ────────────────────────────────────────
-    const addFilmEntry = () => {
-        if (!pendingFilmServiceId) return;
-        const svc = services.find((s) => s.id === pendingFilmServiceId);
-        if (!svc) return;
-        if (requiresTonality && !pendingFilmTonality) {
-            setServiceError('Selecione a tonalidade da película.');
-            return;
-        }
-        setFilmEntries((prev) => [
-            ...prev,
-            {
-                service_id: svc.id,
-                tonality: pendingFilmTonality,
-                film_type_id: pendingFilmTypeId ?? undefined,
-                film_roll_id: null,
-                service_name: svc.name,
-                service_code: svc.code ?? null,
-            },
-        ]);
-        setPendingFilmServiceId(null);
-        setPendingFilmTonality(null);
-        setPendingFilmTypeId(null);
+    // ─── Helpers de slice por departamento ─────────────────────────────────────
+    const getSelection = (dept: string): ServiceSelectionState =>
+        serviceSelections[dept] ?? EMPTY_SELECTION;
+
+    const setSelection = (dept: string) => (v: ServiceSelectionState) => {
+        setServiceSelections((prev) => ({ ...prev, [dept]: v }));
         setServiceError(null);
-    };
-
-    const removeFilmEntry = (serviceId: number) => {
-        setFilmEntries((prev) => prev.filter((e) => e.service_id !== serviceId));
-    };
-
-    const removeService = (serviceId: number) => {
-        setServiceIds((prev) => prev.filter((id) => id !== serviceId));
     };
 
     // ─── Submit ───────────────────────────────────────────────────────────────
     const submit = (data: AppointmentFormData) => {
         Keyboard.dismiss();
-        const hasServices = isFilmDept ? filmEntries.length > 0 : serviceIds.length > 0;
-        if (!hasServices) {
-            setServiceError('Adicione ao menos 1 serviço para continuar.');
-            return;
-        }
-        if (requiresTonality && filmEntries.some((e) => !e.tonality)) {
-            setServiceError(
-                'Informe a tonalidade de todas as películas (remova a película sem tonalidade e adicione novamente).'
-            );
-            return;
-        }
         setServiceError(null);
+
+        // ── Modo combinado ────────────────────────────────────────────────────
+        if (isCombined && combinedSupported) {
+            const buildDeptEntry = (dept: string): CombinedDepartmentEntry => {
+                const sel = getSelection(dept);
+                const isFilm = isFilmDepartment(dept);
+                return {
+                    department: dept,
+                    service_ids: isFilm ? sel.filmEntries.map((e) => e.service_id) : sel.serviceIds,
+                    film_entries:
+                        isFilm && sel.filmEntries.length > 0
+                            ? buildFilmEntriesPayload(sel.filmEntries)
+                            : undefined,
+                };
+            };
+
+            // ── Edição combinada: atualiza o atual + cria irmãos p/ os novos ──
+            if (mode === 'edit') {
+                const newDepts = combinedDepts.filter((d) => d !== editingDept);
+
+                // Valida o departamento atual e os novos.
+                const curErr = validateDeptSelection(editingDept, getSelection(editingDept));
+                if (curErr) {
+                    setServiceError(curErr);
+                    return;
+                }
+                for (const dept of newDepts) {
+                    const err = validateDeptSelection(dept, getSelection(dept));
+                    if (err) {
+                        setServiceError(err);
+                        return;
+                    }
+                }
+
+                const curSel = getSelection(editingDept);
+                const isCurFilm = isFilmDepartment(editingDept);
+                const updatePayload: CreateAppointmentPayload = {
+                    store_id: data.store_id,
+                    department: editingDept,
+                    delivery_date: data.delivery_date,
+                    delivery_time: data.delivery_time || undefined,
+                    external_os_number: data.external_os_number?.trim() || undefined,
+                    vehicle_plate: data.vehicle_plate.toUpperCase().replace(/[^A-Z0-9]/g, ''),
+                    vehicle_model: data.vehicle_model || undefined,
+                    vehicle_color: data.vehicle_color || undefined,
+                    consultant_id: data.consultant_id || undefined,
+                    service_ids: isCurFilm
+                        ? curSel.filmEntries.map((e) => e.service_id)
+                        : curSel.serviceIds.length > 0
+                          ? curSel.serviceIds
+                          : undefined,
+                    film_entries:
+                        isCurFilm && curSel.filmEntries.length > 0
+                            ? buildFilmEntriesPayload(curSel.filmEntries)
+                            : undefined,
+                    notes: data.notes?.trim() || undefined,
+                    is_galpon: data.is_galpon,
+                    is_courtesy: data.is_courtesy,
+                    is_return: data.is_return,
+                };
+                onSubmitEditCombined?.(updatePayload, newDepts.map(buildDeptEntry));
+                return;
+            }
+
+            // ── Criação combinada (≥1 departamento) ───────────────────────────
+            if (combinedDepts.length < 1) {
+                setServiceError('Selecione ao menos um departamento.');
+                return;
+            }
+            for (const dept of combinedDepts) {
+                const err = validateDeptSelection(dept, getSelection(dept));
+                if (err) {
+                    setServiceError(err);
+                    return;
+                }
+            }
+
+            const departments: CombinedDepartmentEntry[] = combinedDepts.map(buildDeptEntry);
+
+            const combinedPayload: CombinedAppointmentPayload = {
+                store_id: data.store_id,
+                delivery_date: data.delivery_date,
+                delivery_time: data.delivery_time || undefined,
+                external_os_number: data.external_os_number?.trim() || undefined,
+                vehicle_plate: data.vehicle_plate.toUpperCase().replace(/[^A-Z0-9]/g, ''),
+                vehicle_model: data.vehicle_model || undefined,
+                vehicle_color: data.vehicle_color || undefined,
+                consultant_id: data.consultant_id || undefined,
+                notes: data.notes?.trim() || undefined,
+                is_galpon: data.is_galpon,
+                is_courtesy: data.is_courtesy,
+                is_return: data.is_return,
+                departments,
+            };
+            onSubmitCombined?.(combinedPayload);
+            return;
+        }
+
+        // ── Modo simples (1 departamento) ─────────────────────────────────────
+        const sel = getSelection(data.department);
+        const err = validateDeptSelection(data.department, sel);
+        if (err) {
+            setServiceError(err);
+            return;
+        }
+        const isFilm = isFilmDepartment(data.department);
 
         const payload: CreateAppointmentPayload = {
             store_id: data.store_id,
@@ -460,19 +565,14 @@ export function AppointmentFormFields({
             vehicle_model: data.vehicle_model || undefined,
             vehicle_color: data.vehicle_color || undefined,
             consultant_id: data.consultant_id || undefined,
-            service_ids: isFilmDept
-                ? filmEntries.map((e) => e.service_id)
-                : serviceIds.length > 0
-                  ? serviceIds
+            service_ids: isFilm
+                ? sel.filmEntries.map((e) => e.service_id)
+                : sel.serviceIds.length > 0
+                  ? sel.serviceIds
                   : undefined,
             film_entries:
-                isFilmDept && filmEntries.length > 0
-                    ? filmEntries.map(({ service_id, tonality, film_roll_id, film_type_id }) => ({
-                          service_id,
-                          tonality,
-                          film_roll_id: film_roll_id ?? undefined,
-                          film_type_id: film_type_id ?? undefined,
-                      }))
+                isFilm && sel.filmEntries.length > 0
+                    ? buildFilmEntriesPayload(sel.filmEntries)
                     : undefined,
             notes: data.notes?.trim() || undefined,
             is_galpon: data.is_galpon,
@@ -487,6 +587,36 @@ export function AppointmentFormFields({
 
     const isBusy = submitting;
     const storeLocked = stores.length <= 1;
+
+    // Departamentos novos (edição combinada).
+    const newCombinedDepts =
+        mode === 'edit' ? combinedDepts.filter((d) => d !== editingDept) : combinedDepts;
+
+    // Texto de preview do modo combinado.
+    const combinedPreview = !isCombined
+        ? null
+        : mode === 'edit'
+          ? newCombinedDepts.length > 0
+              ? `O departamento atual será atualizado e serão criados ${newCombinedDepts.length} agendamento(s) combinado(s): ${newCombinedDepts
+                    .map((d) => DEPARTMENT_LABELS[d] ?? d)
+                    .join(' + ')} — mesmo carro ${vehiclePlate?.trim() || '(placa não informada)'}`
+              : null
+          : combinedDepts.length >= 2
+            ? `Serão criados ${combinedDepts.length} agendamentos: ${combinedDepts
+                  .map((d) => `1 de ${DEPARTMENT_LABELS[d] ?? d}`)
+                  .join(' + ')} — mesmo carro ${vehiclePlate?.trim() || '(placa não informada)'}`
+            : null;
+
+    // Rótulo do botão de submit.
+    const submitLabel = isBusy
+        ? 'Salvando...'
+        : mode === 'edit'
+          ? isCombined && newCombinedDepts.length > 0
+              ? `Salvar e combinar (+${newCombinedDepts.length})`
+              : 'Salvar alterações'
+          : isCombined && combinedDepts.length >= 2
+            ? `Criar ${combinedDepts.length} agendamentos`
+            : 'Criar agendamento';
 
     return (
         <View>
@@ -545,36 +675,141 @@ export function AppointmentFormFields({
                 <View className="mb-3" />
             )}
 
-            {/* ─── Departamento ─────────────────────────────────────────── */}
-            <FieldLabel>Departamento *</FieldLabel>
-            <View className="mb-1 flex-row flex-wrap gap-2">
-                {DEPARTMENTS.map(([value, label]) => (
-                    <Chip
-                        key={value}
-                        label={label}
-                        active={department === value}
-                        disabled={isBusy}
-                        onPress={() => {
-                            if (value !== department) {
-                                // Trocar de departamento invalida serviços/película.
-                                setServiceIds([]);
-                                setFilmEntries([]);
-                                setPendingFilmServiceId(null);
-                                setPendingFilmTonality(null);
-                                setPendingFilmTypeId(null);
-                                setServiceError(null);
+            {/* ─── Toggle "Combinado" (só na criação) ───────────────────── */}
+            {combinedSupported ? (
+                <Pressable
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: isCombined }}
+                    accessibilityLabel={
+                        mode === 'edit'
+                            ? 'Combinar com outros departamentos'
+                            : 'Combinado (múltiplos departamentos)'
+                    }
+                    disabled={isBusy}
+                    onPress={() => {
+                        const next = !isCombined;
+                        setIsCombined(next);
+                        setServiceError(null);
+                        if (next) {
+                            // Entra no combinado: semeia com o depto atual (na edição é
+                            // o depto travado) e marca o sentinel em `department`.
+                            const current = mode === 'edit' ? editingDept : department;
+                            const seed = current && current !== 'combined' ? [current] : [];
+                            setCombinedDepts(seed);
+                            setValue('department', 'combined', { shouldValidate: true });
+                        } else {
+                            // Volta ao modo simples.
+                            setCombinedDepts([]);
+                            if (mode === 'edit') {
+                                // Mantém os serviços já carregados do depto atual.
+                                setValue('department', editingDept, { shouldValidate: true });
+                            } else {
+                                setServiceSelections({});
+                                setValue('department', undefined as unknown as string);
                             }
-                            setValue('department', value, { shouldValidate: true });
-                        }}
-                    />
-                ))}
-            </View>
-            {errors.department ? (
-                <Text className="mb-3 mt-1 font-sans text-sm text-error">
-                    {errors.department.message}
-                </Text>
+                        }
+                    }}
+                    className="mb-4 flex-row items-center gap-3 active:opacity-80"
+                >
+                    <View
+                        className={[
+                            'h-6 w-10 justify-center rounded-full px-0.5',
+                            isCombined ? 'bg-brand' : 'bg-neutral-300 dark:bg-dark-elevated',
+                        ].join(' ')}
+                    >
+                        <View
+                            className="h-5 w-5 rounded-full bg-white"
+                            style={{ transform: [{ translateX: isCombined ? 16 : 0 }] }}
+                        />
+                    </View>
+                    <View className="flex-1 flex-row items-center gap-1.5">
+                        <Ionicons name="link" size={16} color="#B58900" />
+                        <Text className="font-sans-medium text-sm text-neutral-700 dark:text-dark-text">
+                            {mode === 'edit'
+                                ? 'Combinar com outros departamentos'
+                                : 'Combinado (múltiplos departamentos)'}
+                        </Text>
+                    </View>
+                </Pressable>
+            ) : null}
+
+            {/* ─── Departamento(s) ──────────────────────────────────────── */}
+            {isCombined && combinedSupported ? (
+                <>
+                    <FieldLabel>Departamentos *</FieldLabel>
+                    <View className="mb-1 flex-row flex-wrap gap-2">
+                        {DEPARTMENTS.map(([value, label]) => {
+                            const selected = combinedDepts.includes(value);
+                            // Na edição o departamento atual fica travado.
+                            const locked = mode === 'edit' && value === editingDept;
+                            return (
+                                <Chip
+                                    key={value}
+                                    label={locked ? `${label} • atual` : label}
+                                    active={selected}
+                                    disabled={isBusy || locked}
+                                    onPress={() => {
+                                        if (locked) return;
+                                        setCombinedDepts((prev) =>
+                                            selected
+                                                ? prev.filter((d) => d !== value)
+                                                : [...prev, value]
+                                        );
+                                        if (!selected) {
+                                            // Inicializa o slice vazio ao selecionar novo depto.
+                                            setServiceSelections((prev) => ({
+                                                ...prev,
+                                                [value]: prev[value] ?? EMPTY_SELECTION,
+                                            }));
+                                        }
+                                        setServiceError(null);
+                                    }}
+                                />
+                            );
+                        })}
+                    </View>
+                    {mode === 'edit' ? (
+                        <Text className="mb-3 mt-1 font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
+                            O departamento atual será atualizado; os demais serão criados como
+                            agendamentos combinados (mesmo carro, mesma data).
+                        </Text>
+                    ) : combinedDepts.length === 0 ? (
+                        <Text className="mb-3 mt-1 font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
+                            Selecione ao menos um departamento.
+                        </Text>
+                    ) : (
+                        <View className="mb-3" />
+                    )}
+                </>
             ) : (
-                <View className="mb-3" />
+                <>
+                    <FieldLabel>Departamento *</FieldLabel>
+                    <View className="mb-1 flex-row flex-wrap gap-2">
+                        {DEPARTMENTS.map(([value, label]) => (
+                            <Chip
+                                key={value}
+                                label={label}
+                                active={department === value}
+                                disabled={isBusy}
+                                onPress={() => {
+                                    if (value !== department) {
+                                        // Trocar de departamento invalida serviços/película.
+                                        setServiceSelections({});
+                                        setServiceError(null);
+                                    }
+                                    setValue('department', value, { shouldValidate: true });
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {errors.department ? (
+                        <Text className="mb-3 mt-1 font-sans text-sm text-error">
+                            {errors.department.message}
+                        </Text>
+                    ) : (
+                        <View className="mb-3" />
+                    )}
+                </>
             )}
 
             {/* ─── Data + Horário de entrega ────────────────────────────── */}
@@ -681,7 +916,7 @@ export function AppointmentFormFields({
                 render={({ field: { onChange, onBlur, value } }) => (
                     <TextField
                         label="Nº O.S. Concessionária"
-                        placeholder="Ex: OS-2024-001"
+                        placeholder="Opcional"
                         autoCorrect={false}
                         value={value}
                         onChangeText={onChange}
@@ -759,173 +994,47 @@ export function AppointmentFormFields({
                 error={errors.consultant_id?.message}
             />
 
-            {/* ─── Películas (film/security_film/ppf) ───────────────────── */}
-            {isFilmDept ? (
-                <View className="mb-4 rounded-2xl border border-neutral-100 bg-neutral-50 p-3 dark:border-dark-border-soft dark:bg-dark-elevated">
-                    <Text className="mb-2 font-sans-semibold text-xs uppercase tracking-wide text-neutral-500 dark:text-dark-text-muted">
-                        Películas
+            {/* ─── Seção(ões) de serviços/películas ─────────────────────── */}
+            {isCombined && combinedSupported ? (
+                combinedDepts.length > 0 ? (
+                    <View className="gap-1">
+                        {combinedDepts.map((dept) => (
+                            <DepartmentServicesSection
+                                key={dept}
+                                department={dept}
+                                storeBrandId={storeBrandId}
+                                isCourtesyAppointment={isCourtesyAppointment}
+                                value={getSelection(dept)}
+                                onChange={setSelection(dept)}
+                                sectionTitle={DEPARTMENT_LABELS[dept] ?? dept}
+                                disabled={isBusy}
+                            />
+                        ))}
+                    </View>
+                ) : null
+            ) : department ? (
+                <DepartmentServicesSection
+                    department={department}
+                    storeBrandId={storeBrandId}
+                    isCourtesyAppointment={isCourtesyAppointment}
+                    value={getSelection(department)}
+                    onChange={setSelection(department)}
+                    disabled={isBusy}
+                />
+            ) : null}
+
+            {/* ─── Preview do modo combinado ────────────────────────────── */}
+            {combinedPreview ? (
+                <View className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2.5 dark:border-violet-800 dark:bg-violet-900/20">
+                    <Text className="font-sans text-sm text-violet-800 dark:text-violet-300">
+                        {combinedPreview}
                     </Text>
-
-                    {!storeBrandId ? (
-                        <Text className="font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
-                            Selecione a loja para ver os serviços disponíveis.
-                        </Text>
-                    ) : (
-                        <>
-                            {/* Picker: serviço */}
-                            <FieldLabel>Serviço</FieldLabel>
-                            <PickerField
-                                placeholder={
-                                    servicesLoading
-                                        ? 'Carregando serviços...'
-                                        : filmServiceOptions.length === 0
-                                          ? 'Nenhum serviço disponível'
-                                          : 'Selecionar serviço...'
-                                }
-                                value={pendingFilmService?.name}
-                                disabled={isBusy || filmServiceOptions.length === 0}
-                                onPress={() => filmServiceSheetRef.current?.present()}
-                            />
-
-                            {/* Tonalidade (film / security_film) */}
-                            {(department === 'film' || department === 'security_film') &&
-                            pendingFilmServiceId ? (
-                                <>
-                                    <FieldLabel>Tonalidade *</FieldLabel>
-                                    <PickerField
-                                        placeholder="Selecionar tonalidade..."
-                                        value={pendingFilmTonality ?? undefined}
-                                        disabled={isBusy}
-                                        onPress={() => filmTonalitySheetRef.current?.present()}
-                                    />
-                                </>
-                            ) : null}
-
-                            {/* Marca PPF */}
-                            {department === 'ppf' && pendingFilmServiceId ? (
-                                <>
-                                    <FieldLabel>Marca PPF</FieldLabel>
-                                    <PickerField
-                                        placeholder="Selecionar marca..."
-                                        value={
-                                            ppfBrands.find((b) => b.id === pendingFilmTypeId)?.name
-                                        }
-                                        disabled={isBusy}
-                                        onPress={() => filmBrandSheetRef.current?.present()}
-                                    />
-                                </>
-                            ) : null}
-
-                            <Button
-                                title="Adicionar película"
-                                variant="secondary"
-                                icon="add"
-                                disabled={
-                                    isBusy ||
-                                    !pendingFilmServiceId ||
-                                    (requiresTonality && !pendingFilmTonality)
-                                }
-                                onPress={addFilmEntry}
-                            />
-                        </>
-                    )}
-
-                    {/* Entradas adicionadas */}
-                    {filmEntries.length > 0 ? (
-                        <View className="mt-3 gap-2">
-                            {filmEntries.map((entry, idx) => {
-                                const brand = ppfBrands.find((b) => b.id === entry.film_type_id);
-                                const label = entry.service_code
-                                    ? `${entry.service_code} — ${entry.service_name}`
-                                    : entry.service_name;
-                                return (
-                                    <View
-                                        key={`${entry.service_id}-${idx}`}
-                                        className="flex-row items-center gap-3 rounded-xl bg-white px-3.5 py-3 dark:bg-dark-surface"
-                                    >
-                                        <Ionicons name="layers-outline" size={18} color="#98A2B3" />
-                                        <View className="flex-1">
-                                            <Text
-                                                className="font-sans text-sm text-neutral-800 dark:text-dark-text"
-                                                numberOfLines={2}
-                                            >
-                                                {label}
-                                            </Text>
-                                            {entry.tonality || brand ? (
-                                                <Text className="mt-0.5 font-sans text-xs text-neutral-400 dark:text-dark-text-muted">
-                                                    {[entry.tonality, brand?.name]
-                                                        .filter(Boolean)
-                                                        .join(' · ')}
-                                                </Text>
-                                            ) : null}
-                                        </View>
-                                        <Pressable
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`Remover ${entry.service_name}`}
-                                            hitSlop={8}
-                                            onPress={() => removeFilmEntry(entry.service_id)}
-                                            className="h-7 w-7 items-center justify-center rounded-full active:bg-neutral-100 dark:active:bg-dark-elevated"
-                                        >
-                                            <Ionicons name="close" size={18} color="#98A2B3" />
-                                        </Pressable>
-                                    </View>
-                                );
-                            })}
-                        </View>
-                    ) : null}
-
-                    {serviceError ? (
-                        <Text className="mt-2 font-sans text-sm text-error">{serviceError}</Text>
-                    ) : null}
                 </View>
             ) : null}
 
-            {/* ─── Serviços (departamentos não-película) ────────────────── */}
-            {department && !isFilmDept ? (
-                <View className="mb-4">
-                    <FieldLabel>Serviços *</FieldLabel>
-                    <PickerField
-                        placeholder={
-                            !storeBrandId
-                                ? 'Selecione a loja primeiro'
-                                : servicesLoading
-                                  ? 'Carregando serviços...'
-                                  : serviceIds.length > 0
-                                    ? `${serviceIds.length} serviço(s) selecionado(s)`
-                                    : 'Selecionar serviços...'
-                        }
-                        disabled={!storeBrandId || isBusy}
-                        onPress={() => serviceSheetRef.current?.present()}
-                        error={serviceError ?? undefined}
-                    />
-                    {selectedServices.length > 0 ? (
-                        <View className="mt-2 gap-2">
-                            {selectedServices.map((svc) => (
-                                <View
-                                    key={svc.id}
-                                    className="flex-row items-center gap-3 rounded-xl bg-neutral-50 px-3.5 py-3 dark:bg-dark-elevated"
-                                >
-                                    <Ionicons name="cube-outline" size={18} color="#98A2B3" />
-                                    <Text
-                                        className="flex-1 font-sans text-sm text-neutral-800 dark:text-dark-text"
-                                        numberOfLines={2}
-                                    >
-                                        {svc.code ? `${svc.code} — ${svc.name}` : svc.name}
-                                    </Text>
-                                    <Pressable
-                                        accessibilityRole="button"
-                                        accessibilityLabel={`Remover ${svc.name}`}
-                                        hitSlop={8}
-                                        onPress={() => removeService(svc.id)}
-                                        className="h-7 w-7 items-center justify-center rounded-full active:bg-neutral-200 dark:active:bg-dark-surface"
-                                    >
-                                        <Ionicons name="close" size={18} color="#98A2B3" />
-                                    </Pressable>
-                                </View>
-                            ))}
-                        </View>
-                    ) : null}
-                </View>
+            {/* ─── Erro de validação de serviços (nível form) ───────────── */}
+            {serviceError ? (
+                <Text className="mb-3 font-sans text-sm text-error">{serviceError}</Text>
             ) : null}
 
             {/* ─── Observações ──────────────────────────────────────────── */}
@@ -950,7 +1059,7 @@ export function AppointmentFormFields({
             {/* ─── Ação ─────────────────────────────────────────────────── */}
             <View className="mt-2">
                 <Button
-                    title={isBusy ? 'Salvando...' : mode === 'edit' ? 'Salvar alterações' : 'Criar agendamento'}
+                    title={submitLabel}
                     icon="checkmark"
                     loading={isBusy}
                     disabled={isBusy}
@@ -958,7 +1067,7 @@ export function AppointmentFormFields({
                 />
             </View>
 
-            {/* ─── Sheets de seleção ────────────────────────────────────── */}
+            {/* ─── Sheets de seleção (loja/modelo/consultor) ────────────── */}
             <Select<number>
                 ref={storeSheetRef}
                 title="Selecionar loja"
@@ -966,12 +1075,11 @@ export function AppointmentFormFields({
                 value={storeId ?? null}
                 onChange={(v) => {
                     setValue('store_id', v, { shouldValidate: true });
-                    // Trocar de loja pode mudar a marca → limpa modelo/consultor.
+                    // Trocar de loja pode mudar a marca → limpa modelo/consultor/serviços.
                     setValue('vehicle_model', '');
                     setValue('vehicle_model_id', undefined);
                     setValue('consultant_id', undefined);
-                    setServiceIds([]);
-                    setFilmEntries([]);
+                    setServiceSelections({});
                 }}
             />
             <Select<number>
@@ -992,19 +1100,350 @@ export function AppointmentFormFields({
                 value={consultantId ?? null}
                 onChange={(v) => setValue('consultant_id', v, { shouldValidate: true })}
             />
-            {department && !isFilmDept ? (
-                <Select<number>
-                    ref={serviceSheetRef}
-                    title="Selecionar serviços"
-                    multiple
-                    options={serviceOptions}
-                    value={serviceIds}
-                    onChange={(ids) => {
-                        setServiceIds(ids);
-                        if (ids.length > 0) setServiceError(null);
-                    }}
-                />
+        </View>
+    );
+}
+
+// ─── DepartmentServicesSection ────────────────────────────────────────────────
+// Subcomponente extraído: encapsula todo o picker de serviços/películas de UM
+// departamento. Espelha o `DepartmentServicesSection` do web — permite reusar a
+// mesma UI tanto no modo simples (1 depto) quanto no combinado (N deptos).
+// Cada instância tem seus próprios sheets/estado pendente de película.
+
+interface DepartmentServicesSectionProps {
+    department: string;
+    storeBrandId?: number;
+    isCourtesyAppointment: boolean;
+    value: ServiceSelectionState;
+    onChange: (v: ServiceSelectionState) => void;
+    /** Label exibido no topo da seção (modo combinado). Omitir no modo simples. */
+    sectionTitle?: string;
+    disabled?: boolean;
+}
+
+function DepartmentServicesSection({
+    department,
+    storeBrandId,
+    isCourtesyAppointment,
+    value,
+    onChange,
+    sectionTitle,
+    disabled,
+}: DepartmentServicesSectionProps) {
+    const isFilmDept = isFilmDepartment(department);
+    const requiresTonality = deptRequiresTonality(department);
+
+    const [pendingFilmServiceId, setPendingFilmServiceId] = useState<number | null>(null);
+    const [pendingFilmTonality, setPendingFilmTonality] = useState<string | null>(null);
+    const [pendingFilmTypeId, setPendingFilmTypeId] = useState<number | null>(null);
+    const [localError, setLocalError] = useState<string | null>(null);
+
+    // Serviços do departamento (filtrados pela marca da loja).
+    const { data: allServices = [], isLoading: servicesLoading } = useServices(
+        department || undefined,
+        storeBrandId
+    );
+    // A8 — serviços exclusivos de cortesia só aparecem quando o agendamento é cortesia.
+    const services = useMemo(
+        () => (isCourtesyAppointment ? allServices : allServices.filter((s) => !s.is_courtesy_only)),
+        [allServices, isCourtesyAppointment]
+    );
+
+    // Tipos de película do departamento atual (A7 — dirige tonalidades; PPF = marca).
+    const { data: filmTypes = [] } = useFilmTypes(
+        isFilmDept ? (department as FilmDepartment) : undefined
+    );
+    const ppfBrands = filmTypes;
+
+    // ─── Sheets desta seção ────────────────────────────────────────────────────
+    const serviceSheetRef = useRef<SelectRef>(null);
+    const filmServiceSheetRef = useRef<SelectRef>(null);
+    const filmTonalitySheetRef = useRef<SelectRef>(null);
+    const filmBrandSheetRef = useRef<SelectRef>(null);
+
+    const sortByLabel = (a: { label: string }, b: { label: string }) =>
+        a.label.localeCompare(b.label, 'pt-BR');
+
+    const serviceOptions = useMemo(
+        () =>
+            services
+                .map((s) => ({ value: s.id, label: s.code ? `${s.code} — ${s.name}` : s.name }))
+                .sort(sortByLabel),
+        [services]
+    );
+    const filmServiceOptions = useMemo(
+        () =>
+            services
+                .filter((s) => !value.filmEntries.some((e) => e.service_id === s.id))
+                .map((s) => ({ value: s.id, label: s.code ? `${s.code} — ${s.name}` : s.name }))
+                .sort(sortByLabel),
+        [services, value.filmEntries]
+    );
+    const pendingFilmService = services.find((s) => s.id === pendingFilmServiceId);
+    // A7 — tonalidades dirigidas pelo tipo de película (união das available_tonalities).
+    const departmentTonalities = useMemo(() => {
+        const set = new Set<string>();
+        for (const ft of filmTypes) {
+            for (const t of ft.available_tonalities ?? []) set.add(t);
+        }
+        return [...set];
+    }, [filmTypes]);
+    const tonalityOptions = useMemo(
+        () =>
+            getTonalityOptionsForFilmType({
+                serviceCode: pendingFilmService?.code,
+                department,
+                availableTonalities: departmentTonalities,
+            }),
+        [pendingFilmService, department, departmentTonalities]
+    );
+    const ppfBrandOptions = useMemo(
+        () => ppfBrands.map((ft) => ({ value: ft.id, label: ft.name })),
+        [ppfBrands]
+    );
+
+    const selectedServices = useMemo(
+        () => services.filter((s) => value.serviceIds.includes(s.id)),
+        [services, value.serviceIds]
+    );
+
+    // ─── Película: adicionar / remover ────────────────────────────────────────
+    const addFilmEntry = () => {
+        if (!pendingFilmServiceId) return;
+        const svc = services.find((s) => s.id === pendingFilmServiceId);
+        if (!svc) return;
+        if (requiresTonality && !pendingFilmTonality) {
+            setLocalError('Selecione a tonalidade da película.');
+            return;
+        }
+        onChange({
+            ...value,
+            filmEntries: [
+                ...value.filmEntries,
+                {
+                    service_id: svc.id,
+                    tonality: pendingFilmTonality,
+                    film_type_id: pendingFilmTypeId ?? undefined,
+                    film_roll_id: null,
+                    service_name: svc.name,
+                    service_code: svc.code ?? null,
+                },
+            ],
+        });
+        setPendingFilmServiceId(null);
+        setPendingFilmTonality(null);
+        setPendingFilmTypeId(null);
+        setLocalError(null);
+    };
+
+    const removeFilmEntry = (serviceId: number) => {
+        onChange({ ...value, filmEntries: value.filmEntries.filter((e) => e.service_id !== serviceId) });
+    };
+
+    // ─── Película: tonalidade por região (applications) — espelha o web ────────
+    const updateFilmEntry = (serviceId: number, patch: Partial<FilmEntryLocal>) => {
+        onChange({
+            ...value,
+            filmEntries: value.filmEntries.map((e) =>
+                e.service_id === serviceId ? { ...e, ...patch } : e
+            ),
+        });
+    };
+
+    const enableRegions = (entry: FilmEntryLocal) => {
+        updateFilmEntry(entry.service_id, {
+            applications: [
+                { tonality: entry.tonality ?? '', region: '' },
+                { tonality: '', region: '' },
+            ],
+        });
+        setLocalError(null);
+    };
+
+    const updateApplication = (entry: FilmEntryLocal, index: number, patch: Partial<FilmApplication>) => {
+        const next = (entry.applications ?? []).map((app, i) =>
+            i === index ? { ...app, ...patch } : app
+        );
+        updateFilmEntry(entry.service_id, { applications: next });
+        setLocalError(null);
+    };
+
+    const addApplication = (entry: FilmEntryLocal) => {
+        updateFilmEntry(entry.service_id, {
+            applications: [...(entry.applications ?? []), { tonality: '', region: '' }],
+        });
+    };
+
+    const removeApplication = (entry: FilmEntryLocal, index: number) => {
+        const next = (entry.applications ?? []).filter((_, i) => i !== index);
+        if (next.length <= 1) {
+            updateFilmEntry(entry.service_id, {
+                applications: null,
+                tonality: next[0]?.tonality || entry.tonality || null,
+            });
+            return;
+        }
+        updateFilmEntry(entry.service_id, { applications: next });
+    };
+
+    const removeService = (serviceId: number) => {
+        onChange({ ...value, serviceIds: value.serviceIds.filter((id) => id !== serviceId) });
+    };
+
+    return (
+        <View className="mb-4 rounded-2xl border border-neutral-100 bg-neutral-50 p-3 dark:border-dark-border-soft dark:bg-dark-elevated">
+            {sectionTitle ? (
+                <Text className="mb-2 font-sans-bold text-xs uppercase tracking-wide text-primary-700 dark:text-brand">
+                    {sectionTitle}
+                </Text>
             ) : null}
+
+            {/* ─── Películas (film/security_film/ppf) ───────────────────── */}
+            {isFilmDept ? (
+                <View>
+                    <Text className="mb-2 font-sans-semibold text-xs uppercase tracking-wide text-neutral-500 dark:text-dark-text-muted">
+                        Películas
+                    </Text>
+
+                    {!storeBrandId ? (
+                        <Text className="font-sans text-sm text-neutral-400 dark:text-dark-text-muted">
+                            Selecione a loja para ver os serviços disponíveis.
+                        </Text>
+                    ) : (
+                        <>
+                            {/* Picker: serviço */}
+                            <FieldLabel>Serviço</FieldLabel>
+                            <PickerField
+                                placeholder={
+                                    servicesLoading
+                                        ? 'Carregando serviços...'
+                                        : filmServiceOptions.length === 0
+                                          ? 'Nenhum serviço disponível'
+                                          : 'Selecionar serviço...'
+                                }
+                                value={pendingFilmService?.name}
+                                disabled={disabled || filmServiceOptions.length === 0}
+                                onPress={() => filmServiceSheetRef.current?.present()}
+                            />
+
+                            {/* Tonalidade (film / security_film) */}
+                            {(department === 'film' || department === 'security_film') &&
+                            pendingFilmServiceId ? (
+                                <>
+                                    <FieldLabel>Tonalidade *</FieldLabel>
+                                    <PickerField
+                                        placeholder="Selecionar tonalidade..."
+                                        value={pendingFilmTonality ?? undefined}
+                                        disabled={disabled}
+                                        onPress={() => filmTonalitySheetRef.current?.present()}
+                                    />
+                                </>
+                            ) : null}
+
+                            {/* Marca PPF */}
+                            {department === 'ppf' && pendingFilmServiceId ? (
+                                <>
+                                    <FieldLabel>Marca PPF</FieldLabel>
+                                    <PickerField
+                                        placeholder="Selecionar marca..."
+                                        value={ppfBrands.find((b) => b.id === pendingFilmTypeId)?.name}
+                                        disabled={disabled}
+                                        onPress={() => filmBrandSheetRef.current?.present()}
+                                    />
+                                </>
+                            ) : null}
+
+                            <Button
+                                title="Adicionar película"
+                                variant="secondary"
+                                icon="add"
+                                disabled={
+                                    disabled ||
+                                    !pendingFilmServiceId ||
+                                    (requiresTonality && !pendingFilmTonality)
+                                }
+                                onPress={addFilmEntry}
+                            />
+                        </>
+                    )}
+
+                    {/* Entradas adicionadas */}
+                    {value.filmEntries.length > 0 ? (
+                        <View className="mt-3 gap-2">
+                            {value.filmEntries.map((entry, idx) => (
+                                <FilmEntryCard
+                                    key={`${entry.service_id}-${idx}`}
+                                    index={idx}
+                                    entry={entry}
+                                    department={department}
+                                    ppfBrandName={ppfBrands.find((b) => b.id === entry.film_type_id)?.name}
+                                    availableTonalities={departmentTonalities}
+                                    disabled={disabled}
+                                    // Só película (film/security_film) permite tonalidade por região.
+                                    allowRegions={requiresTonality}
+                                    onRemove={() => removeFilmEntry(entry.service_id)}
+                                    onEnableRegions={() => enableRegions(entry)}
+                                    onUpdateApplication={(i, patch) => updateApplication(entry, i, patch)}
+                                    onAddApplication={() => addApplication(entry)}
+                                    onRemoveApplication={(i) => removeApplication(entry, i)}
+                                />
+                            ))}
+                        </View>
+                    ) : null}
+
+                    {localError ? (
+                        <Text className="mt-2 font-sans text-sm text-error">{localError}</Text>
+                    ) : null}
+                </View>
+            ) : (
+                /* ─── Serviços (departamentos não-película) ─────────────── */
+                <View>
+                    <FieldLabel>Serviços *</FieldLabel>
+                    <PickerField
+                        placeholder={
+                            !storeBrandId
+                                ? 'Selecione a loja primeiro'
+                                : servicesLoading
+                                  ? 'Carregando serviços...'
+                                  : value.serviceIds.length > 0
+                                    ? `${value.serviceIds.length} serviço(s) selecionado(s)`
+                                    : 'Selecionar serviços...'
+                        }
+                        disabled={!storeBrandId || disabled}
+                        onPress={() => serviceSheetRef.current?.present()}
+                    />
+                    {selectedServices.length > 0 ? (
+                        <View className="mt-2 gap-2">
+                            {selectedServices.map((svc) => (
+                                <View
+                                    key={svc.id}
+                                    className="flex-row items-center gap-3 rounded-xl bg-white px-3.5 py-3 dark:bg-dark-surface"
+                                >
+                                    <Ionicons name="cube-outline" size={18} color="#98A2B3" />
+                                    <Text
+                                        className="flex-1 font-sans text-sm text-neutral-800 dark:text-dark-text"
+                                        numberOfLines={2}
+                                    >
+                                        {svc.code ? `${svc.code} — ${svc.name}` : svc.name}
+                                    </Text>
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Remover ${svc.name}`}
+                                        hitSlop={8}
+                                        disabled={disabled}
+                                        onPress={() => removeService(svc.id)}
+                                        className="h-7 w-7 items-center justify-center rounded-full active:bg-neutral-200 dark:active:bg-dark-elevated"
+                                    >
+                                        <Ionicons name="close" size={18} color="#98A2B3" />
+                                    </Pressable>
+                                </View>
+                            ))}
+                        </View>
+                    ) : null}
+                </View>
+            )}
+
+            {/* ─── Sheets desta seção ───────────────────────────────────── */}
             {isFilmDept ? (
                 <>
                     <Select<number>
@@ -1025,7 +1464,7 @@ export function AppointmentFormFields({
                         value={pendingFilmTonality}
                         onChange={(v) => {
                             setPendingFilmTonality(v);
-                            setServiceError(null);
+                            setLocalError(null);
                         }}
                     />
                     {department === 'ppf' ? (
@@ -1038,7 +1477,288 @@ export function AppointmentFormFields({
                         />
                     ) : null}
                 </>
+            ) : (
+                <Select<number>
+                    ref={serviceSheetRef}
+                    title="Selecionar serviços"
+                    multiple
+                    options={serviceOptions}
+                    value={value.serviceIds}
+                    onChange={(ids) => onChange({ ...value, serviceIds: ids })}
+                />
+            )}
+        </View>
+    );
+}
+
+// ─── Película: card de entrada com tonalidade por região ──────────────────────
+
+interface FilmEntryCardProps {
+    index: number;
+    entry: FilmEntryLocal;
+    department: string;
+    ppfBrandName?: string;
+    /** Tonalidades configuradas nos tipos de película do depto (A7). */
+    availableTonalities: string[];
+    disabled?: boolean;
+    /** Regiões só em película (film/security_film); PPF fica sem essa opção. */
+    allowRegions: boolean;
+    onRemove: () => void;
+    onEnableRegions: () => void;
+    onUpdateApplication: (index: number, patch: Partial<FilmApplication>) => void;
+    onAddApplication: () => void;
+    onRemoveApplication: (index: number) => void;
+}
+
+/**
+ * Card de uma película adicionada. Espelha o "FILME N" do web:
+ *  - cabeçalho (rótulo do serviço + remover);
+ *  - tonalidade única (quando sem regiões) exibida ao lado do rótulo;
+ *  - link "Tonalidades diferentes por região do carro?" quando aplicável;
+ *  - lista editável de aplicações {tonalidade (sheet), região (input+sugestões)}
+ *    com remover por linha e "+ tonalidade".
+ */
+function FilmEntryCard({
+    index,
+    entry,
+    department,
+    ppfBrandName,
+    availableTonalities,
+    disabled,
+    allowRegions,
+    onRemove,
+    onEnableRegions,
+    onUpdateApplication,
+    onAddApplication,
+    onRemoveApplication,
+}: FilmEntryCardProps) {
+    const tonalitySheetRef = useRef<SelectRef>(null);
+    // Índice da aplicação cuja tonalidade está sendo escolhida na sheet.
+    const [activeAppIndex, setActiveAppIndex] = useState<number | null>(null);
+
+    const hasRegions = !!entry.applications && entry.applications.length > 0;
+    const label = entry.service_code
+        ? `${entry.service_code} — ${entry.service_name}`
+        : entry.service_name;
+
+    // Tonalidades válidas para ESTE serviço (código do serviço + depto + A7).
+    const tonalityOptions = useMemo(
+        () =>
+            getTonalityOptionsForFilmType({
+                serviceCode: entry.service_code,
+                department,
+                availableTonalities,
+            }),
+        [entry.service_code, department, availableTonalities]
+    );
+
+    const openTonalitySheet = (appIndex: number) => {
+        setActiveAppIndex(appIndex);
+        tonalitySheetRef.current?.present();
+    };
+
+    return (
+        <View className="rounded-xl bg-white p-3 dark:bg-dark-surface">
+            {/* Cabeçalho: rótulo + remover */}
+            <View className="flex-row items-start gap-3">
+                <Ionicons name="layers-outline" size={18} color="#98A2B3" />
+                <View className="flex-1">
+                    <Text className="font-sans-semibold text-xs uppercase tracking-wide text-neutral-400 dark:text-dark-text-muted">
+                        {`Filme ${index + 1}`}
+                    </Text>
+                    <Text
+                        className="mt-0.5 font-sans text-sm text-neutral-800 dark:text-dark-text"
+                        numberOfLines={2}
+                    >
+                        {label}
+                    </Text>
+                    {/* Sem regiões: tonalidade única e/ou marca PPF ao lado */}
+                    {!hasRegions && (entry.tonality || ppfBrandName) ? (
+                        <Text className="mt-0.5 font-sans text-xs text-neutral-400 dark:text-dark-text-muted">
+                            {[entry.tonality, ppfBrandName].filter(Boolean).join(' · ')}
+                        </Text>
+                    ) : null}
+                </View>
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remover ${entry.service_name}`}
+                    hitSlop={8}
+                    disabled={disabled}
+                    onPress={onRemove}
+                    className="h-7 w-7 items-center justify-center rounded-full active:bg-neutral-100 dark:active:bg-dark-elevated"
+                >
+                    <Ionicons name="close" size={18} color="#98A2B3" />
+                </Pressable>
+            </View>
+
+            {/* Aplicações por região */}
+            {allowRegions && hasRegions ? (
+                <View className="mt-2.5 gap-2">
+                    {entry.applications!.map((app, appIdx) => (
+                        <View key={appIdx} className="flex-row items-center gap-2">
+                            {/* Tonalidade (sheet) */}
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={
+                                    app.tonality
+                                        ? `Tonalidade ${app.tonality}`
+                                        : 'Selecionar tonalidade da região'
+                                }
+                                disabled={disabled}
+                                onPress={() => openTonalitySheet(appIdx)}
+                                className={[
+                                    'min-h-[44px] w-24 flex-row items-center justify-between rounded-lg border px-3 py-2 active:opacity-80',
+                                    app.tonality
+                                        ? 'border-neutral-200 dark:border-dark-border-strong'
+                                        : 'border-error',
+                                    'bg-white dark:bg-dark-input',
+                                ].join(' ')}
+                            >
+                                <Text
+                                    className={[
+                                        'flex-1 font-sans text-sm',
+                                        app.tonality
+                                            ? 'text-neutral-900 dark:text-dark-text'
+                                            : 'text-neutral-400 dark:text-dark-text-muted',
+                                    ].join(' ')}
+                                    numberOfLines={1}
+                                >
+                                    {app.tonality || 'G05...'}
+                                </Text>
+                                <Ionicons name="chevron-down" size={16} color="#98A2B3" />
+                            </Pressable>
+
+                            {/* Região (texto livre + sugestões) */}
+                            <View className="flex-1">
+                                <RegionField
+                                    value={app.region ?? ''}
+                                    disabled={disabled}
+                                    onChange={(region) => onUpdateApplication(appIdx, { region })}
+                                />
+                            </View>
+
+                            {/* Remover aplicação */}
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={`Remover região ${appIdx + 1}`}
+                                hitSlop={8}
+                                disabled={disabled}
+                                onPress={() => onRemoveApplication(appIdx)}
+                                className="h-8 w-8 items-center justify-center rounded-full active:bg-neutral-100 dark:active:bg-dark-elevated"
+                            >
+                                <Ionicons name="close" size={16} color="#98A2B3" />
+                            </Pressable>
+                        </View>
+                    ))}
+
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Adicionar tonalidade"
+                        disabled={disabled}
+                        onPress={onAddApplication}
+                        className="mt-0.5 flex-row items-center gap-1 self-start active:opacity-70"
+                    >
+                        <Ionicons name="add" size={16} color="#98A2B3" />
+                        <Text className="font-sans-medium text-xs text-neutral-500 dark:text-dark-text-muted">
+                            tonalidade
+                        </Text>
+                    </Pressable>
+                </View>
             ) : null}
+
+            {/* Link para detalhar por região (só quando sem regiões ainda) */}
+            {allowRegions && !hasRegions ? (
+                <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Tonalidades diferentes por região do carro?"
+                    disabled={disabled}
+                    onPress={onEnableRegions}
+                    className="mt-2 self-start active:opacity-70"
+                >
+                    <Text className="font-sans text-xs text-neutral-500 underline dark:text-dark-text-muted">
+                        Tonalidades diferentes por região do carro?
+                    </Text>
+                </Pressable>
+            ) : null}
+
+            {/* Sheet de tonalidade (compartilhada pelas aplicações do card) */}
+            <Select<string>
+                ref={tonalitySheetRef}
+                title="Selecionar tonalidade"
+                options={tonalityOptions}
+                value={
+                    activeAppIndex !== null
+                        ? (entry.applications?.[activeAppIndex]?.tonality ?? null)
+                        : null
+                }
+                onChange={(v) => {
+                    if (activeAppIndex !== null) {
+                        onUpdateApplication(activeAppIndex, { tonality: v });
+                    }
+                }}
+            />
+        </View>
+    );
+}
+
+/**
+ * Campo de região do carro: input de texto livre + sheet de sugestões.
+ * Adapta o RegionSuggestInput do web (popover) ao mobile: um botão "sugestões"
+ * abre uma bottom sheet com FILM_REGION_SUGGESTIONS; o texto continua editável.
+ */
+function RegionField({
+    value,
+    onChange,
+    disabled,
+}: {
+    value: string;
+    onChange: (value: string) => void;
+    disabled?: boolean;
+}) {
+    const { colors } = useTheme();
+    const suggestSheetRef = useRef<SelectRef>(null);
+    const suggestionOptions = useMemo(
+        () => FILM_REGION_SUGGESTIONS.map((r) => ({ value: r, label: r })),
+        []
+    );
+
+    return (
+        <View
+            className={[
+                'min-h-[44px] flex-row items-center rounded-lg border',
+                'border-neutral-200 bg-white dark:border-dark-border-strong dark:bg-dark-input',
+                disabled ? 'opacity-60' : '',
+            ].join(' ')}
+        >
+            <TextInput
+                className="flex-1 px-3 py-2 font-sans text-sm text-neutral-900 dark:text-dark-text"
+                placeholder="Região (ex.: Portas)"
+                placeholderTextColor={colors.placeholder}
+                value={value}
+                maxLength={60}
+                autoCorrect={false}
+                accessibilityLabel="Região do carro"
+                onChangeText={onChange}
+                editable={!disabled}
+            />
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Sugestões de região"
+                hitSlop={8}
+                disabled={disabled}
+                onPress={() => suggestSheetRef.current?.present()}
+                className="h-11 w-9 items-center justify-center"
+            >
+                <Ionicons name="chevron-down" size={16} color="#98A2B3" />
+            </Pressable>
+
+            <Select<string>
+                ref={suggestSheetRef}
+                title="Sugestões de região"
+                options={suggestionOptions}
+                value={value || null}
+                onChange={(v) => onChange(v)}
+            />
         </View>
     );
 }

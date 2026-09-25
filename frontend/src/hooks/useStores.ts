@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/auth.store';
 export function useStores() {
     const { user } = useAuth();
     const effectivePermissions = useAuthStore((s) => s.effectivePermissions);
-    const { availableStores, selectedStoreId, isMultiStore, selectStore, setAvailableStores } = useStoreStore();
+    const { availableStores, setAvailableStores } = useStoreStore();
 
     const { data: allStores = [] } = useQuery({
         queryKey: ['stores'],
@@ -35,9 +35,6 @@ export function useStores() {
 
     return {
         stores: availableStores,
-        selectedStoreId,
-        isMultiStore,
-        selectStore,
         allStores // exposed just in case needed for raw list
     };
 }

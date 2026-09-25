@@ -185,7 +185,14 @@ export function ServiceOrderDetailScreen({
                 <Section title={`Itens (${order.items?.length ?? 0})`}>
                     {order.items && order.items.length > 0 ? (
                         <View className="gap-2">
-                            {order.items.map((item, idx) => (
+                            {order.items.map((item, idx) => {
+                                // Retalho: sobra de corte anterior (já debitada na época).
+                                // Pode estar no item (tonalidade única) ou em alguma das
+                                // aplicações por região (item multi-tonalidade).
+                                const usedScrap =
+                                    item.used_scrap ||
+                                    (item.film_applications ?? []).some((a) => a.used_scrap);
+                                return (
                                 <View
                                     key={`${item.service_id}-${idx}`}
                                     className="rounded-xl border border-neutral-100 p-3 dark:border-dark-border-soft"
@@ -197,6 +204,7 @@ export function ServiceOrderDetailScreen({
                                         >
                                             {item.service_name || item.service_code || `Serviço ${item.service_id}`}
                                         </Text>
+                                        {usedScrap ? <Chip label="Retalho" tone="brand" /> : null}
                                         <Text className="font-sans-bold text-sm text-neutral-900 dark:text-dark-text">
                                             {formatBRL(item.unit_price)}
                                         </Text>
@@ -206,12 +214,23 @@ export function ServiceOrderDetailScreen({
                                         {item.tonality ? (
                                             <Meta label="Tonalidade" value={item.tonality} />
                                         ) : null}
-                                        {item.roll_code ? (
+                                        {item.roll_code && !usedScrap ? (
                                             <Meta label="Bobina" value={item.roll_code} />
+                                        ) : null}
+                                        {usedScrap ? (
+                                            <Meta
+                                                label="Bobina"
+                                                value={
+                                                    item.scrap_source_roll_id
+                                                        ? `retalho (origem #${item.scrap_source_roll_id})`
+                                                        : 'retalho (sem débito)'
+                                                }
+                                            />
                                         ) : null}
                                     </View>
                                 </View>
-                            ))}
+                                );
+                            })}
                         </View>
                     ) : (
                         <Empty text="Nenhum serviço vinculado." />

@@ -25,7 +25,44 @@ export interface ServiceOrder {
     department: Department;
     service_type: string;        // Mantendo compatibilidade se necessário, ou usar service_description
     service_description?: string;  // Descrição livre do serviço (LEGACY - use items)
-    items?: Array<{ service_id: number; quantity: number; unit_price?: number; notes?: string; tonality?: string; roll_code?: string; service_name?: string | null; service_code?: string | null; film_roll_id?: number | null; film_type_id?: number | null }>;
+    items?: Array<{
+        service_id: number;
+        quantity: number;
+        unit_price?: number;
+        notes?: string;
+        tonality?: string;
+        roll_code?: string;
+        service_name?: string | null;
+        service_code?: string | null;
+        service_department?: string | null;
+        film_roll_id?: number | null;
+        film_type_id?: number | null;
+        /**
+         * Retalho: o serviço foi feito com uma SOBRA de corte anterior, que já foi
+         * debitada da bobina na época. Nesse caso o backend NÃO desconta metros de
+         * nenhuma bobina e `film_roll_id` fica nulo.
+         */
+        used_scrap?: boolean;
+        /**
+         * Bobina de onde saiu o retalho — opcional e podendo estar `esgotada`
+         * (o pedaço costuma vir de um rolo antigo). Só rastreabilidade; não debita.
+         */
+        scrap_source_roll_id?: number | null;
+        /**
+         * Tonalidades por região do carro (ex.: G20 nas portas, G05 no vidro traseiro).
+         * `null`/ausente = item legado com tonalidade única. Quando presente, o consumo
+         * de bobina no Finalizar é feito por tonalidade distinta (1 bobina por tonalidade).
+         */
+        film_applications?: Array<{
+            tonality: string;
+            region?: string | null;
+            film_roll_id?: number | null;
+            roll_code?: string | null;
+            /** Retalho por tonalidade (mesma semântica do item). */
+            used_scrap?: boolean;
+            scrap_source_roll_id?: number | null;
+        }> | null;
+    }>;
     film_type?: string;          // Opcional agora, específico de film?
 
     // Workflow
@@ -56,11 +93,18 @@ export interface ServiceOrder {
     is_return: boolean;
     is_courtesy: boolean;
 
+    /** Briefing do consultor (preenchido no lançamento da O.S.). */
     notes: string | null;
     internal_notes?: string | null;
+    /** Relato técnico do instalador (preenchido ao finalizar; máx. 2000). */
+    execution_notes?: string | null;
     service_date: string | null;
     is_verified: boolean;
     verified_at: string | null;
+    /** O.S. de origem quando esta O.S. é um Retorno (is_return). */
+    original_service_order_id?: number | null;
+    /** URL do vídeo opcional anexado à O.S. (1 por O.S., campo escalar). */
+    video_url?: string | null;
 
     elapsed_minutes: number;
 
@@ -69,6 +113,32 @@ export interface ServiceOrder {
     updated_at: string;
     /** Nome do usuário que fez a última atualização (conferência/auditoria). */
     updated_by_name?: string | null;
+}
+
+/**
+ * Payload de `POST /service-orders/{id}/finalize`.
+ *
+ * - `film_roll_assignments`: 1 atribuição por (service_id, tonalidade). `tonality`
+ *   só para itens com tonalidades por região; itens legados vão sem `tonality`.
+ *   Retalho (`used_scrap`): a bobina não é debitada; `film_roll_id` vai nulo/omitido
+ *   e `scrap_source_roll_id` (opcional) só rastreia a origem.
+ * - `employee_assignments`: instalador(es) por serviço (film/security_film/ppf) —
+ *   obrigatório no backend para esses deptos (≥1). Nos demais, usar `employee_ids`.
+ * - `execution_notes`: relato técnico do instalador (opcional, máx. 2000). Enviar
+ *   trimado; vazio → omitir.
+ */
+export interface FinalizeServiceOrderPayload {
+    completion_photos: string[];
+    film_roll_assignments: {
+        service_id: number;
+        film_roll_id?: number | null;
+        tonality?: string;
+        used_scrap?: boolean;
+        scrap_source_roll_id?: number | null;
+    }[];
+    employee_ids: number[];
+    employee_assignments?: { service_id: number; employee_ids: number[] }[];
+    execution_notes?: string | null;
 }
 
 /**
@@ -123,6 +193,13 @@ export interface CreateServiceOrderData {
     is_return?: boolean;
     is_courtesy?: boolean;
     service_date?: string;
+    /**
+     * O.S. de origem do Retorno. Quando `is_return` é falso, o backend zera o
+     * vínculo; o front envia `null` nesse caso (espelha o web QuickCreateModal).
+     */
+    original_service_order_id?: number | null;
+    /** URL do vídeo opcional (obtida via POST /upload/video). */
+    video_url?: string | null;
 }
 
 export interface UpdateServiceOrderData {

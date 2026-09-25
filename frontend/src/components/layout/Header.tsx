@@ -14,7 +14,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useNavigate } from "react-router-dom";
 import { useWsStatus } from "@/hooks/useWsStatus";
 import { useInstallPrompt } from "@/hooks/useInstallPrompt";
-import { useNotifications, useUnreadNotificationCount, useMarkAllNotificationsRead } from "@/hooks/useNotifications";
+import { useNotifications, useUnreadNotificationCount, useMarkAllNotificationsRead, useMarkNotificationRead } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
 
 interface HeaderProps {
@@ -86,6 +86,7 @@ export function Header({ onMenuClick }: HeaderProps) {
     const { data: unreadCount = 0 } = useUnreadNotificationCount();
     const { data: notifications = [] } = useNotifications(5);
     const markAllRead = useMarkAllNotificationsRead();
+    const markRead = useMarkNotificationRead();
     const { canInstall, install } = useInstallPrompt();
 
     const handleLogout = () => {
@@ -100,7 +101,7 @@ export function Header({ onMenuClick }: HeaderProps) {
 
     return (
         <header
-            className="sticky top-0 z-30 flex h-[60px] w-full items-center justify-between px-4 md:px-6 bg-white dark:bg-[#1A1A1A] border-b border-[#E8E8E8] dark:border-[#222]"
+            className="app-header sticky top-0 z-30 flex h-[60px] w-full items-center justify-between px-4 md:px-6 bg-header border-b border-header-border"
         >
             {/* Left: hamburger (mobile only) */}
             <div className="flex items-center">
@@ -196,6 +197,7 @@ export function Header({ onMenuClick }: HeaderProps) {
                                             !notification.read && 'bg-[#F5A800]/5'
                                         )}
                                         onClick={() => {
+                                            if (!notification.read) markRead.mutate(notification.id);
                                             if (notification.related_url) navigate(notification.related_url);
                                         }}
                                     >

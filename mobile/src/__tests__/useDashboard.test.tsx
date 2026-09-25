@@ -5,17 +5,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 /**
  * Dashboard 3a — hooks do Dashboard executivo.
  * Verifica:
- *  - queryKeys corretas (overview/services/queue);
+ *  - queryKeys corretas (overview/services);
  *  - `enabled` falso quando sem período (não dispara o service);
- *  - useDashboardServicesRanking injeta limit: 10 e o department;
- *  - useDashboardQueue usa queryKey ['dashboard','queue'] (sem params),
- *    tem refetchInterval e repassa o storeId ao service.
+ *  - useDashboardServicesRanking injeta limit: 10 e o department.
  *
  * O analyticsService é mockado. Gotcha: renderHook da RNTL v14 é assíncrono.
  */
 const mockGetOverview = jest.fn();
 const mockGetServices = jest.fn();
-const mockGetQueue = jest.fn();
 
 jest.mock('@/services/api/analytics.service', () => {
     const actual = jest.requireActual('@/services/api/analytics.service');
@@ -24,7 +21,6 @@ jest.mock('@/services/api/analytics.service', () => {
         analyticsService: {
             getOverview: (...a: unknown[]) => mockGetOverview(...a),
             getServicesRanking: (...a: unknown[]) => mockGetServices(...a),
-            getQueue: (...a: unknown[]) => mockGetQueue(...a),
         },
     };
 });
@@ -32,7 +28,6 @@ jest.mock('@/services/api/analytics.service', () => {
 import {
     useDashboardOverview,
     useDashboardServicesRanking,
-    useDashboardQueue,
 } from '@/hooks/useDashboard';
 import type { DashboardParams } from '@/services/api/analytics.service';
 
@@ -58,7 +53,6 @@ beforeEach(() => {
     jest.clearAllMocks();
     mockGetOverview.mockResolvedValue({ revenue: { current: 1 } });
     mockGetServices.mockResolvedValue([]);
-    mockGetQueue.mockResolvedValue([]);
 });
 
 describe('useDashboardOverview', () => {
@@ -99,27 +93,5 @@ describe('useDashboardServicesRanking', () => {
                 .getQueryCache()
                 .find({ queryKey: ['dashboard', 'services', PARAMS, 'film'] })
         ).toBeDefined();
-    });
-});
-
-describe('useDashboardQueue', () => {
-    it('usa queryKey fixa ["dashboard","queue"], repassa storeId e define refetchInterval', async () => {
-        const client = newClient();
-        const { result } = await renderHook(() => useDashboardQueue(9), {
-            wrapper: wrapper(client),
-        });
-
-        await waitFor(() => expect(result.current.isSuccess).toBe(true));
-        expect(mockGetQueue).toHaveBeenCalledWith(9);
-
-        const entry = client.getQueryCache().find({ queryKey: ['dashboard', 'queue'] });
-        expect(entry).toBeDefined();
-        const opts = entry?.options as { refetchInterval?: number };
-        expect(opts.refetchInterval).toBe(30_000);
-    });
-
-    it('dispara mesmo sem período (não depende de start/end)', async () => {
-        await renderHook(() => useDashboardQueue(), { wrapper: wrapper(newClient()) });
-        await waitFor(() => expect(mockGetQueue).toHaveBeenCalled());
     });
 });

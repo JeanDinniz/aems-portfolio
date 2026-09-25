@@ -1,5 +1,6 @@
 import {
     formatCurrencyBRL,
+    formatDecimalBRL,
     formatInt,
     formatPercent,
     formatMinutes,
@@ -23,6 +24,26 @@ describe('formatCurrencyBRL', () => {
         expect(formatCurrencyBRL(null)).toContain('0,00');
         expect(formatCurrencyBRL(undefined)).toContain('0,00');
         expect(formatCurrencyBRL(NaN)).toContain('0,00');
+    });
+});
+
+describe('formatDecimalBRL', () => {
+    it('formata a STRING do Decimal do backend como R$ pt-BR', () => {
+        // O backend (Pydantic v2) manda Decimal como string, ex.: "150.00".
+        const out = formatDecimalBRL('150.00');
+        expect(out).toContain('R$');
+        expect(out).toContain('150,00');
+    });
+
+    it('formata número também', () => {
+        expect(formatDecimalBRL(1234.5)).toContain('1.234,50');
+    });
+
+    it('null/undefined/vazio/NaN → "—"', () => {
+        expect(formatDecimalBRL(null)).toBe('—');
+        expect(formatDecimalBRL(undefined)).toBe('—');
+        expect(formatDecimalBRL('')).toBe('—');
+        expect(formatDecimalBRL('abc')).toBe('—');
     });
 });
 

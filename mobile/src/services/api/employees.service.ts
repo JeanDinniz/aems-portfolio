@@ -1,7 +1,10 @@
 import { apiClient } from './client';
 import type {
+    CreateMovementPayload,
+    DayStatusResponse,
     Employee,
     EmployeeFilters,
+    EmployeeMovement,
     EmployeesListResponse,
     EmployeeStats,
     MovementListResponse,
@@ -100,5 +103,38 @@ export const employeesService = {
             { params: { page, limit } }
         );
         return response.data;
+    },
+
+    /**
+     * Status do dia por loja (Faltas do Dia). Retorna a lista de funcionários
+     * com o status calculado (presente/falta/férias/afastado) + contadores.
+     */
+    async dayStatus(storeId: number, date: string): Promise<DayStatusResponse> {
+        const response = await apiClient.get<DayStatusResponse>('/employees/day-status', {
+            params: { store_id: storeId, date },
+        });
+        return response.data;
+    },
+
+    /** Registra uma movimentação (ex.: falta) — usado para marcar falta no dia. */
+    async createMovement(
+        employeeId: number,
+        payload: CreateMovementPayload
+    ): Promise<EmployeeMovement> {
+        const response = await apiClient.post<EmployeeMovement>(
+            `/employees/${employeeId}/movements`,
+            payload
+        );
+        return response.data;
+    },
+
+    /** Remove uma movimentação (desfaz a falta). */
+    async deleteMovement(employeeId: number, movementId: number): Promise<void> {
+        await apiClient.delete(`/employees/${employeeId}/movements/${movementId}`);
+    },
+
+    /** Registra o retorno de afastamento (RH volta a Ativo). */
+    async returnFromAbsence(employeeId: number): Promise<void> {
+        await apiClient.post(`/employees/${employeeId}/return-from-absence`);
     },
 };

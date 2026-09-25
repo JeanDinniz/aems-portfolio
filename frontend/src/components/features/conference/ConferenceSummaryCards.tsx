@@ -1,10 +1,27 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { DEPARTMENTS_MAP } from '@/constants/service-orders';
 import { DEPARTMENT_COLORS, DEPARTMENT_FALLBACK_COLOR } from '@/constants/departments';
 import type { ConferenceSummaryByStoreItem } from '@/hooks/useConferenceSummaryByStore';
+
+// Preferência de exibição persistida na sessão (sessionStorage): o resumo abre
+// EXPANDIDO por padrão e lembra se o usuário recolher/expandir e qual aba
+// escolheu, sobrevivendo ao F5 e à navegação dentro da mesma sessão.
+const SUMMARY_EXPANDED_KEY = 'conference_summary_expanded';
+const SUMMARY_TAB_KEY = 'conference_summary_tab';
+
+function readExpandedPref(): boolean {
+    if (typeof window === 'undefined') return true;
+    const v = window.sessionStorage.getItem(SUMMARY_EXPANDED_KEY);
+    return v === null ? true : v === '1'; // padrão = expandido
+}
+
+function readTabPref(): 'dept' | 'store' {
+    if (typeof window === 'undefined') return 'dept';
+    return window.sessionStorage.getItem(SUMMARY_TAB_KEY) === 'store' ? 'store' : 'dept';
+}
 
 const DEPT_PROGRESS_COLORS: Record<string, string> = {
     film:     '[&>[data-radix-progress-indicator]]:bg-purple-500',
@@ -28,6 +45,7 @@ export interface ConferenceSummaryCardsProps {
     }>;
     isLoading: boolean;
     onFilterClick?: (department: string, filterType: 'verified' | 'waiting' | 'wrong' | 'all' | 'cancelled') => void;
+    onStoreFilterClick?: (storeId: number, filterType: 'verified' | 'waiting' | 'wrong' | 'all' | 'cancelled') => void;
     storeSummary?: ConferenceSummaryByStoreItem[];
     storeSummaryLoading?: boolean;
 }
@@ -172,17 +190,26 @@ export function ConferenceSummaryCards({
     summary,
     isLoading,
     onFilterClick,
+    onStoreFilterClick,
     storeSummary = [],
     storeSummaryLoading = false,
 }: ConferenceSummaryCardsProps) {
-    const [expanded, setExpanded] = useState(false);
-    const [activeTab, setActiveTab] = useState<'dept' | 'store'>('dept');
+    const [expanded, setExpanded] = useState<boolean>(readExpandedPref);
+    const [activeTab, setActiveTab] = useState<'dept' | 'store'>(readTabPref);
+
+    // Persiste a preferência do usuário na sessão
+    useEffect(() => {
+        window.sessionStorage.setItem(SUMMARY_EXPANDED_KEY, expanded ? '1' : '0');
+    }, [expanded]);
+    useEffect(() => {
+        window.sessionStorage.setItem(SUMMARY_TAB_KEY, activeTab);
+    }, [activeTab]);
 
     const hasData = isLoading || (summary && summary.length > 0) || storeSummaryLoading || storeSummary.length > 0;
     if (!hasData) return null;
 
     return (
-        <div className="bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-hidden">
+        <div className="shrink-0 bg-white dark:bg-[#252525] border border-[#D1D1D1] dark:border-[#333333] rounded-xl overflow-hidden">
             {/* Header com seletor de abas + toggle de expansão */}
             <div className="flex items-center justify-between px-4 py-2">
                 {/* Abas */}
@@ -339,6 +366,11 @@ export function ConferenceSummaryCards({
                                             cancelled={item.cancelled}
                                             total={item.total}
                                             storeVariant
+                                            onVerifiedClick={() => onStoreFilterClick?.(item.store_id, 'verified')}
+                                            onWaitingClick={() => onStoreFilterClick?.(item.store_id, 'waiting')}
+                                            onWrongClick={() => onStoreFilterClick?.(item.store_id, 'wrong')}
+                                            onCancelledClick={() => onStoreFilterClick?.(item.store_id, 'cancelled')}
+                                            onTotalClick={() => onStoreFilterClick?.(item.store_id, 'all')}
                                         />
                                     );
                                 })}

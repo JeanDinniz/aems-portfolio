@@ -1,54 +1,49 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { MultiSelectFilter } from '@/components/common/MultiSelectFilter';
+import { formatCurrency } from '@/lib/utils';
+import { useTableSort, getSortIndicator } from '@/hooks/useTableSort';
 import type { EmployeeRankingItem } from '@/types/dashboard.types';
 
+// Filtro pelo departamento da O.S. em que o serviço foi feito (não pelo
+// cadastro do funcionário) — só os departamentos de instalação interessam.
 const DEPARTMENT_OPTIONS = [
-  { value: '', label: 'Todos' },
   { value: 'film', label: 'Película' },
   { value: 'security_film', label: 'Pel. Segurança' },
-  { value: 'bodywork', label: 'Funilaria' },
-  { value: 'vn', label: 'Estética VN' },
-  { value: 'vu', label: 'Estética VU' },
-  { value: 'workshop', label: 'Oficina' },
+  { value: 'ppf', label: 'PPF' },
 ];
 
-function formatHours(hours: number): string {
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
+const thBase =
+  'px-4 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-[#F5A800] transition-colors whitespace-nowrap';
 
 interface EmployeesRankingTableProps {
   data: EmployeeRankingItem[];
-  department?: string | null;
-  onDepartmentChange?: (d: string | null) => void;
+  departments?: string[];
+  onDepartmentsChange?: (d: string[]) => void;
 }
 
 export function EmployeesRankingTable({
   data,
-  department,
-  onDepartmentChange,
+  departments = [],
+  onDepartmentsChange,
 }: EmployeesRankingTableProps) {
+  const { sorted, sortState, toggle } = useTableSort<EmployeeRankingItem>(data, 'services_count', 'desc');
+
   return (
-    <Card className="bg-white dark:bg-[#161616] border-gray-200 dark:border-[#1E1E1E]">
+    <Card className="overflow-hidden bg-white dark:bg-[#161616] border-gray-200 dark:border-[#1E1E1E]">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-sm font-semibold text-gray-700 dark:text-gray-300">
             Ranking de Funcionários
           </CardTitle>
-          {onDepartmentChange && (
-            <select
-              value={department ?? ''}
-              onChange={(e) => onDepartmentChange(e.target.value || null)}
-              className="text-xs bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-[#2a2a2a] text-gray-600 dark:text-gray-400 rounded-md px-2 py-1 focus:outline-none focus:border-[#F5A800]"
-              aria-label="Filtrar funcionários por departamento"
-            >
-              {DEPARTMENT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+          {onDepartmentsChange && (
+            <MultiSelectFilter
+              options={DEPARTMENT_OPTIONS}
+              value={departments}
+              onChange={onDepartmentsChange}
+              allLabel="Todos"
+              countLabel={(n) => `${n} departamentos`}
+              triggerClassName="w-40 !h-7 text-xs"
+            />
           )}
         </div>
       </CardHeader>
@@ -65,25 +60,25 @@ export function EmployeesRankingTable({
                   <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide w-8">
                     #
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    Nome
+                  <th className={`${thBase} text-left`} onClick={() => toggle('employee_name')}>
+                    Nome{getSortIndicator('employee_name', sortState)}
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    Depto.
+                  <th className={`${thBase} text-left`} onClick={() => toggle('department')}>
+                    Depto.{getSortIndicator('department', sortState)}
                   </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    O.S.
+                  <th className={`${thBase} text-right`} onClick={() => toggle('orders_count')}>
+                    O.S.{getSortIndicator('orders_count', sortState)}
                   </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    Horas
+                  <th className={`${thBase} text-right`} onClick={() => toggle('services_count')}>
+                    Serviços{getSortIndicator('services_count', sortState)}
                   </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    h/O.S.
+                  <th className={`${thBase} text-right`} onClick={() => toggle('revenue')}>
+                    Valor{getSortIndicator('revenue', sortState)}
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {data.map((item, index) => (
+                {sorted.map((item, index) => (
                   <tr
                     key={item.employee_id}
                     className="border-b border-gray-100 dark:border-[#1a1a1a] odd:bg-gray-50 dark:odd:bg-[#1a1a1a] transition-colors hover:bg-gray-100 dark:hover:bg-[#222]"
@@ -101,10 +96,10 @@ export function EmployeesRankingTable({
                       {item.orders_count.toLocaleString('pt-BR')}
                     </td>
                     <td className="px-4 py-2.5 text-right text-gray-700 dark:text-gray-300">
-                      {formatHours(item.hours_worked)}
+                      {item.services_count.toLocaleString('pt-BR')}
                     </td>
-                    <td className="px-4 py-2.5 text-right text-gray-500 dark:text-gray-400">
-                      {formatHours(item.avg_hours_per_order)}
+                    <td className="px-4 py-2.5 text-right text-gray-700 dark:text-gray-300">
+                      {formatCurrency(item.revenue)}
                     </td>
                   </tr>
                 ))}

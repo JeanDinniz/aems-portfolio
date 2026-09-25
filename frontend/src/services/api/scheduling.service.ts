@@ -5,9 +5,12 @@ import type {
   AppointmentHistoryResponse,
   AppointmentListResponse,
   TodaySummary,
-  SchedulingStoreSummary,
   CreateAppointmentPayload,
   UpdateAppointmentPayload,
+  CombinedAppointmentPayload,
+  CombinedAppointmentResponse,
+  AddDepartmentsPayload,
+  CarrosResumoResponse,
 } from '@/types/scheduling.types'
 
 export const schedulingService = {
@@ -26,6 +29,70 @@ export const schedulingService = {
     if (filters.include_cancelled) params.include_cancelled = true
     if (filters.include_terminal) params.include_terminal = true
     const { data } = await apiClient.get('/scheduling', { params })
+    return data
+  },
+
+  async getCarrosResumo(
+    filters: AppointmentFilters = {},
+    displayStatuses?: string[]
+  ): Promise<CarrosResumoResponse> {
+    const params: Record<string, unknown> = {}
+    if (filters.store_id) params.store_id = filters.store_id
+    if (filters.department) params.department = filters.department
+    if (filters.service_category) params.category = filters.service_category
+    if (filters.date_from) params.date_from = filters.date_from
+    if (filters.date_to) params.date_to = filters.date_to
+    if (filters.search) params.search = filters.search
+    if (displayStatuses && displayStatuses.length) params.display_status = displayStatuses
+    const { data } = await apiClient.get('/scheduling/summary/carros-para-fazer', {
+      params,
+      // Array → chave repetida (display_status=a&display_status=b), lido como list[str] no FastAPI
+      paramsSerializer: { indexes: null },
+    })
+    return data
+  },
+
+  async exportCarrosPdf(
+    filters: AppointmentFilters = {},
+    displayStatuses?: string[]
+  ): Promise<Blob> {
+    const params: Record<string, unknown> = {}
+    if (filters.store_id) params.store_id = filters.store_id
+    if (filters.department) params.department = filters.department
+    if (filters.service_category) params.category = filters.service_category
+    if (filters.date_from) params.date_from = filters.date_from
+    if (filters.date_to) params.date_to = filters.date_to
+    if (filters.search) params.search = filters.search
+    if (displayStatuses && displayStatuses.length) params.display_status = displayStatuses
+    const { data } = await apiClient.get('/scheduling/export/carros-para-fazer', {
+      params,
+      // Array → chave repetida (display_status=a&display_status=b), lido como list[str] no FastAPI
+      paramsSerializer: { indexes: null },
+      responseType: 'blob',
+    })
+    return data
+  },
+
+  async exportExcel(
+    filters: AppointmentFilters = {},
+    displayStatuses?: string[]
+  ): Promise<Blob> {
+    const params: Record<string, unknown> = {}
+    if (filters.store_id) params.store_id = filters.store_id
+    if (filters.department) params.department = filters.department
+    if (filters.service_category) params.category = filters.service_category
+    if (filters.date_from) params.date_from = filters.date_from
+    if (filters.date_to) params.date_to = filters.date_to
+    if (filters.search) params.search = filters.search
+    if (filters.include_cancelled) params.include_cancelled = true
+    if (filters.include_terminal) params.include_terminal = true
+    if (displayStatuses && displayStatuses.length) params.display_status = displayStatuses
+    const { data } = await apiClient.get('/scheduling/export/excel', {
+      params,
+      // Array → chave repetida (display_status=a&display_status=b), lido como list[str] no FastAPI
+      paramsSerializer: { indexes: null },
+      responseType: 'blob',
+    })
     return data
   },
 
@@ -52,8 +119,21 @@ export const schedulingService = {
     return data
   },
 
+  async createCombined(payload: CombinedAppointmentPayload): Promise<CombinedAppointmentResponse> {
+    const { data } = await apiClient.post('/scheduling/combined', payload)
+    return data
+  },
+
   async update(id: number, payload: UpdateAppointmentPayload): Promise<Appointment> {
     const { data } = await apiClient.patch(`/scheduling/${id}`, payload)
+    return data
+  },
+
+  async addDepartments(
+    id: number,
+    payload: AddDepartmentsPayload
+  ): Promise<CombinedAppointmentResponse> {
+    const { data } = await apiClient.post(`/scheduling/${id}/add-departments`, payload)
     return data
   },
 
@@ -80,16 +160,4 @@ export const schedulingService = {
     return data
   },
 
-  async getStoreSummary(filters: {
-    date_from?: string
-    date_to?: string
-    department?: string
-  } = {}): Promise<SchedulingStoreSummary[]> {
-    const params: Record<string, unknown> = {}
-    if (filters.date_from) params.date_from = filters.date_from
-    if (filters.date_to) params.date_to = filters.date_to
-    if (filters.department) params.department = filters.department
-    const { data } = await apiClient.get('/scheduling/summary/stores', { params })
-    return data
-  },
 }

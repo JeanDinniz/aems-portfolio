@@ -65,6 +65,8 @@ def _order(order_id: int, department: str, items: list, **overrides) -> SimpleNa
         vehicle_model="Corolla",
         vehicle_color="Prata",
         notes="",
+        internal_notes=None,
+        execution_notes=None,
         invoice_number=None,
         is_verified=order_id % 2 == 0,
         status="completed" if order_id % 2 == 0 else "waiting",
@@ -133,3 +135,42 @@ class TestConferenceWriterBatchEquivalence:
         # linha 1 = cabeçalho do template; dados começam na linha 2
         data_rows = [r for r in rows[1:] if r[4]]  # coluna E: Placa preenchida
         assert len(data_rows) == 3
+
+    def test_observacoes_internas_vao_para_obs_conferencia(self):
+        """internal_notes da O.S. deve aparecer na coluna V (Obs Conferência)."""
+        orders = [
+            _order(1, "film", [_item("Película", code="P1")], internal_notes="Cliente reclamou"),
+            _order(2, "workshop", [], internal_notes="Sem NF"),
+        ]
+        rows = _cell_values(generate_conference_excel(orders))
+        data_rows = [r for r in rows[1:] if r[4]]  # coluna E: Placa preenchida
+        # Coluna V = índice 21 (0-based); L (Briefing do Consultor) = índice 11
+        assert data_rows[0][21] == "Cliente reclamou"
+        assert data_rows[1][21] == "Sem NF"
+        assert data_rows[0][11] in (None, "")  # notes (Briefing do Consultor) segue vazio
+
+    def test_briefing_e_relato_tecnico_em_colunas_separadas(self):
+        """notes (briefing do consultor) e execution_notes (relato do instalador)
+        devem aparecer em colunas distintas — L e M respectivamente."""
+        orders = [
+            _order(
+                1,
+                "film",
+                [_item("Película", code="P1")],
+                notes="Cliente pediu cuidado com o para-choque",
+                execution_notes="Aplicado sem bolhas, checado após 24h",
+            ),
+        ]
+        rows = _cell_values(generate_conference_excel(orders))
+        data_rows = [r for r in rows[1:] if r[4]]  # coluna E: Placa preenchida
+        # L (Briefing do Consultor) = índice 11; M (Relato Técnico do Instalador) = índice 12
+        assert data_rows[0][11] == "Cliente pediu cuidado com o para-choque"
+        assert data_rows[0][12] == "Aplicado sem bolhas, checado após 24h"
+
+    def test_relato_tecnico_ausente_fica_vazio(self):
+        orders = [
+            _order(1, "film", [_item("Película", code="P1")], execution_notes=None),
+        ]
+        rows = _cell_values(generate_conference_excel(orders))
+        data_rows = [r for r in rows[1:] if r[4]]
+        assert data_rows[0][12] in (None, "")

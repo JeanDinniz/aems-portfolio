@@ -14,6 +14,8 @@ export interface Employee {
     entry_date?: string | null;
     phone?: string | null;
     email?: string | null;
+    /** CPF do funcionário — necessário para os arquivos fiscais do ponto (AFD/AEJ). */
+    cpf?: string | null;
     pix_key?: string | null;
     bank_account?: string | null;
     address?: string | null;
@@ -24,6 +26,10 @@ export interface Employee {
     vacation_month?: number | null;
     created_at: string;
     updated_at?: string | null;
+    user_id?: number | null;
+    user_name?: string | null;
+    work_start_time?: string | null;
+    work_end_time?: string | null;
 }
 
 export interface CreateEmployeePayload {
@@ -36,11 +42,14 @@ export interface CreateEmployeePayload {
     entry_date?: string | null;
     phone?: string | null;
     email?: string | null;
+    /** CPF do funcionário — necessário para os arquivos fiscais do ponto (AFD/AEJ). */
+    cpf?: string | null;
     address?: string | null;
     pix_key?: string | null;
     bank_account?: string | null;
     transport_allowance?: string | null;
     vacation_month?: number | null;
+    user_id?: number | null;
 }
 
 export interface UpdateEmployeePayload {
@@ -57,6 +66,8 @@ export interface UpdateEmployeePayload {
     entry_date?: string | null;
     phone?: string | null;
     email?: string | null;
+    /** CPF do funcionário — necessário para os arquivos fiscais do ponto (AFD/AEJ). */
+    cpf?: string | null;
     pix_key?: string | null;
     bank_account?: string | null;
     address?: string | null;
@@ -65,6 +76,10 @@ export interface UpdateEmployeePayload {
     dismissal_reason?: string | null;
     would_rehire?: boolean | null;
     vacation_month?: number | null;
+    user_id?: number | null;
+    clear_user?: boolean;
+    work_start_time?: string | null;
+    work_end_time?: string | null;
 }
 
 export interface EmployeeFilters {
@@ -76,6 +91,7 @@ export interface EmployeeFilters {
     position?: string;
     is_volante?: boolean;
     for_galpon?: boolean;
+    has_user?: boolean;
 }
 
 export interface EmployeesListResponse {
@@ -141,4 +157,25 @@ export interface UpdateEmployeeHrPayload extends UpdateEmployeePayload {
     hr_status?: 'active' | 'away' | 'dismissed';
     last_name?: string | null;
     birth_date?: string | null;
+}
+
+export type DayStatus = 'presente' | 'falta' | 'ferias' | 'afastado';
+
+export interface EmployeeDayStatusItem {
+    employee_id: number;
+    name: string;
+    position: string | null;
+    status: DayStatus;
+    reason: string | null;
+    fault_movement_id: number | null;
+    attachment_url: string | null;
+    needs_return: boolean;
+}
+
+export interface DayStatusResponse {
+    items: EmployeeDayStatusItem[];
+    present: number;
+    faults: number;
+    vacations: number;
+    absences: number;
 }

@@ -1,4 +1,5 @@
 import { Navigate } from 'react-router-dom';
+import { TIME_CLOCK_ENABLED } from '@/constants/features';
 import { useAuthStore } from '@/stores/auth.store';
 import { useMyPermissions } from '@/hooks/useMyPermissions';
 
@@ -24,6 +25,7 @@ export function HomeRedirect() {
     if (hasView('conference'))     return <Navigate to="/conference" replace />;
     if (hasView('fechamento'))     return <Navigate to="/fechamento" replace />;
     if (hasView('inventory'))      return <Navigate to="/estoque" replace />;
+    if (TIME_CLOCK_ENABLED && hasView('time_clock')) return <Navigate to="/ponto" replace />;
 
     return <Navigate to="/unauthorized" replace />;
 }

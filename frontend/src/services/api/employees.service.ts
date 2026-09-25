@@ -9,6 +9,7 @@ import type {
     VacationMovement,
     EmployeeMovement,
     MovementListResponse,
+    DayStatusResponse,
 } from '@/types/employee.types';
 
 export const employeesService = {
@@ -22,6 +23,7 @@ export const employeesService = {
         if (filters?.is_volante !== undefined) params.append('is_volante', filters.is_volante.toString());
         if (filters?.for_galpon !== undefined) params.append('for_galpon', filters.for_galpon.toString());
         if (filters?.hr_status) params.append('hr_status', filters.hr_status);
+        if (filters?.has_user !== undefined) params.append('has_user', filters.has_user.toString());
         params.append('page', page.toString());
         params.append('limit', pageSize.toString());
 
@@ -135,5 +137,24 @@ export const employeesService = {
 
     async deleteMovement(employeeId: number, movementId: number): Promise<void> {
         await apiClient.delete(`/employees/${employeeId}/movements/${movementId}`);
+    },
+
+    async dayStatus(storeId: number, date: string): Promise<DayStatusResponse> {
+        const response = await apiClient.get<DayStatusResponse>('/employees/day-status', {
+            params: { store_id: storeId, date },
+        });
+        return response.data;
+    },
+
+    async returnFromAbsence(employeeId: number): Promise<void> {
+        await apiClient.post(`/employees/${employeeId}/return-from-absence`);
+    },
+
+    async frequencyReport(employeeId: number, date: string): Promise<Blob> {
+        const response = await apiClient.get<Blob>(
+            `/employees/${employeeId}/frequency-report`,
+            { params: { date }, responseType: 'blob' }
+        );
+        return response.data;
     },
 };

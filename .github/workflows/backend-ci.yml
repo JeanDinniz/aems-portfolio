@@ -8,11 +8,15 @@ on:
       - 'tests/**'
       - 'alembic/**'
       - 'pyproject.toml'
+      - 'scripts/web_docs/**'
+      - '.github/workflows/backend-ci.yml'
   pull_request:
     branches: [main, develop]
     paths:
       - 'app/**'
       - 'tests/**'
+      - 'scripts/web_docs/**'
+      - '.github/workflows/backend-ci.yml'
 
 jobs:
   lint:
@@ -34,6 +38,36 @@ jobs:
 
       - name: Run mypy
         run: mypy app/ --no-error-summary --ignore-missing-imports
+
+  docs:
+    name: Web Docs Drift
+    runs-on: ubuntu-latest
+    # A introspecção importa a app (app.main), que valida Settings. Sem env,
+    # roda com DEBUG=False e ALLOWED_ORIGINS localhost → ValidationError.
+    # DEBUG=true libera as origens de dev; não abre conexão de banco.
+    env:
+      SECRET_KEY: ci-test-secret-key-at-least-32-chars-long
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aems_docs
+      DEBUG: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # Regenera docs/web/*.json do código vivo + sidecar curado e valida
+      # (schema + consistência + drift de endpoints/tabelas/feature flags).
+      # Não precisa de banco: a introspecção lê OpenAPI/metadata em memória.
+      - name: Generate web docs
+        run: python scripts/web_docs/generate.py
+
+      - name: Validate web docs
+        run: python scripts/web_docs/validate.py
 
   test:
     name: Tests

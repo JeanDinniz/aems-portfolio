@@ -6,6 +6,7 @@ flexíveis com permissões granulares por módulo e loja.
 """
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     ForeignKey,
@@ -84,6 +85,12 @@ class AccessProfile(Base, TimestampMixin):
     # Só tem efeito quando is_galpon_profile=False
     hide_galpon_option: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
+    )
+
+    # Departamentos visíveis no módulo de Agendamentos. Lista vazia = sem
+    # restrição (vê todos). Ex.: ["security_film"] restringe a Película de Segurança.
+    scheduling_departments: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False, server_default="[]"
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

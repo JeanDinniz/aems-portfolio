@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Button } from '@/components/ui';
-import { authenticate } from '@/services/biometrics';
+import { authenticate, isAppLockSuppressed } from '@/services/biometrics';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSettingsStore } from '@/stores/settings.store';
 import { brand } from '@/theme/tokens';
@@ -97,7 +97,9 @@ export function BiometricGate({ children }: { children: React.ReactNode }) {
                 backgroundedAt.current = null;
 
                 if (!gateActive) return;
-                if (suppressLock.current) return;
+                // Supressão local (prompt de biometria) OU global (câmera/galeria/
+                // share abriram uma activity nativa — não é o usuário saindo do app).
+                if (suppressLock.current || isAppLockSuppressed()) return;
                 if (awayFor < RELOCK_GRACE_MS) return;
                 setLocked(true);
             }

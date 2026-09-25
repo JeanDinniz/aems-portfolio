@@ -9,11 +9,20 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { formatCurrency } from '@/lib/utils';
+import { CHART_COLORS } from '@/constants/chartColors';
 import type { ServiceRankingItem } from '@/types/dashboard.types';
 
 const DEPARTMENT_OPTIONS = [
-  { value: '', label: 'Todos' },
+  // Radix Select não aceita value="" — 'all' é o sentinela de "sem filtro"
+  { value: 'all', label: 'Todos' },
   { value: 'film', label: 'Película' },
   { value: 'security_film', label: 'Pel. Segurança' },
   { value: 'bodywork', label: 'Funilaria' },
@@ -74,18 +83,21 @@ export function ServicesTopCard({
             Top Serviços — Receita
           </CardTitle>
           {onDepartmentChange && (
-            <select
-              value={department ?? ''}
-              onChange={(e) => onDepartmentChange(e.target.value || null)}
-              className="text-xs bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-[#2a2a2a] text-gray-600 dark:text-gray-400 rounded-md px-2 py-1 focus:outline-none focus:border-[#F5A800]"
-              aria-label="Filtrar por departamento"
+            <Select
+              value={department ?? 'all'}
+              onValueChange={(v) => onDepartmentChange(v === 'all' ? null : v)}
             >
-              {DEPARTMENT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="h-7 w-36 text-xs" aria-label="Filtrar por departamento">
+                <SelectValue placeholder="Todos" />
+              </SelectTrigger>
+              <SelectContent>
+                {DEPARTMENT_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
         </div>
       </CardHeader>
@@ -147,7 +159,7 @@ export function ServicesTopCard({
               />
               <Bar
                 dataKey="revenue"
-                fill="#3b82f6"
+                fill={CHART_COLORS.blue}
                 radius={[4, 4, 0, 0]}
                 maxBarSize={32}
               />

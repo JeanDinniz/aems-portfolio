@@ -129,6 +129,7 @@ Thumbs.db
 # Project specific
 *.sqlite
 *.db
+*.dump
 uploads/
 temp/
 logs/
@@ -138,11 +139,12 @@ coverage.json
 
 # Claude Code
 .claude/
-CLAUDE.md
 
 # Internal docs / history
 mkdir_docs/
-docs/
+# docs/ é VERSIONADO (manual do projeto: AGENTS.md aponta p/ docs/). Ignorar só os gerados:
+docs/web/
+docs/_build/
 
 # Frontend source lib (deve ser rastreado, não é lib/ Python)
 !frontend/src/lib/
@@ -162,3 +164,6 @@ frontend/dist/
 frontend/build/
 .next/
 out/
+
+# Arquivos de rascunho locais (payloads de debug)
+scratch_*.json

@@ -105,8 +105,8 @@ async def create_supplier(db: AsyncSession, data: SupplierCreate, user: User) ->
         new_value={"company_name": data.company_name, "cnpj": data.cnpj},
     )
 
+    # C2 (auditoria): commit é do get_db (atomicidade da request).
     await db.refresh(supplier)
-    await db.commit()
 
     return supplier
 
@@ -166,7 +166,7 @@ async def update_supplier(
         new_value=update_data,
     )
 
-    await db.commit()
+    # C2 (auditoria): commit é do get_db (atomicidade da request).
     await db.refresh(supplier)
 
     return supplier
@@ -202,7 +202,7 @@ async def deactivate_supplier(db: AsyncSession, supplier_id: int, user: User) ->
         new_value={"is_active": False},
     )
 
-    await db.commit()
+    # C2 (auditoria): commit é do get_db (atomicidade da request).
     await db.refresh(supplier)
 
     return supplier

@@ -16,6 +16,14 @@ export function useDateRangeFilter({ defaultStart, defaultEnd }: UseDateRangeFil
         setAppliedEnd(endDate);
     };
 
+    /** Seta E aplica de uma vez — use nos presets de data. */
+    const applyRange = (start: string, end: string) => {
+        setStartDate(start);
+        setEndDate(end);
+        setAppliedStart(start);
+        setAppliedEnd(end);
+    };
+
     return {
         startDate,
         endDate,
@@ -24,5 +32,6 @@ export function useDateRangeFilter({ defaultStart, defaultEnd }: UseDateRangeFil
         appliedStart,
         appliedEnd,
         apply,
+        applyRange,
     };
 }

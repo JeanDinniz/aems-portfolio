@@ -4,8 +4,11 @@ import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { AppointmentFormFields } from '@/components/features/scheduling/AppointmentFormFields';
-import { useAppointment, useUpdateAppointment } from '@/hooks/useScheduling';
-import type { CreateAppointmentPayload } from '@/types/scheduling.types';
+import { useAppointment, useUpdateAppointment, useAddDepartments } from '@/hooks/useScheduling';
+import type {
+    CombinedDepartmentEntry,
+    CreateAppointmentPayload,
+} from '@/types/scheduling.types';
 import type { SchedulingStackScreenProps } from '@/navigation/types';
 
 /**
@@ -26,12 +29,36 @@ export function EditAppointmentScreen({
     const { id } = route.params;
     const { data: appointment, isLoading, isError, refetch } = useAppointment(id);
     const updateAppointment = useUpdateAppointment();
+    const addDepartments = useAddDepartments();
 
     const handleSubmit = (payload: CreateAppointmentPayload) => {
         // PATCH parcial — UpdateAppointmentPayload é Partial<Create>.
         updateAppointment.mutate(
             { id, payload },
             { onSuccess: () => navigation.goBack() }
+        );
+    };
+
+    // Edição combinada: 1) atualiza o atual; 2) cria os irmãos (herdam os dados
+    // já atualizados); 3) volta. Sem departamentos novos = edição normal.
+    const handleSubmitEditCombined = (
+        updatePayload: CreateAppointmentPayload,
+        newDepartments: CombinedDepartmentEntry[]
+    ) => {
+        updateAppointment.mutate(
+            { id, payload: updatePayload },
+            {
+                onSuccess: () => {
+                    if (newDepartments.length === 0) {
+                        navigation.goBack();
+                        return;
+                    }
+                    addDepartments.mutate(
+                        { id, payload: { departments: newDepartments } },
+                        { onSuccess: () => navigation.goBack() }
+                    );
+                },
+            }
         );
     };
 
@@ -71,7 +98,8 @@ export function EditAppointmentScreen({
                     mode="edit"
                     appointment={appointment}
                     onSubmit={handleSubmit}
-                    submitting={updateAppointment.isPending}
+                    onSubmitEditCombined={handleSubmitEditCombined}
+                    submitting={updateAppointment.isPending || addDepartments.isPending}
                 />
             </ScrollView>
         </View>

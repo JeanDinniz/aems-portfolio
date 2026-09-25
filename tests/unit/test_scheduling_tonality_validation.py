@@ -58,3 +58,57 @@ class TestEntradasComoDict:
 
     def test_dict_com_tonalidade_passa(self):
         _validate_film_tonalities("film", [{"service_id": 7, "tonality": "G20"}])
+
+
+class TestApplicationsPorRegiao:
+    """Tonalidades por região (applications): todas as regiões exigem tonalidade."""
+
+    def test_applications_completas_passam(self):
+        entry = FilmEntryItem(
+            service_id=7,
+            applications=[
+                {"tonality": "G20", "region": "Portas dianteiras"},
+                {"tonality": "G05", "region": "Portas traseiras"},
+            ],
+        )
+        _validate_film_tonalities("film", [entry])
+
+    def test_application_dict_sem_tonalidade_rejeita(self):
+        # No update, entradas chegam como dicts serializados (sem passar pelo schema)
+        with pytest.raises(ValidationError, match="regiões"):
+            _validate_film_tonalities(
+                "film",
+                [
+                    {
+                        "service_id": 7,
+                        "tonality": "G20",
+                        "applications": [
+                            {"tonality": "G20", "region": "Frente"},
+                            {"tonality": "", "region": "Trás"},
+                        ],
+                    }
+                ],
+            )
+
+    def test_espelho_tonality_resumido(self):
+        entry = FilmEntryItem(
+            service_id=7,
+            applications=[
+                {"tonality": "G20", "region": "Portas dianteiras"},
+                {"tonality": "G05", "region": "Portas traseiras"},
+            ],
+        )
+        assert entry.tonality == "G20/G05"
+
+    def test_espelho_tonalidade_unica(self):
+        entry = FilmEntryItem(
+            service_id=7,
+            applications=[{"tonality": "g20", "region": None}],
+        )
+        # normalize_tonality aplica upper no padrão G##
+        assert entry.tonality == "G20"
+
+    def test_sem_applications_mantem_tonality_legado(self):
+        entry = FilmEntryItem(service_id=7, tonality="G35")
+        assert entry.applications is None
+        assert entry.tonality == "G35"

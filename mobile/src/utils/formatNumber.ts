@@ -11,6 +11,19 @@ export function formatCurrencyBRL(value: number | null | undefined): string {
     return BRL.format(Number.isFinite(value as number) ? (value as number) : 0);
 }
 
+/**
+ * BRL a partir do `Decimal` serializado como STRING pelo backend (Pydantic v2
+ * serializa Decimal como string JSON, ex.: "150.00") — ou de um número.
+ * `null`/`''`/NaN → "—". Use em campos de custo/preço que chegam como string
+ * (ex.: `FilmRoll.cost`) para não chamar `.toFixed` numa string e crashar.
+ */
+export function formatDecimalBRL(value: string | number | null | undefined): string {
+    if (value == null || value === '') return '—';
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n)) return '—';
+    return BRL.format(n);
+}
+
 /** Inteiro com separador de milhar pt-BR. */
 export function formatInt(value: number | null | undefined): string {
     return INT.format(Number.isFinite(value as number) ? Math.round(value as number) : 0);

@@ -44,6 +44,7 @@ def _appt(**over):
             order_number="LJ05-2606-00004",
             notes=None,
             completion_photos=None,
+            completion_time=None,
         ),
     )
     base.update(over)
@@ -55,7 +56,9 @@ SERVICE_MAP = {7: {"name": "Película Poliester Lateral e Traseira", "code": "PO
 
 class TestFilmRollCode:
     def test_roll_map_preenche_film_roll_code(self):
-        resp = appointment_to_response(_appt(), SERVICE_MAP, {(99, 7): "Poliester_G05_20022026"})
+        resp = appointment_to_response(
+            _appt(), SERVICE_MAP, {(99, 7): {None: "Poliester_G05_20022026"}}
+        )
         fe = resp.film_entries[0]
         assert fe["film_roll_code"] == "Poliester_G05_20022026"
         assert fe["service_name"] == "Película Poliester Lateral e Traseira"
@@ -66,18 +69,114 @@ class TestFilmRollCode:
         assert resp.film_entries[0]["film_roll_code"] is None
 
     def test_roll_map_de_outra_os_nao_vaza(self):
-        resp = appointment_to_response(_appt(), SERVICE_MAP, {(100, 7): "Poliester_G05_20022026"})
+        resp = appointment_to_response(
+            _appt(), SERVICE_MAP, {(100, 7): {None: "Poliester_G05_20022026"}}
+        )
         assert resp.film_entries[0]["film_roll_code"] is None
 
     def test_sem_service_order_id_fica_none(self):
         appt = _appt(service_order_id=None, service_order=None)
-        resp = appointment_to_response(appt, SERVICE_MAP, {(99, 7): "X"})
+        resp = appointment_to_response(appt, SERVICE_MAP, {(99, 7): {None: "X"}})
         assert resp.film_entries[0]["film_roll_code"] is None
 
     def test_sem_film_entries_nao_quebra(self):
         appt = _appt(film_entries=None)
-        resp = appointment_to_response(appt, SERVICE_MAP, {(99, 7): "X"})
+        resp = appointment_to_response(appt, SERVICE_MAP, {(99, 7): {None: "X"}})
         assert resp.film_entries is None
+
+
+class TestFilmApplicationsEnrichment:
+    """Tonalidades por região: cada aplicação ganha o código da sua bobina."""
+
+    def _appt_multi(self, **over):
+        return _appt(
+            film_entries=[
+                {
+                    "service_id": 7,
+                    "tonality": "G20/G05",
+                    "applications": [
+                        {"tonality": "G20", "region": "Portas dianteiras"},
+                        {"tonality": "G05", "region": "Portas traseiras"},
+                    ],
+                }
+            ],
+            **over,
+        )
+
+    def test_applications_ganham_roll_code_por_tonalidade(self):
+        roll_map = {
+            (99, 7): {
+                None: "Poliester_G20_20022026",
+                "G20": "Poliester_G20_20022026",
+                "G05": "Poliester_G05_20022026",
+            }
+        }
+        resp = appointment_to_response(self._appt_multi(), SERVICE_MAP, roll_map)
+        fe = resp.film_entries[0]
+        apps = fe["applications"]
+        assert apps[0]["film_roll_code"] == "Poliester_G20_20022026"
+        assert apps[0]["region"] == "Portas dianteiras"
+        assert apps[1]["film_roll_code"] == "Poliester_G05_20022026"
+        # Legado continua com o código da primeira bobina
+        assert fe["film_roll_code"] == "Poliester_G20_20022026"
+
+    def test_applications_sem_roll_map_ficam_sem_codigo(self):
+        resp = appointment_to_response(self._appt_multi(), SERVICE_MAP)
+        apps = resp.film_entries[0]["applications"]
+        assert apps[0]["film_roll_code"] is None
+        assert apps[1]["film_roll_code"] is None
+
+
+class TestFilmApplicationsFromOS:
+    """As aplicações (tonalidade por região) vêm da O.S. vinculada quando o
+    agendamento não as guarda — a O.S. é a fonte de verdade após gerada. Sem
+    isso o detalhe entrega applications vazio e o Finalizar quebra com 422
+    ("Esta O.S. tem tonalidades por região")."""
+
+    def test_applications_vem_da_os_quando_agendamento_nao_tem(self):
+        # Agendamento com film_entries SEM applications; O.S. TEM film_applications.
+        appt = _appt(film_entries=[{"service_id": 7, "tonality": "G05"}])
+        os_apps_map = {(99, 7): [{"tonality": "G05", "region": "Lateral e traseira"}]}
+        resp = appointment_to_response(appt, SERVICE_MAP, None, None, os_apps_map)
+        apps = resp.film_entries[0]["applications"]
+        assert apps is not None
+        assert apps[0]["tonality"] == "G05"
+        assert apps[0]["region"] == "Lateral e traseira"
+
+    def test_os_applications_preferidas_sobre_agendamento(self):
+        appt = _appt(
+            film_entries=[
+                {
+                    "service_id": 7,
+                    "tonality": "G05",
+                    "applications": [{"tonality": "G05", "region": "antiga"}],
+                }
+            ]
+        )
+        os_apps_map = {(99, 7): [{"tonality": "G05", "region": "nova"}]}
+        resp = appointment_to_response(appt, SERVICE_MAP, None, None, os_apps_map)
+        assert resp.film_entries[0]["applications"][0]["region"] == "nova"
+
+    def test_os_application_ganha_film_roll_code_do_roll_map(self):
+        appt = _appt(film_entries=[{"service_id": 7, "tonality": "G05"}])
+        roll_map = {(99, 7): {"G05": "Poliester_G05_20022026"}}
+        os_apps_map = {(99, 7): [{"tonality": "G05", "region": "Lateral"}]}
+        resp = appointment_to_response(appt, SERVICE_MAP, roll_map, None, os_apps_map)
+        assert resp.film_entries[0]["applications"][0]["film_roll_code"] == "Poliester_G05_20022026"
+
+    def test_sem_os_applications_mantem_agendamento(self):
+        # Regressão: comportamento atual preservado quando não há mapa da O.S.
+        appt = _appt(
+            film_entries=[
+                {
+                    "service_id": 7,
+                    "tonality": "G20/G05",
+                    "applications": [{"tonality": "G20", "region": "x"}],
+                }
+            ]
+        )
+        resp = appointment_to_response(appt, SERVICE_MAP)
+        assert resp.film_entries[0]["applications"][0]["tonality"] == "G20"
 
 
 class TestCompletionPhotosENotes:
@@ -90,6 +189,7 @@ class TestCompletionPhotosENotes:
                 order_number="LJ05-2606-00004",
                 notes="VEND. BRUNO FERRO",
                 completion_photos='["http://x/a.jpg", "http://x/b.jpg"]',
+                completion_time=None,
             )
         )
         resp = appointment_to_response(appt, SERVICE_MAP)
@@ -103,6 +203,7 @@ class TestCompletionPhotosENotes:
                 order_number="LJ05-2606-00004",
                 notes=None,
                 completion_photos="{corrompido",
+                completion_time=None,
             )
         )
         resp = appointment_to_response(appt, SERVICE_MAP)

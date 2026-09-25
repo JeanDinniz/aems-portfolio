@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { employeesService } from '@/services/api/employees.service';
 import { useStoreStore } from '@/stores/store.store';
-import type { EmployeeFilters } from '@/types/employee.types';
+import type { CreateMovementPayload, EmployeeFilters } from '@/types/employee.types';
 
 /**
  * Funcionários para pickers de O.S. (leitura). Portado/adaptado de
@@ -75,5 +75,67 @@ export function useGalponEmployees() {
         queryKey: ['employees', 'galpon'],
         queryFn: () => employeesService.listForGalpon(),
         staleTime: 5 * 60 * 1000,
+    });
+}
+
+/**
+ * QueryKey da lista de status do dia. Compartilhada entre a query e as mutations
+ * (marcar falta / desfazer / retorno) para invalidação em cascata.
+ */
+export function dayStatusKey(storeId?: number, date?: string) {
+    return ['employee-day-status', storeId ?? null, date ?? null] as const;
+}
+
+/**
+ * Status do dia por loja (Faltas do Dia). Só dispara com loja + data. `null` de
+ * loja não é aceito pelo endpoint (a tela exige a seleção de uma loja).
+ */
+export function useDayStatus(storeId: number | undefined, date: string) {
+    return useQuery({
+        queryKey: dayStatusKey(storeId, date),
+        queryFn: () => employeesService.dayStatus(storeId!, date),
+        enabled: !!storeId && !!date,
+        staleTime: 1000 * 60 * 2,
+    });
+}
+
+/** Marca falta (cria movimentação `fault`) e invalida a lista do dia. */
+export function useMarkFault(storeId: number | undefined, date: string) {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: ({
+            employeeId,
+            payload,
+        }: {
+            employeeId: number;
+            payload: CreateMovementPayload;
+        }) => employeesService.createMovement(employeeId, payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: dayStatusKey(storeId, date) });
+        },
+    });
+}
+
+/** Desfaz a falta (remove a movimentação) e invalida a lista do dia. */
+export function useDeleteFault(storeId: number | undefined, date: string) {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: ({ employeeId, movementId }: { employeeId: number; movementId: number }) =>
+            employeesService.deleteMovement(employeeId, movementId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: dayStatusKey(storeId, date) });
+        },
+    });
+}
+
+/** Registra retorno de afastamento; invalida a lista do dia e a lista geral. */
+export function useReturnFromAbsence(storeId: number | undefined, date: string) {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (employeeId: number) => employeesService.returnFromAbsence(employeeId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: dayStatusKey(storeId, date) });
+            queryClient.invalidateQueries({ queryKey: ['employees'] });
+        },
     });
 }

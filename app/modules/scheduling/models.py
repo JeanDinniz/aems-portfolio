@@ -47,13 +47,24 @@ class Appointment(Base, TimestampMixin):
     ppf_brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     service_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     film_entries: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Agendamento combinado: irmãos criados juntos (1 por departamento, mesmo
+    # carro) dividem o mesmo group_id. NULL = agendamento avulso.
+    appointment_group_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="scheduled", index=True)
     service_order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("service_orders.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("service_orders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        unique=True,  # D-01: um agendamento ↔ uma O.S. (NULLs múltiplos permitidos)
     )
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # O.S. de origem quando is_return=True (o carro que voltou). Propagada à O.S.
+    # gerada pelo agendamento. Distinto de service_order_id (a O.S. gerada daqui).
+    original_service_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("service_orders.id", ondelete="SET NULL"), nullable=True, index=True
     )
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -65,6 +76,9 @@ class Appointment(Base, TimestampMixin):
     film_type: Mapped["FilmType | None"] = relationship("FilmType", foreign_keys=[film_type_id])
     service_order: Mapped["ServiceOrder | None"] = relationship(
         "ServiceOrder", foreign_keys=[service_order_id]
+    )
+    original_service_order: Mapped["ServiceOrder | None"] = relationship(
+        "ServiceOrder", foreign_keys=[original_service_order_id]
     )
     created_by: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id])
 

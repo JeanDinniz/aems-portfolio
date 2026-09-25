@@ -4,6 +4,7 @@ Users service - Business logic for user management.
 
 import secrets
 import string
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 from sqlalchemy import select
@@ -20,6 +21,9 @@ from app.modules.users.schemas import (
     UserCreate,
     UserUpdate,
 )
+
+if TYPE_CHECKING:
+    from app.modules.employees.models import Employee
 
 
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
@@ -45,6 +49,7 @@ async def list_users(
     store_id: int | None = None,
     is_active: bool | None = None,
     search: str | None = None,
+    has_employee: bool | None = None,
 ) -> tuple[list[User], int]:
     """
     Lista usuários com base nas permissões do usuário solicitante.
@@ -78,7 +83,28 @@ async def list_users(
         pattern = f"%{search}%"
         query = query.where((User.full_name.ilike(pattern)) | (User.email.ilike(pattern)))
 
+    if has_employee is not None:
+        from app.modules.employees.models import Employee
+
+        linked_sq = select(Employee.user_id).where(Employee.user_id.is_not(None))
+        query = query.where(User.id.in_(linked_sq) if has_employee else User.id.not_in(linked_sq))
+
     return await paginate(db, query, page, limit, order_by=User.full_name)
+
+
+async def get_linked_employees_by_user_ids(
+    db: AsyncSession, user_ids: list[int]
+) -> dict[int, "Employee"]:
+    """
+    Mapeia user_id → Employee vinculado (para exibir o funcionário na listagem de usuários).
+    Uma única query IN — sem N+1.
+    """
+    from app.modules.employees.models import Employee
+
+    if not user_ids:
+        return {}
+    result = await db.execute(select(Employee).where(Employee.user_id.in_(user_ids)))
+    return {emp.user_id: emp for emp in result.scalars().all() if emp.user_id is not None}
 
 
 async def get_user(db: AsyncSession, user_id: int, requesting_user: User) -> User:
@@ -144,6 +170,27 @@ async def create_user(
     refreshed = await get_user_by_id(db, user.id)
     if refreshed is None:
         raise NotFoundError(resource="Usuário")
+
+    # E-mail de boas-vindas: link para o novo usuário definir a própria senha
+    # (reaproveita o mesmo token/página de reset). Não bloqueia a criação se falhar.
+    try:
+        from app.config import get_settings
+        from app.core.email_templates import welcome_email
+        from app.modules.auth.service import issue_password_token
+        from app.workers.tasks import send_transactional_email
+
+        settings = get_settings()
+        token = await issue_password_token(refreshed.id, ttl_seconds=72 * 3600)
+        set_password_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+        subject, html, text = welcome_email(refreshed.full_name, set_password_url)
+        send_transactional_email.delay(to=refreshed.email, subject=subject, html=html, text=text)
+    except Exception:  # noqa: BLE001 — e-mail é best-effort, não derruba a criação
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Falha ao enfileirar e-mail de boas-vindas para user_id=%s", refreshed.id
+        )
+
     return refreshed
 
 
@@ -365,18 +412,42 @@ async def list_workers(
     db: AsyncSession,
     store_id: int | None = None,
     department: str | None = None,
+    requesting_user: "User | None" = None,
 ) -> list[User]:
     """
     Lista funcionários (users) para seleção em O.S.
-    """
-    query = select(User).options(selectinload(User.store))
 
+    Escopo de loja:
+    - Owner: vê funcionários de todas as lojas (sem restrição).
+    - Demais usuários: veem apenas funcionários da(s) loja(s) que gerenciam.
+      O parâmetro ``store_id`` refina dentro desse escopo, mas não amplia.
+
+    O filtro por ``department == "film"`` não concede visibilidade cross-loja
+    a não-owners — o escopo de loja é sempre aplicado primeiro.
+    """
+    from app.core.permissions import PermissionChecker, is_owner
+
+    query = select(User).options(selectinload(User.store))
     query = query.where(User.role == UserRole.USER.value)
     query = query.where(User.is_active.is_(True))
 
-    if department == "film":
-        pass
+    # Aplicar escopo de loja: owner vê tudo; demais ficam restritos às suas lojas.
+    if requesting_user is not None and not is_owner(requesting_user):
+        allowed_store_ids = PermissionChecker.get_user_store_ids(requesting_user)
+        if allowed_store_ids:
+            if store_id is not None and store_id in allowed_store_ids:
+                # Refinamento: usuário pediu uma loja específica que ele gerencia.
+                query = query.where(User.store_id == store_id)
+            elif store_id is not None:
+                # Loja solicitada fora do escopo do usuário — retorna vazio.
+                query = query.where(User.store_id == -1)
+            else:
+                query = query.where(User.store_id.in_(allowed_store_ids))
+        else:
+            # Usuário sem lojas configuradas: bloqueia tudo.
+            query = query.where(User.store_id == -1)
     elif store_id is not None:
+        # Owner refinando por loja específica (ou requesting_user não fornecido — legado).
         query = query.where(User.store_id == store_id)
 
     query = query.order_by(User.full_name)

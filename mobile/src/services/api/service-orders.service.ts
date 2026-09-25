@@ -6,6 +6,7 @@ import type {
     CreateServiceOrderData,
     ServiceOrderFilters,
     ServiceOrderStatus,
+    FinalizeServiceOrderPayload,
 } from '@/types/service-order.types';
 
 /**
@@ -43,6 +44,7 @@ interface BackendServiceOrder {
     vehicle_year?: number | null;
     department?: string;
     internal_notes?: string | null;
+    execution_notes?: string | null;
     store_id?: number;
     location_id?: number;
     location_name?: string;
@@ -76,8 +78,20 @@ interface BackendServiceOrder {
         roll_code?: string;
         service_name?: string | null;
         service_code?: string | null;
+        service_department?: string | null;
         film_roll_id?: number | null;
         film_type_id?: number | null;
+        // Retalho (sobra de corte anterior): nada é debitado da bobina.
+        used_scrap?: boolean;
+        scrap_source_roll_id?: number | null;
+        film_applications?: Array<{
+            tonality: string;
+            region?: string | null;
+            film_roll_id?: number | null;
+            roll_code?: string | null;
+            used_scrap?: boolean;
+            scrap_source_roll_id?: number | null;
+        }> | null;
     }>;
     services?: BackendService[];
     service_date?: string | null;
@@ -87,6 +101,8 @@ interface BackendServiceOrder {
     completion_photos?: string | string[] | null;
     updated_at?: string | null;
     updated_by_name?: string | null;
+    original_service_order_id?: number | null;
+    video_url?: string | null;
     [key: string]: unknown;
 }
 
@@ -151,8 +167,14 @@ function mapServiceOrder(raw: BackendServiceOrder): ServiceOrder {
         roll_code: item.roll_code,
         service_name: item.service_name ?? null,
         service_code: item.service_code ?? null,
+        service_department: item.service_department ?? null,
         film_roll_id: item.film_roll_id ?? null,
         film_type_id: item.film_type_id ?? null,
+        // Retalho: serviço feito com sobra já debitada em corte anterior.
+        used_scrap: item.used_scrap ?? false,
+        scrap_source_roll_id: item.scrap_source_roll_id ?? null,
+        // Tonalidades por região (finalize por tonalidade). null = item legado.
+        film_applications: item.film_applications ?? null,
     }));
 
     return {
@@ -180,11 +202,14 @@ function mapServiceOrder(raw: BackendServiceOrder): ServiceOrder {
         vehicle_year: raw.vehicle_year ?? null,
         internal_notes: raw.internal_notes ?? null,
         notes: raw.notes ?? null,
+        execution_notes: raw.execution_notes ?? null,
         service_date: raw.service_date ?? null,
         is_verified: raw.is_verified ?? false,
         verified_at: raw.verified_at ?? null,
+        original_service_order_id: raw.original_service_order_id ?? null,
         updated_at: raw.updated_at ?? undefined,
         updated_by_name: raw.updated_by_name ?? null,
+        video_url: raw.video_url ?? null,
     } as unknown as ServiceOrder;
 }
 
@@ -221,6 +246,15 @@ export interface DuplicateAppointmentMatch {
 export interface DuplicateCheckResult {
     service_orders: DuplicateOrderMatch[];
     appointments: DuplicateAppointmentMatch[];
+}
+
+/** Sugestão de O.S. de origem ao marcar Retorno (GET /service-orders/return-origin-suggestion). */
+export interface ReturnOriginSuggestion {
+    id: number;
+    order_number: string | null;
+    external_os_number: string | null;
+    service_date: string | null;
+    services: string[];
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -282,13 +316,23 @@ export const serviceOrdersService = {
         return mapServiceOrder(response.data);
     },
 
+    /**
+     * Desfaz o "Lançado Errado" restaurando o status ANTERIOR (tipicamente
+     * Finalizado), em vez de reabrir para Aguardando. Evita que corrigir um falso
+     * "Lançado Errado" de uma O.S. já finalizada a faça ressurgir como "Atrasado".
+     * Endpoint dedicado — não usar `updateStatus(id, 'waiting')` para isso.
+     */
+    undoWrong: async (id: number): Promise<ServiceOrder> => {
+        const response = await apiClient.post<BackendServiceOrder>(
+            `/service-orders/${id}/undo-wrong`,
+            {}
+        );
+        return mapServiceOrder(response.data);
+    },
+
     finalize: async (
         id: number,
-        payload: {
-            completion_photos: string[];
-            film_roll_assignments: Array<{ service_id: number; film_roll_id: number }>;
-            employee_ids: number[];
-        }
+        payload: FinalizeServiceOrderPayload
     ): Promise<ServiceOrder> => {
         const { data } = await apiClient.post<BackendServiceOrder>(
             `/service-orders/${id}/finalize`,
@@ -431,6 +475,26 @@ export const serviceOrdersService = {
             service_orders: response.data.service_orders ?? [],
             appointments: response.data.appointments ?? [],
         };
+    },
+
+    // ─── Sugestão de O.S. de origem para Retorno ─────────────────────────────
+    // GET /service-orders/return-origin-suggestion — retorna a O.S. anterior mais
+    // recente da placa/chassi. `exclude_os_id` evita sugerir a própria O.S. em
+    // edição. Quando `store_id` (loja onde o retorno será aberto) é informado, a
+    // busca inclui as O.S. de outras lojas da mesma marca. Quando `department` é
+    // informado, a origem é restrita ao mesmo departamento. Retorna null quando não
+    // há origem.
+    suggestReturnOrigin: async (
+        plate: string,
+        excludeOsId?: number,
+        storeId?: number,
+        department?: string
+    ): Promise<ReturnOriginSuggestion | null> => {
+        const { data } = await apiClient.get<{ suggestion?: ReturnOriginSuggestion | null }>(
+            '/service-orders/return-origin-suggestion',
+            { params: { plate, exclude_os_id: excludeOsId, store_id: storeId, department } }
+        );
+        return data.suggestion ?? null;
     },
 
     async getVehicleHistory(plate: string): Promise<{

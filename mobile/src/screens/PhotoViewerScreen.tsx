@@ -20,6 +20,7 @@ import Animated, {
     withTiming,
 } from 'react-native-reanimated';
 
+import { mediaHeaders } from '@/lib/mediaSource';
 import type { AppStackScreenProps } from '@/navigation/types';
 
 /**
@@ -192,7 +193,7 @@ function ZoomablePhoto({ uri, width, height }: ZoomablePhotoProps) {
                 style={[{ width, height, justifyContent: 'center', alignItems: 'center' }, animatedStyle]}
             >
                 <Image
-                    source={{ uri }}
+                    source={{ uri, headers: mediaHeaders() }}
                     style={{ width, height }}
                     contentFit="contain"
                     transition={150}

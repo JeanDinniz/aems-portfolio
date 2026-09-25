@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Select, type SelectRef } from '@/components/ui/Select';
@@ -7,6 +7,7 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { useServices } from '@/hooks/useServices';
 import { useStoreStore } from '@/stores/store.store';
 import { useTheme } from '@/theme';
+import { orderServicesForCourtesy } from '@/utils/serviceOrdering';
 import type { ServiceItem } from '@/services/api/services.service';
 
 /**
@@ -77,13 +78,20 @@ export function ServiceItemPicker({
         [allServices, isCourtesy]
     );
 
+    // Item 6 — em lançamento de cortesia, "Lav.cortesia - Lavagem Simples" sobe
+    // ao topo (somente ele); o resto mantém a ordem. Fora de cortesia, inalterado.
+    const orderedServices = useMemo(
+        () => orderServicesForCourtesy(services, isCourtesy),
+        [services, isCourtesy]
+    );
+
     const options = useMemo(
         () =>
-            services.map((s) => ({
+            orderedServices.map((s) => ({
                 value: s.id,
                 label: s.code ? `${s.code} — ${s.name}` : s.name,
             })),
-        [services]
+        [orderedServices]
     );
 
     const selectedIds = useMemo(() => value.map((v) => v.service_id), [value]);
@@ -130,7 +138,10 @@ export function ServiceItemPicker({
                 accessibilityState={{ disabled: !department }}
                 accessibilityLabel={`Selecionar serviços. ${value.length} selecionado(s).`}
                 disabled={!department}
-                onPress={() => selectRef.current?.present()}
+                onPress={() => {
+                    Keyboard.dismiss();
+                    selectRef.current?.present();
+                }}
                 className={[
                     'min-h-[48px] flex-row items-center justify-between rounded-xl border px-4 py-3 active:opacity-80',
                     error

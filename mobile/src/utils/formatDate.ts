@@ -30,7 +30,18 @@ const WEEKDAYS_FULL = [
 
 function toDate(value: string | Date | null | undefined): Date | null {
     if (!value) return null;
-    const d = value instanceof Date ? value : new Date(value);
+    if (value instanceof Date) {
+        return Number.isNaN(value.getTime()) ? null : value;
+    }
+    // Data pura "YYYY-MM-DD" (ex.: delivery_date): parse LOCAL. `new Date('2026-08-04')`
+    // é interpretado como meia-noite UTC e, em fusos negativos (UTC-3), volta um dia ao
+    // formatar com getDate() local — mostrava 03/08 para uma entrega em 04/08.
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (dateOnly) {
+        const [, y, m, d] = dateOnly;
+        return new Date(Number(y), Number(m) - 1, Number(d));
+    }
+    const d = new Date(value);
     return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -108,4 +119,27 @@ export function greetingForHour(date: Date = new Date()): string {
     if (h < 12) return 'Bom dia';
     if (h < 18) return 'Boa tarde';
     return 'Boa noite';
+}
+
+/**
+ * "AAAA-MM-DD" no fuso LOCAL do dispositivo (não UTC). Use isto para inputs de
+ * data e params de export — `new Date().toISOString().slice(0,10)` volta a data
+ * de ONTEM no fim do dia em UTC-3 (bug histórico do projeto).
+ */
+export function ymdLocal(d: Date = new Date()): string {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * `{ date_from, date_to }` do MÊS VIGENTE (1º ao último dia) em AAAA-MM-DD, fuso
+ * local. Espelha `getCurrentMonthRange` do web — usado no Resumo por Loja do
+ * Agendamento para dar números do mês (não de todo o histórico).
+ */
+export function getCurrentMonthRange(base: Date = new Date()): {
+    date_from: string;
+    date_to: string;
+} {
+    const first = new Date(base.getFullYear(), base.getMonth(), 1);
+    const last = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    return { date_from: ymdLocal(first), date_to: ymdLocal(last) };
 }

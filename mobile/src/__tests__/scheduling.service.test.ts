@@ -70,6 +70,13 @@ describe('schedulingService.list', () => {
         expect(params).toEqual({ page: 1, limit: 50 });
         expect(params).not.toHaveProperty('store_id');
         expect(params).not.toHaveProperty('include_cancelled');
+        expect(params).not.toHaveProperty('include_terminal');
+    });
+
+    it('M1: envia include_terminal quando pedido (busca acha carro finalizado)', async () => {
+        await schedulingService.list({ search: '7298', include_terminal: true, include_cancelled: true });
+        const { params } = lastConfig(mockGet) as { params: Record<string, unknown> };
+        expect(params).toMatchObject({ include_terminal: true, include_cancelled: true, search: '7298' });
     });
 
     it('retorna { items, pagination } da resposta', async () => {
@@ -130,6 +137,22 @@ describe('schedulingService — create/update/history/generateOS', () => {
         const payload = { store_id: 1, department: 'film', delivery_date: '2026-06-21', vehicle_plate: 'ABC1D23' };
         await schedulingService.create(payload);
         expect(mockPost).toHaveBeenCalledWith('/scheduling', payload);
+    });
+
+    it('createCombined faz POST /scheduling/combined e retorna { items }', async () => {
+        mockPost.mockResolvedValueOnce({ data: { items: [{ id: 1 }, { id: 2 }] } });
+        const payload = {
+            store_id: 1,
+            delivery_date: '2026-06-21',
+            vehicle_plate: 'ABC1D23',
+            departments: [
+                { department: 'film', service_ids: [42], film_entries: [{ service_id: 42, tonality: 'G20' }] },
+                { department: 'bodywork', service_ids: [43] },
+            ],
+        };
+        const result = await schedulingService.createCombined(payload);
+        expect(mockPost).toHaveBeenCalledWith('/scheduling/combined', payload);
+        expect(result.items).toHaveLength(2);
     });
 
     it('update faz PATCH /scheduling/{id} com o payload parcial', async () => {

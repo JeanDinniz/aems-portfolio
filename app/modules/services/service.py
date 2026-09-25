@@ -205,7 +205,7 @@ async def update_service(
     db: AsyncSession,
     service_id: int,
     data: ServiceUpdate,
-) -> Service:
+) -> tuple[Service, int]:
     """
     Atualiza um serviço existente.
 
@@ -215,7 +215,8 @@ async def update_service(
         data: Dados para atualização
 
     Returns:
-        Service atualizado
+        Tupla (Service atualizado, nº de serviços irmãos afetados pela
+        propagação de is_courtesy_only — 0 quando não houve propagação).
 
     Raises:
         NotFoundError: Serviço não encontrado
@@ -261,18 +262,41 @@ async def update_service(
 
     await db.flush()
 
+    propagated_count = 0
     if "is_courtesy_only" in update_data:
         # Exclusividade de cortesia é do serviço lógico, não da marca: propaga
         # para as linhas irmãs (mesmo nome/departamento em outras marcas).
-        await db.execute(
-            sa_update(Service)
-            .where(
-                Service.id != service.id,
-                Service.name == service.name,
-                Service.department == service.department,
-            )
-            .values(is_courtesy_only=service.is_courtesy_only)
+        # Só as linhas irmãs que REALMENTE mudam de valor (evita writes/auditoria
+        # inúteis e faz a contagem refletir os serviços de fato afetados).
+        sibling_stmt = select(Service.id).where(
+            Service.id != service.id,
+            Service.name == service.name,
+            Service.department == service.department,
+            Service.is_courtesy_only != service.is_courtesy_only,
         )
+        sibling_ids = list((await db.execute(sibling_stmt)).scalars().all())
+
+        if sibling_ids:
+            await db.execute(
+                sa_update(Service)
+                .where(Service.id.in_(sibling_ids))
+                .values(is_courtesy_only=service.is_courtesy_only)
+            )
+            # Auditoria individual: a propagação altera outras marcas
+            # silenciosamente — cada linha irmã afetada é registrada.
+            for sibling_id in sibling_ids:
+                await log_audit(
+                    db=db,
+                    action="update",
+                    resource_type="service",
+                    user_id=None,
+                    resource_id=sibling_id,
+                    new_value={
+                        "is_courtesy_only": service.is_courtesy_only,
+                        "propagated_from_service_id": service.id,
+                    },
+                )
+        propagated_count = len(sibling_ids)
 
     await log_audit(
         db=db,
@@ -281,13 +305,13 @@ async def update_service(
         user_id=None,
         resource_id=service.id,
         old_value=old_value,
-        new_value=update_data,
+        new_value={**update_data, "courtesy_propagated_count": propagated_count},
     )
 
     result = await db.execute(
         select(Service).options(selectinload(Service.brand)).where(Service.id == service_id)
     )
-    return result.scalar_one()
+    return result.scalar_one(), propagated_count
 
 
 async def deactivate_service(db: AsyncSession, service_id: int) -> Service:

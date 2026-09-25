@@ -465,7 +465,7 @@ export function OSCreatedBanner({
         <p className="text-xs text-muted-foreground">N° {orderNumber}</p>
       </div>
       <a
-        href={`/service-orders/${serviceOrderId}`}
+        href={`/service-orders/${serviceOrderId}/edit`}
         className="flex items-center gap-1 text-xs font-medium text-[#F5A800] hover:underline shrink-0"
       >
         Ver <ExternalLink className="h-3 w-3" />

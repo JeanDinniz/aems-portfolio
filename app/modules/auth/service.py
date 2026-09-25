@@ -3,7 +3,7 @@ Auth service - Business logic for authentication.
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +12,6 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.core.audit import log_audit
 from app.core.exceptions import (
-    AccountLockedError,
     AuthenticationError,
     ConflictError,
     ValidationError,
@@ -92,7 +91,6 @@ async def authenticate(
 
     Raises:
         AuthenticationError: Credenciais inválidas
-        AccountLockedError: Conta bloqueada
     """
     user = await get_user_by_email(db, email)
 
@@ -109,11 +107,6 @@ async def authenticate(
         )
         raise AuthenticationError(detail="Email ou senha inválidos")
 
-    # Verificar se a conta está bloqueada
-    if user.locked_until and user.locked_until > datetime.now(UTC):
-        minutes_remaining = int((user.locked_until - datetime.now(UTC)).total_seconds() / 60)
-        raise AccountLockedError(minutes_remaining=max(1, minutes_remaining))
-
     # Verificar se o usuário está ativo
     if not user.is_active:
         await log_access(
@@ -129,25 +122,8 @@ async def authenticate(
 
     # Verificar senha
     if not verify_password(password, user.hashed_password):
-        # Incrementar tentativas falhas
+        # Incrementar tentativas falhas (apenas para auditoria; não bloqueia a conta)
         user.failed_login_attempts += 1
-
-        # Bloquear após MAX_LOGIN_ATTEMPTS tentativas
-        if user.failed_login_attempts >= settings.MAX_LOGIN_ATTEMPTS:
-            user.locked_until = datetime.now(UTC) + timedelta(
-                minutes=settings.LOCKOUT_DURATION_MINUTES
-            )
-            await log_access(
-                db,
-                user_id=user.id,
-                action="account_locked",
-                success=False,
-                ip_address=ip_address,
-                user_agent=user_agent,
-                details={"attempts": user.failed_login_attempts},
-            )
-            await db.commit()
-            raise AccountLockedError(minutes_remaining=settings.LOCKOUT_DURATION_MINUTES)
 
         await log_access(
             db,
@@ -304,9 +280,19 @@ async def refresh_access_token(
         except Exception as e:
             import logging
 
-            logging.getLogger(__name__).warning(
-                "Redis unavailable for refresh token check: %s", str(e)
+            # ERROR (não warning): com Redis fora, revogação de refresh token deixa de valer.
+            logging.getLogger(__name__).error(
+                "SECURITY: Redis indisponível para checagem de refresh token — "
+                "revogação/sessão única NÃO estão sendo aplicadas: %s",
+                str(e),
             )
+            # Postura configurável: alinhada ao comportamento do access token em security.py.
+            # TOKEN_REVOCATION_FAIL_CLOSED=True → nega o refresh (segurança > disponibilidade).
+            # TOKEN_REVOCATION_FAIL_CLOSED=False → emite novo token (disponibilidade > segurança).
+            if settings.TOKEN_REVOCATION_FAIL_CLOSED:
+                raise AuthenticationError(
+                    detail="Serviço de autenticação temporariamente indisponível"
+                ) from e
 
     user = await get_user_by_id(db, int(user_id))
     if not user or not user.is_active:
@@ -534,12 +520,45 @@ async def create_user(
     )
 
 
+async def issue_password_token(user_id: int, ttl_seconds: int) -> str:
+    """
+    Gera um token single-use de senha e grava no Redis (`password_reset:{token}`).
+
+    Reutilizado pelo reset de senha (TTL 1h) e pelo e-mail de boas-vindas ao
+    criar usuario (TTL 72h). O consumo é feito por `reset_password_with_token`.
+
+    Args:
+        user_id: ID do usuario dono do token.
+        ttl_seconds: validade do token em segundos.
+
+    Returns:
+        O token gerado (hex).
+
+    Raises:
+        ServiceUnavailableError: Redis indisponivel.
+    """
+    from app.core.exceptions import ServiceUnavailableError
+
+    token = uuid.uuid4().hex
+    try:
+        from app.core.redis import get_redis
+
+        redis_client = get_redis()
+        await redis_client.setex(f"password_reset:{token}", ttl_seconds, str(user_id))
+    except Exception as e:
+        raise ServiceUnavailableError(
+            detail="Servico de recuperacao de senha temporariamente indisponivel"
+        ) from e
+    return token
+
+
 async def forgot_password(db: AsyncSession, email: str) -> dict:
     """
     Inicia o fluxo de recuperacao de senha.
 
     - Busca usuario por email
-    - Gera token UUID com TTL de 1h no Redis
+    - Gera token com TTL de 1h no Redis
+    - Dispara e-mail de reset (via Celery) com o link para o frontend
     - Nao revela se email existe (seguranca)
 
     Args:
@@ -549,25 +568,19 @@ async def forgot_password(db: AsyncSession, email: str) -> dict:
     Returns:
         Dict com mensagem
     """
-    from app.core.exceptions import ServiceUnavailableError
-
     user = await get_user_by_email(db, email)
     # Nao revelamos se o email existe
     if not user:
         return {"message": "Se o email existir, voce recebera as instrucoes"}
 
-    token = uuid.uuid4().hex
+    token = await issue_password_token(user.id, ttl_seconds=3600)
 
-    try:
-        from app.core.redis import get_redis
+    from app.core.email_templates import password_reset_email
+    from app.workers.tasks import send_transactional_email
 
-        redis_client = get_redis()
-        redis_key = f"password_reset:{token}"
-        await redis_client.setex(redis_key, 3600, str(user.id))
-    except Exception as e:
-        raise ServiceUnavailableError(
-            detail="Servico de recuperacao de senha temporariamente indisponivel"
-        ) from e
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    subject, html, text = password_reset_email(user.full_name, reset_url)
+    send_transactional_email.delay(to=user.email, subject=subject, html=html, text=text)
 
     return {"message": "Se o email existir, voce recebera as instrucoes"}
 

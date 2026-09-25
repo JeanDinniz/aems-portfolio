@@ -27,3 +27,31 @@ class PushDeviceResponse(BaseModel):
     app_version: str | None
     created_at: datetime
     last_seen: datetime
+
+
+class WebPushKeys(BaseModel):
+    """Chaves da subscription retornadas pelo navegador."""
+
+    p256dh: str = Field(..., min_length=1, max_length=255)
+    auth: str = Field(..., min_length=1, max_length=255)
+
+
+class WebPushSubscribe(BaseModel):
+    """Body para registrar (ou atualizar) uma assinatura de Web Push."""
+
+    endpoint: str = Field(..., min_length=10, max_length=1024)
+    keys: WebPushKeys
+    user_agent: str | None = Field(None, max_length=500)
+
+
+class WebPushUnsubscribe(BaseModel):
+    """Body para remover uma assinatura de Web Push."""
+
+    endpoint: str = Field(..., min_length=10, max_length=1024)
+
+
+class WebPushPublicKeyResponse(BaseModel):
+    """Chave pública VAPID para o pushManager.subscribe do navegador."""
+
+    public_key: str
+    enabled: bool

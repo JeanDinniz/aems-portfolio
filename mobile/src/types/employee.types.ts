@@ -142,3 +142,37 @@ export interface UpdateEmployeeHrPayload extends UpdateEmployeePayload {
     last_name?: string | null;
     birth_date?: string | null;
 }
+
+/** Status do funcionário num dia (Faltas do Dia). Espelha o backend. */
+export type DayStatus = 'presente' | 'falta' | 'ferias' | 'afastado';
+
+/** Linha da lista de status do dia (`GET /employees/day-status`). */
+export interface EmployeeDayStatusItem {
+    employee_id: number;
+    name: string;
+    position: string | null;
+    status: DayStatus;
+    reason: string | null;
+    fault_movement_id: number | null;
+    attachment_url: string | null;
+    /** Cadastro de RH desatualizado — afastamento encerrado que exige registrar retorno. */
+    needs_return: boolean;
+}
+
+/** Resposta do `GET /employees/day-status` (itens + contadores). */
+export interface DayStatusResponse {
+    items: EmployeeDayStatusItem[];
+    present: number;
+    faults: number;
+    vacations: number;
+    absences: number;
+}
+
+/** Corpo do `POST /employees/{id}/movements`. */
+export interface CreateMovementPayload {
+    type: string;
+    movement_date: string;
+    movement_data?: Record<string, unknown>;
+    attachment_url?: string | null;
+    notes?: string | null;
+}

@@ -16,6 +16,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const mockExhaustRoll = jest.fn();
 const mockAddService = jest.fn();
 const mockCreateRoll = jest.fn();
+const mockCreateWithdrawal = jest.fn();
+const mockReverseWithdrawal = jest.fn();
 
 jest.mock('@/services/api/inventory.service', () => {
     const actual = jest.requireActual('@/services/api/inventory.service');
@@ -25,6 +27,8 @@ jest.mock('@/services/api/inventory.service', () => {
             exhaustRoll: (...a: unknown[]) => mockExhaustRoll(...a),
             addServiceToFilmType: (...a: unknown[]) => mockAddService(...a),
             createRoll: (...a: unknown[]) => mockCreateRoll(...a),
+            createWithdrawal: (...a: unknown[]) => mockCreateWithdrawal(...a),
+            reverseWithdrawal: (...a: unknown[]) => mockReverseWithdrawal(...a),
         },
     };
 });
@@ -44,6 +48,8 @@ import {
     useExhaustRoll,
     useAddServiceToFilmType,
     useCreateRoll,
+    useCreateWithdrawal,
+    useReverseWithdrawal,
 } from '@/hooks/useInventory';
 import { CriticalRollsError } from '@/services/api/inventory.service';
 
@@ -64,6 +70,8 @@ beforeEach(() => {
     mockExhaustRoll.mockResolvedValue({ id: 1, status: 'esgotada' });
     mockAddService.mockResolvedValue({ service_id: 9 });
     mockCreateRoll.mockResolvedValue({ id: 1 });
+    mockCreateWithdrawal.mockResolvedValue({ id: 11, meters: 1.6 });
+    mockReverseWithdrawal.mockResolvedValue({ id: 11, is_reversed: true });
 });
 
 describe('useExhaustRoll', () => {
@@ -126,5 +134,52 @@ describe('useCreateRoll', () => {
 
         expect(mockToastError).not.toHaveBeenCalled();
         expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+});
+
+describe('useCreateWithdrawal', () => {
+    it('invalida saídas + bobinas + críticas e dispara toast no sucesso', async () => {
+        const client = newClient();
+        const spy = jest.spyOn(client, 'invalidateQueries');
+        const { result } = await renderHook(() => useCreateWithdrawal(), {
+            wrapper: wrapper(client),
+        });
+
+        await act(async () => {
+            await result.current.mutateAsync({ film_roll_id: 5, employee_id: 7, meters: 1.6 });
+        });
+
+        await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+        expect(mockCreateWithdrawal).toHaveBeenCalledWith({
+            film_roll_id: 5,
+            employee_id: 7,
+            meters: 1.6,
+        });
+        const keys = spy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey[0]);
+        expect(keys).toContain('film-withdrawals');
+        expect(keys).toContain('film-withdrawals-summary');
+        expect(keys).toContain('inventory-rolls');
+        expect(keys).toContain('inventory-critical');
+    });
+});
+
+describe('useReverseWithdrawal', () => {
+    it('estorna, invalida saídas + bobinas e dispara toast no sucesso', async () => {
+        const client = newClient();
+        const spy = jest.spyOn(client, 'invalidateQueries');
+        const { result } = await renderHook(() => useReverseWithdrawal(), {
+            wrapper: wrapper(client),
+        });
+
+        await act(async () => {
+            await result.current.mutateAsync(11);
+        });
+
+        await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+        expect(mockReverseWithdrawal).toHaveBeenCalledWith(11);
+        const keys = spy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey[0]);
+        expect(keys).toContain('film-withdrawals');
+        expect(keys).toContain('film-withdrawals-summary');
+        expect(keys).toContain('inventory-rolls');
     });
 });

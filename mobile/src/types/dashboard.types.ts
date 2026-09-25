@@ -48,29 +48,12 @@ export interface EmployeeRankingItem {
   avg_hours_per_order: number;
 }
 
-export interface ConsultantRankingItem {
-  consultant_id: number;
-  consultant_name: string;
-  dealership_name: string | null;
-  orders_count: number;
-  revenue: number;
-}
-
 export interface SLAMetrics {
   avg_wait_minutes: number;
   avg_execution_minutes: number;
   pct_return: number;
   pct_courtesy: number;
   pct_galpon: number;
-}
-
-export interface QueueSnapshotItem {
-  store_id: number;
-  store_name: string;
-  waiting: number;
-  in_progress: number;
-  overdue: number;
-  completed: number;
 }
 
 export interface TimeSeriesPoint {

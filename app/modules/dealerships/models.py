@@ -2,7 +2,7 @@
 Dealership model - Represents a dealership partner (concessionária).
 """
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -15,6 +15,19 @@ class Dealership(Base, TimestampMixin):
     """
 
     __tablename__ = "dealerships"
+
+    # Índice UNIQUE PARCIAL: no máximo uma concessionária fantasma "Geral" por
+    # loja (a auto-criada quando o consultor não tem concessionária). Não afeta
+    # concessionárias reais — duas marcas iguais na mesma loja seguem permitidas.
+    __table_args__ = (
+        Index(
+            "uq_dealership_geral_per_store",
+            "store_id",
+            unique=True,
+            postgresql_where=text("brand = 'Geral'"),
+            sqlite_where=text("brand = 'Geral'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)

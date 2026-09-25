@@ -1,13 +1,17 @@
-import { Alert, ScrollView, Text, View } from 'react-native';
+import { useRef } from 'react';
+import { ScrollView, Text, View } from 'react-native';
 
 import { ScreenHeader } from '@/components/common/ScreenHeader';
+import { AdjustMetersSheet, type AdjustMetersSheetRef } from '@/components/features/AdjustMetersSheet';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { useExhaustRoll, useRestoreRoll, useDeleteRoll, useRoll, useRollConsumptions } from '@/hooks/useInventory';
+import { useConfirm } from '@/components/ui';
+import { useExhaustRoll, useRestoreRoll, useOpenRoll, useDeleteRoll, useRoll, useRollConsumptions } from '@/hooks/useInventory';
 import { useCanEdit } from '@/hooks/useMyPermissions';
 import { ROLL_COLOR_CONFIG } from '@/constants/inventory';
 import { formatDateBR, formatDateTimeBR } from '@/utils/formatDate';
+import { formatDecimalBRL } from '@/utils/formatNumber';
 import type { FilmConsumption } from '@/services/api/inventory.service';
 import type { InventoryStackScreenProps } from '@/navigation/types';
 
@@ -22,12 +26,16 @@ import type { InventoryStackScreenProps } from '@/navigation/types';
 export function RollDetailScreen({ route, navigation }: InventoryStackScreenProps<'RollDetail'>) {
     const { id } = route.params;
     const canEdit = useCanEdit('inventory');
+    const { confirm } = useConfirm();
     const { data: roll, isLoading, isError, refetch } = useRoll(id);
     const { data: consumptions } = useRollConsumptions(id);
 
     const exhaustRoll = useExhaustRoll();
     const restoreRoll = useRestoreRoll();
+    const openRoll = useOpenRoll();
     const deleteRoll = useDeleteRoll();
+
+    const adjustSheetRef = useRef<AdjustMetersSheetRef>(null);
 
     if (isLoading) {
         return (
@@ -56,43 +64,49 @@ export function RollDetailScreen({ route, navigation }: InventoryStackScreenProp
     const list = consumptions ?? [];
 
     const isExhausted = roll.status === 'esgotada';
-    const actionBusy = exhaustRoll.isPending || restoreRoll.isPending || deleteRoll.isPending;
+    const isSealed = roll.status === 'em_estoque';
+    const actionBusy =
+        exhaustRoll.isPending || restoreRoll.isPending || openRoll.isPending || deleteRoll.isPending;
 
-    const confirmExhaust = () => {
-        Alert.alert('Esgotar bobina', `Marcar a bobina ${roll.visual_id} como esgotada?`, [
-            { text: 'Cancelar', style: 'cancel' },
-            {
-                text: 'Esgotar',
-                style: 'destructive',
-                onPress: () => exhaustRoll.mutate(roll.id),
-            },
-        ]);
+    const confirmOpen = async () => {
+        const ok = await confirm({
+            title: 'Colocar em uso',
+            message: `Abrir a bobina ${roll.visual_id} para uso? Ela passa de "Em Estoque" para "Em Uso" e fica disponível para consumo.`,
+            confirmLabel: 'Abrir',
+        });
+        if (ok) openRoll.mutate(roll.id);
     };
 
-    const confirmRestore = () => {
-        Alert.alert('Restaurar bobina', `Restaurar a bobina ${roll.visual_id} para o estoque?`, [
-            { text: 'Cancelar', style: 'cancel' },
-            { text: 'Restaurar', onPress: () => restoreRoll.mutate(roll.id) },
-        ]);
+    const confirmExhaust = async () => {
+        const ok = await confirm({
+            title: 'Esgotar bobina',
+            message: `Marcar a bobina ${roll.visual_id} como esgotada?`,
+            confirmLabel: 'Esgotar',
+            destructive: true,
+        });
+        if (ok) exhaustRoll.mutate(roll.id);
     };
 
-    const confirmDelete = () => {
-        Alert.alert(
-            'Excluir bobina',
-            `Excluir a bobina ${roll.visual_id}? Esta ação não pode ser desfeita.`,
-            [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: 'Excluir',
-                    style: 'destructive',
-                    onPress: () =>
-                        deleteRoll.mutate(roll.id, {
-                            // 409 (tem consumos): a mensagem do backend vai no Toast (hook).
-                            onSuccess: () => navigation.goBack(),
-                        }),
-                },
-            ]
-        );
+    const confirmRestore = async () => {
+        const ok = await confirm({
+            title: 'Restaurar bobina',
+            message: `Restaurar a bobina ${roll.visual_id} para o estoque?`,
+            confirmLabel: 'Restaurar',
+        });
+        if (ok) restoreRoll.mutate(roll.id);
+    };
+
+    const confirmDelete = async () => {
+        const ok = await confirm({
+            title: 'Excluir bobina',
+            message: `Excluir a bobina ${roll.visual_id}? Esta ação não pode ser desfeita.`,
+            confirmLabel: 'Excluir',
+            destructive: true,
+        });
+        if (ok) {
+            // 409 (tem consumos): a mensagem do backend vai no Toast (hook).
+            deleteRoll.mutate(roll.id, { onSuccess: () => navigation.goBack() });
+        }
     };
 
     return (
@@ -142,10 +156,9 @@ export function RollDetailScreen({ route, navigation }: InventoryStackScreenProp
                     <Row label="Fornecedor" value={roll.supplier_name || roll.supplier || '—'} />
                     <Row label="NFe" value={roll.nfe_number || '—'} />
                     <Row label="Lote" value={roll.lot_number || '—'} />
-                    <Row
-                        label="Custo"
-                        value={roll.cost != null ? `R$ ${roll.cost.toFixed(2)}` : '—'}
-                    />
+                    {/* cost é Decimal serializado como STRING pelo backend — formatar
+                        via helper (nunca `.toFixed` direto: crasha numa string). */}
+                    <Row label="Custo" value={formatDecimalBRL(roll.cost)} />
                     <Row label="Recebimento" value={formatDateBR(roll.receipt_date)} />
                 </Section>
 
@@ -166,6 +179,33 @@ export function RollDetailScreen({ route, navigation }: InventoryStackScreenProp
                         <Text className="mb-1 font-sans-bold text-sm text-neutral-700 dark:text-dark-text">
                             Ações
                         </Text>
+                        {isSealed ? (
+                            <Button
+                                title="Colocar em uso"
+                                variant="primary"
+                                icon="lock-open"
+                                loading={openRoll.isPending}
+                                disabled={actionBusy}
+                                onPress={confirmOpen}
+                            />
+                        ) : null}
+                        <Button
+                            title="Editar bobina"
+                            variant="secondary"
+                            icon="create-outline"
+                            disabled={actionBusy}
+                            onPress={() => navigation.navigate('EditRoll', { id: roll.id })}
+                        />
+                        {/* Ajustar metros não faz sentido em bobina esgotada. */}
+                        {!isExhausted ? (
+                            <Button
+                                title="Ajustar metros"
+                                variant="secondary"
+                                icon="options-outline"
+                                disabled={actionBusy}
+                                onPress={() => adjustSheetRef.current?.present()}
+                            />
+                        ) : null}
                         <Button
                             title="Transferir para outra loja"
                             variant="secondary"
@@ -208,6 +248,11 @@ export function RollDetailScreen({ route, navigation }: InventoryStackScreenProp
                     </View>
                 ) : null}
             </ScrollView>
+
+            {/* Ajustar metros restantes (conferência de estoque) — só com can_edit. */}
+            {canEdit && !isExhausted ? (
+                <AdjustMetersSheet ref={adjustSheetRef} roll={roll} />
+            ) : null}
         </View>
     );
 }

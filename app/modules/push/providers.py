@@ -143,3 +143,62 @@ def get_push_provider() -> PushProvider:
     retornar `FcmApnsPushProvider()` aqui sem alterar tasks.py nem call sites.
     """
     return ExpoPushProvider()
+
+
+class WebPushProvider:
+    """
+    Envio de Web Push (VAPID) para assinaturas de navegador/PWA.
+
+    Não implementa a ABC PushProvider porque o "endereço" é uma subscription
+    (endpoint + chaves), não um token simples. Segue o mesmo contrato de
+    limpeza: retorna os endpoints inválidos (404/410) para remoção do banco.
+    pywebpush é síncrono — chamar via asyncio.to_thread ou em task Celery.
+    """
+
+    def send_sync(
+        self,
+        subscriptions: list[dict],
+        title: str,
+        body: str,
+        data: dict | None = None,
+    ) -> list[str]:
+        """
+        Envia para uma lista de subscriptions:
+        [{"endpoint": ..., "keys": {"p256dh": ..., "auth": ...}}, ...]
+
+        Retorna endpoints inválidos (subscription expirada/removida).
+        """
+        import json
+
+        from pywebpush import WebPushException, webpush
+
+        settings = get_settings()
+        if not settings.WEB_PUSH_ENABLED or not settings.VAPID_PRIVATE_KEY:
+            logger.debug("Web push desabilitado ou sem chave VAPID — envio ignorado")
+            return []
+
+        payload = json.dumps({"title": title, "body": body, "data": data or {}})
+        invalid_endpoints: list[str] = []
+
+        for subscription in subscriptions:
+            try:
+                webpush(
+                    subscription_info=subscription,
+                    data=payload,
+                    vapid_private_key=settings.VAPID_PRIVATE_KEY,
+                    vapid_claims={"sub": settings.VAPID_CLAIMS_EMAIL},
+                )
+            except WebPushException as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in (404, 410):
+                    invalid_endpoints.append(subscription["endpoint"])
+                    logger.debug("Web push subscription expirada: %s", status_code)
+                else:
+                    logger.warning("Web push falhou (%s): %s", status_code, exc)
+
+        logger.info(
+            "Web push: %d enviados, %d invalidos",
+            len(subscriptions),
+            len(invalid_endpoints),
+        )
+        return invalid_endpoints

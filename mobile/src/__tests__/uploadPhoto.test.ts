@@ -3,7 +3,7 @@ import type { LocalPhotoAsset } from '@/types/photo.types';
 
 /**
  * CAM-03 — uploadPhoto. Mocka apiClient.post e valida: FormData com campo `file`,
- * header multipart, timeout 120s, retorno de `data.url`, repasse de progresso e
+ * header multipart, timeout 60s, retorno de `data.url`, repasse de progresso e
  * tratamento dos erros 413/415/422 (UploadError com mensagem amigável).
  */
 const mockPost = jest.fn();
@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 
 describe('uploadPhoto — request', () => {
-    it('envia FormData no endpoint correto, com header multipart e timeout 120s', async () => {
+    it('envia FormData no endpoint correto, com header multipart e timeout 60s', async () => {
         await uploadPhoto(photo);
 
         expect(mockPost).toHaveBeenCalledTimes(1);
@@ -45,7 +45,7 @@ describe('uploadPhoto — request', () => {
         expect(url).toBe('/upload/photo');
         expect(body).toBeInstanceOf(FormData);
         expect(config.headers).toEqual({ 'Content-Type': 'multipart/form-data' });
-        expect(config.timeout).toBe(120_000);
+        expect(config.timeout).toBe(60_000);
     });
 
     it('o FormData contém o campo `file`', async () => {

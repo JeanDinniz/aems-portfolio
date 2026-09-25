@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Keyboard, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Keyboard, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useForm, Controller } from 'react-hook-form';
@@ -7,17 +8,21 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
 import { ScreenHeader } from '@/components/common/ScreenHeader';
+import { useConfirm } from '@/components/ui';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { Select, type SelectRef } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
 import { ServiceItemPicker, type ServiceItemSelection } from '@/components/features/ServiceItemPicker';
 import { PhotoCapture } from '@/components/features/PhotoCapture';
+import { VideoAttach } from '@/components/features/service-orders/VideoAttach';
+import { ReturnOriginPicker } from '@/components/features/ReturnOriginPicker';
 import { useCreateServiceOrder, useDuplicateCheck } from '@/hooks/useServiceOrders';
 import { useStores } from '@/hooks/useStores';
 import { useVehicleModels } from '@/hooks/useVehicleModels';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useGalponFlags } from '@/navigation/guards';
+import { useAuthStore } from '@/stores/auth.store';
 import { useStoreStore } from '@/stores/store.store';
 import { getApiErrorMessage } from '@/lib/api-error';
 import {
@@ -69,7 +74,10 @@ function isValidPlateOrChassi(value: string): boolean {
 const DEPT_VALUES = DEPARTMENTS.map((d) => d.value) as [Department, ...Department[]];
 
 // ─── Schema Zod (espelha o web, sem película detalhada) ───────────────────────
-const schema = z
+// Factory: o schema precisa enxergar `isOwner` para a trava de "retorno sem
+// O.S. de origem" (o backend enforça — 403/422; aqui espelhamos client-side).
+function makeSchema(isOwner: boolean) {
+    return z
     .object({
         location_id: z.number({ error: 'Selecione a loja' }).int().positive('Selecione a loja'),
         is_courtesy: z.boolean(),
@@ -93,6 +101,8 @@ const schema = z
         vehicle_year: z.number().optional(),
         vehicle_color: z.string().min(1, 'Cor obrigatória'),
         consultant_id: z.number().optional(),
+        // Vínculo da O.S. de origem (quando Retorno). Preenchido pelo ReturnOriginPicker.
+        original_service_order_id: z.number().optional(),
         items: z
             .array(z.object({ service_id: z.number(), quantity: z.number() }))
             .min(1, 'Selecione pelo menos 1 serviço'),
@@ -120,9 +130,28 @@ const schema = z
                 path: ['consultant_id'],
             });
         }
+        // Retorno SEM O.S. de origem (espelha a trava do backend — 403/422).
+        //   • não-Owner → é OBRIGADO a vincular a O.S. de origem;
+        //   • Owner → pode deixar vazio, MAS a Observação (motivo) vira obrigatória.
+        if (data.is_return && !data.original_service_order_id) {
+            if (!isOwner) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Selecione a O.S. de origem do retorno',
+                    path: ['original_service_order_id'],
+                });
+            } else if (!data.notes?.trim()) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Informe a observação (motivo) ao lançar um retorno sem O.S. de origem.',
+                    path: ['notes'],
+                });
+            }
+        }
     });
+}
 
-type CreateOSForm = z.infer<typeof schema>;
+type CreateOSForm = z.infer<ReturnType<typeof makeSchema>>;
 
 /** Opções de Cortesia/Retorno (espelha CourtesyReturnSelect do web). */
 type CourtesyReturnValue = 'normal' | 'courtesy' | 'return';
@@ -214,10 +243,15 @@ export function CreateServiceOrderScreen({
 }: ServiceOrdersStackScreenProps<'CreateServiceOrder'>) {
     const copyFrom = route.params?.copyFrom;
     const toast = useToast();
+    const { confirm } = useConfirm();
     const createServiceOrder = useCreateServiceOrder();
     const { stores } = useStores();
     const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
     const { isGalponProfile, hideGalponOption } = useGalponFlags();
+    const isOwner = useAuthStore((s) => s.isOwner)();
+
+    // Schema depende de isOwner (trava de retorno sem O.S. de origem).
+    const schema = useMemo(() => makeSchema(isOwner), [isOwner]);
 
     // Id estável do rascunho — vincula as fotos enfileiradas a esta criação.
     const [osDraftId, setOsDraftId] = useState(() => makeDraftId());
@@ -227,6 +261,8 @@ export function CreateServiceOrderScreen({
 
     const [photos, setPhotos] = useState<Photo[]>([]);
     const [damagePhotos, setDamagePhotos] = useState<Photo[]>([]);
+    const [videoUrl, setVideoUrl] = useState<string | null>(null);
+    const [videoUploading, setVideoUploading] = useState(false);
 
     // Controle de restauração: até restaurar (ou confirmar que não há rascunho),
     // o autosave fica suspenso para não sobrescrever o rascunho com o form vazio.
@@ -262,6 +298,7 @@ export function CreateServiceOrderScreen({
             vehicle_year: undefined,
             vehicle_color: '',
             consultant_id: undefined,
+            original_service_order_id: undefined,
             items: [],
             notes: '',
         },
@@ -281,6 +318,10 @@ export function CreateServiceOrderScreen({
     const serviceDate = watch('service_date');
     const plate = watch('plate');
     const items = watch('items');
+    const originServiceOrderId = watch('original_service_order_id');
+
+    // Observação vira obrigatória: Owner lançando retorno SEM O.S. de origem.
+    const notesRequired = isReturn && isOwner && !originServiceOrderId;
 
     // Loja resolvida + marca (derivada da loja, 1:1 — não selecionável).
     const currentStore = useMemo(
@@ -303,6 +344,9 @@ export function CreateServiceOrderScreen({
     const storeSheetRef = useRef<SelectRef>(null);
     const modelSheetRef = useRef<SelectRef>(null);
     const consultantSheetRef = useRef<SelectRef>(null);
+
+    // Ref do campo de texto para a cadeia de foco (item 1 — "OK" avança o foco).
+    const plateRef = useRef<TextInput>(null);
 
     // Tipo escolhido (null até o usuário marcar — campo obrigatório, sem default).
     const courtesyReturn: CourtesyReturnValue | null = !courtesyReturnSet
@@ -356,7 +400,7 @@ export function CreateServiceOrderScreen({
 
     // ─── Reset parcial para "Salvar e Próxima" ───────────────────────────────
     const partialReset = useCallback(
-        (savedDept: Department, savedStoreId: number) => {
+        (savedDept: Department, savedStoreId: number, savedServiceDate: string) => {
             reset({
                 location_id: savedStoreId,
                 is_courtesy: false,
@@ -364,7 +408,9 @@ export function CreateServiceOrderScreen({
                 courtesy_return_set: false,
                 is_galpon: isGalponProfile ? true : isGalpon,
                 department: savedDept,
-                service_date: todayISO(),
+                // Item 5 — preserva a data digitada no "Salvar e Próxima" (antes
+                // forçava todayISO()); o instalador lança vários carros na mesma data.
+                service_date: savedServiceDate,
                 external_os_number: '',
                 plate: '',
                 vehicle_model: '',
@@ -372,11 +418,14 @@ export function CreateServiceOrderScreen({
                 vehicle_year: undefined,
                 vehicle_color: '',
                 consultant_id: undefined,
+                original_service_order_id: undefined,
                 items: [],
                 notes: '',
             });
             setPhotos([]);
             setDamagePhotos([]);
+            setVideoUrl(null);
+            setVideoUploading(false);
             // Novo rascunho → fotos da próxima O.S. não colidem com as anteriores.
             setOsDraftId(makeDraftId());
         },
@@ -405,6 +454,7 @@ export function CreateServiceOrderScreen({
                 vehicle_year: data.vehicle_year,
                 vehicle_color: data.vehicle_color,
                 consultant_id: data.consultant_id,
+                original_service_order_id: data.original_service_order_id,
                 notes: data.notes,
                 // limpos (mudam por departamento)
                 department: undefined as unknown as Department,
@@ -423,6 +473,9 @@ export function CreateServiceOrderScreen({
                     .filter((p) => p.remote || p.url)
                     .map((p) => (p.remote ? p : remoteUrlToPhoto(p.url!)))
             );
+            // Vídeo é por O.S. (não por carro) — limpa ao trocar de departamento.
+            setVideoUrl(null);
+            setVideoUploading(false);
             // Novo rascunho → o autosave persistirá o estado atual (com as fotos
             // remotas via osRemotePhotoUrls) sem colidir com a O.S. recém-criada.
             const nextDraftId = makeDraftId();
@@ -454,6 +507,9 @@ export function CreateServiceOrderScreen({
                 vehicle_year: src.vehicle_year ?? undefined,
                 vehicle_color: src.vehicle_color ?? '',
                 consultant_id: src.consultant_id ?? undefined,
+                // Cópia de O.S. não herda o vínculo de origem (o usuário reconfirma
+                // se marcar Retorno). O ReturnOriginPicker refaz a busca pela placa.
+                original_service_order_id: undefined,
                 items: [],
                 notes: src.notes ?? '',
             });
@@ -628,53 +684,56 @@ export function CreateServiceOrderScreen({
     }, []);
 
     // ─── Descartar rascunho ───────────────────────────────────────────────────
-    const discardDraft = useCallback(() => {
-        Alert.alert(
-            'Descartar rascunho?',
-            'As fotos e os dados preenchidos serão apagados.',
-            [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: 'Descartar',
-                    style: 'destructive',
-                    onPress: () => {
-                        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-                        // Remove as fotos da fila (O.S. + avaria) e apaga o rascunho.
-                        for (const p of [...photosRef.current, ...damagePhotosRef.current]) {
-                            void removeFromQueue(p.id);
-                        }
-                        void clearOSDraft();
-                        reset({
-                            location_id: defaultStoreId,
-                            is_courtesy: false,
-                            is_return: false,
-                            courtesy_return_set: false,
-                            is_galpon: isGalponProfile,
-                            department: undefined as unknown as Department,
-                            service_date: todayISO(),
-                            external_os_number: '',
-                            plate: '',
-                            vehicle_model: '',
-                            vehicle_model_id: undefined,
-                            vehicle_year: undefined,
-                            vehicle_color: '',
-                            consultant_id: undefined,
-                            items: [],
-                            notes: '',
-                        });
-                        setPhotos([]);
-                        setDamagePhotos([]);
-                        setHasContent(false);
-                        setOsDraftId(makeDraftId());
-                    },
-                },
-            ]
-        );
-    }, [reset, defaultStoreId, isGalponProfile]);
+    const discardDraft = useCallback(async () => {
+        const ok = await confirm({
+            title: 'Descartar rascunho?',
+            message: 'As fotos e os dados preenchidos serão apagados.',
+            confirmLabel: 'Descartar',
+            destructive: true,
+        });
+        if (ok) {
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            // Remove as fotos da fila (O.S. + avaria) e apaga o rascunho.
+            for (const p of [...photosRef.current, ...damagePhotosRef.current]) {
+                void removeFromQueue(p.id);
+            }
+            void clearOSDraft();
+            reset({
+                location_id: defaultStoreId,
+                is_courtesy: false,
+                is_return: false,
+                courtesy_return_set: false,
+                is_galpon: isGalponProfile,
+                department: undefined as unknown as Department,
+                service_date: todayISO(),
+                external_os_number: '',
+                plate: '',
+                vehicle_model: '',
+                vehicle_model_id: undefined,
+                vehicle_year: undefined,
+                vehicle_color: '',
+                consultant_id: undefined,
+                original_service_order_id: undefined,
+                items: [],
+                notes: '',
+            });
+            setPhotos([]);
+            setDamagePhotos([]);
+            setVideoUrl(null);
+            setVideoUploading(false);
+            setHasContent(false);
+            setOsDraftId(makeDraftId());
+        }
+    }, [confirm, reset, defaultStoreId, isGalponProfile]);
 
     // ─── Monta o payload final (CreateServiceOrderData) ──────────────────────
     const buildPayload = useCallback(
-        (data: CreateOSForm, photoUrls: string[], damageUrls: string[]): CreateServiceOrderData => {
+        (
+            data: CreateOSForm,
+            photoUrls: string[],
+            damageUrls: string[],
+            videoUrlParam: string | null
+        ): CreateServiceOrderData => {
             const store = stores.find((s) => s.id === data.location_id);
             const isSaleDept =
                 data.department === 'vn' || data.department === 'vd' || data.department === 'vu';
@@ -707,7 +766,13 @@ export function CreateServiceOrderScreen({
                 is_galpon: data.is_galpon,
                 is_return: data.is_return,
                 is_courtesy: data.is_courtesy,
+                // Vínculo da O.S. de origem só quando Retorno; caso contrário null
+                // (o backend zera o vínculo) — espelha o web QuickCreateModal.
+                original_service_order_id: data.is_return
+                    ? (data.original_service_order_id ?? null)
+                    : null,
                 service_date: data.service_date,
+                ...(videoUrlParam ? { video_url: videoUrlParam } : {}),
             } as CreateServiceOrderData;
         },
         [stores]
@@ -737,7 +802,7 @@ export function CreateServiceOrderScreen({
                 .map((p) => p.id);
 
             try {
-                await createServiceOrder.mutateAsync(buildPayload(data, photoUrls, damageUrls));
+                await createServiceOrder.mutateAsync(buildPayload(data, photoUrls, damageUrls, videoUrl));
                 // Poda os itens já enviados da fila (libera arquivos locais).
                 void pruneUploaded(consumedIds);
 
@@ -745,7 +810,7 @@ export function CreateServiceOrderScreen({
                     toast.success('O.S. lançada! Próxima O.S...');
                     // partialReset gera novo osDraftId e zera campos/fotos; o
                     // autosave persistirá o novo estado parcial (sem ids antigos).
-                    partialReset(data.department, data.location_id);
+                    partialReset(data.department, data.location_id, data.service_date);
                 } else if (mode === 'otherDept') {
                     // Mesmo carro, outro departamento: mantém veículo e converte as
                     // fotos em remotas ANTES do prune apagar os arquivos locais.
@@ -767,6 +832,7 @@ export function CreateServiceOrderScreen({
         [
             photos,
             damagePhotos,
+            videoUrl,
             createServiceOrder,
             buildPayload,
             partialReset,
@@ -781,7 +847,7 @@ export function CreateServiceOrderScreen({
     const onSaveAndOtherDept = handleSubmit((data) => submit(data, 'otherDept'));
 
     const isBusy = isSubmitting || createServiceOrder.isPending;
-    const uploadingPhotos = osPhotosUploading || damageUploading;
+    const uploadingPhotos = osPhotosUploading || damageUploading || videoUploading;
 
     // Rótulo do botão conforme estado das fotos.
     const saveLabel = uploadingPhotos
@@ -810,13 +876,16 @@ export function CreateServiceOrderScreen({
         <View className="flex-1 bg-neutral-50 dark:bg-dark-bg">
             <ScreenHeader title="Lançar O.S" onBack={() => navigation.goBack()} />
 
-            <ScrollView
-                className="flex-1"
+            <KeyboardAwareScrollView
+                // style (não className): o KeyboardAwareScrollView é de terceiro e
+                // o NativeWind não remapeia className nele como faz no ScrollView.
+                style={{ flex: 1 }}
                 contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
                 keyboardShouldPersistTaps="handled"
-                // Ajusta o conteúdo quando o teclado abre (iOS) — o campo focado sobe
-                // sozinho, sem precisar rolar manualmente.
-                automaticallyAdjustKeyboardInsets
+                // Rola o campo focado para acima do teclado em iOS E Android (o
+                // antigo automaticallyAdjustKeyboardInsets só valia no iOS, e sob o
+                // edge-to-edge do SDK 54 o Android ficava sem tratamento). Itens 1/2.
+                bottomOffset={24}
                 keyboardDismissMode="interactive"
             >
                 {/* ─── Loja ─────────────────────────────────────────────── */}
@@ -869,6 +938,34 @@ export function CreateServiceOrderScreen({
                 ) : (
                     <View className="mb-3" />
                 )}
+
+                {/* ─── O.S. de origem (visível só quando Retorno) ───────── */}
+                <ReturnOriginPicker
+                    isReturn={isReturn}
+                    plateOrChassi={plate ?? ''}
+                    isValidPlateOrChassi={isValidPlateOrChassi}
+                    onChange={(originId) =>
+                        setValue('original_service_order_id', originId ?? undefined, {
+                            shouldValidate: true,
+                        })
+                    }
+                    disabled={isBusy}
+                    storeId={locationId}
+                    department={department}
+                />
+                {/* Owner pode lançar sem origem, informando o motivo na Observação. */}
+                {isReturn && isOwner ? (
+                    <Text className="mb-2 -mt-2 font-sans text-xs text-neutral-500 dark:text-dark-text-muted">
+                        Como Proprietário, você pode lançar sem O.S. de origem — informe o motivo na
+                        Observação.
+                    </Text>
+                ) : null}
+                {/* Erro da trava (não-Owner sem origem) — o picker não exibe erro do form. */}
+                {isReturn && errors.original_service_order_id ? (
+                    <Text className="mb-2 -mt-2 font-sans text-sm text-error">
+                        {errors.original_service_order_id.message}
+                    </Text>
+                ) : null}
 
                 {/* ─── Departamento ─────────────────────────────────────── */}
                 <FieldLabel>Departamento *</FieldLabel>
@@ -988,6 +1085,9 @@ export function CreateServiceOrderScreen({
                                 placeholder="Ex: 12345"
                                 keyboardType="number-pad"
                                 autoCorrect={false}
+                                returnKeyType="next"
+                                blurOnSubmit={false}
+                                onSubmitEditing={() => plateRef.current?.focus()}
                                 value={value}
                                 onChangeText={onChange}
                                 onBlur={onBlur}
@@ -1004,10 +1104,18 @@ export function CreateServiceOrderScreen({
                     name="plate"
                     render={({ field: { onChange, onBlur, value } }) => (
                         <TextField
+                            ref={plateRef}
                             label="Placa / Chassi *"
                             placeholder="ABC1D23"
                             autoCapitalize="characters"
                             autoCorrect={false}
+                            returnKeyType="next"
+                            // "OK" na Placa fecha o teclado e abre o próximo campo
+                            // obrigatório (Modelo, que é um sheet). Item 1.
+                            onSubmitEditing={() => {
+                                Keyboard.dismiss();
+                                modelSheetRef.current?.present();
+                            }}
                             value={value}
                             onChangeText={(t) => onChange(t.toUpperCase())}
                             onBlur={onBlur}
@@ -1043,6 +1151,12 @@ export function CreateServiceOrderScreen({
                         <TextField
                             label="Cor *"
                             placeholder="Ex: Branco"
+                            returnKeyType="next"
+                            // "OK" na Cor fecha o teclado e abre o Consultor. Item 1.
+                            onSubmitEditing={() => {
+                                Keyboard.dismiss();
+                                consultantSheetRef.current?.present();
+                            }}
                             value={value}
                             onChangeText={onChange}
                             onBlur={onBlur}
@@ -1145,20 +1259,35 @@ export function CreateServiceOrderScreen({
                     </View>
                 </View>
 
+                {/* ─── Vídeo (opcional) ────────────────────────────────── */}
+                <View className="mb-5">
+                    <VideoAttach
+                        value={videoUrl}
+                        onChange={setVideoUrl}
+                        onUploadingChange={setVideoUploading}
+                        disabled={isBusy}
+                    />
+                </View>
+
                 {/* ─── Observações ──────────────────────────────────────── */}
                 <Controller
                     control={control}
                     name="notes"
                     render={({ field: { onChange, onBlur, value } }) => (
                         <TextField
-                            label="Observações"
-                            placeholder="Notas adicionais..."
+                            label={notesRequired ? 'Observações *' : 'Observações'}
+                            placeholder={
+                                notesRequired
+                                    ? 'Motivo do retorno sem O.S. de origem...'
+                                    : 'Notas adicionais...'
+                            }
                             multiline
                             numberOfLines={3}
                             style={{ minHeight: 80, textAlignVertical: 'top' }}
                             value={value}
                             onChangeText={onChange}
                             onBlur={onBlur}
+                            error={errors.notes?.message}
                             editable={!isBusy}
                         />
                     )}
@@ -1199,7 +1328,7 @@ export function CreateServiceOrderScreen({
                         />
                     ) : null}
                 </View>
-            </ScrollView>
+            </KeyboardAwareScrollView>
 
             {/* ─── Sheets de seleção ───────────────────────────────────── */}
             <Select<number>
@@ -1262,7 +1391,12 @@ function PickerField({ placeholder, value, onPress, error, disabled }: PickerFie
                 accessibilityRole="button"
                 accessibilityLabel={value ?? placeholder}
                 disabled={disabled}
-                onPress={onPress}
+                // Item 2 — fecha o teclado antes de abrir o sheet para ele não
+                // cobrir o seletor (ex.: vinha de digitar a Cor sem apertar "OK").
+                onPress={() => {
+                    Keyboard.dismiss();
+                    onPress();
+                }}
                 className={[
                     'min-h-[48px] flex-row items-center justify-between rounded-lg border px-4 py-3 active:opacity-80',
                     error ? 'border-error' : 'border-neutral-200 dark:border-dark-border-strong',

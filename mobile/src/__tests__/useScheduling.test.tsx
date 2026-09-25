@@ -16,12 +16,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const mockList = jest.fn();
 const mockGetCapacity = jest.fn();
 const mockCancel = jest.fn();
+const mockCreateCombined = jest.fn();
 
 jest.mock('@/services/api/scheduling.service', () => ({
     schedulingService: {
         list: (...a: unknown[]) => mockList(...a),
         getCapacity: (...a: unknown[]) => mockGetCapacity(...a),
         cancel: (...a: unknown[]) => mockCancel(...a),
+        createCombined: (...a: unknown[]) => mockCreateCombined(...a),
     },
 }));
 
@@ -40,6 +42,7 @@ import {
     useAppointments,
     useAppointmentCapacity,
     useCancelAppointment,
+    useCreateCombinedAppointment,
 } from '@/hooks/useScheduling';
 import { useStoreStore } from '@/stores/store.store';
 
@@ -60,6 +63,7 @@ beforeEach(() => {
     mockList.mockResolvedValue({ items: [], pagination: { total: 0, page: 1, limit: 50, pages: 0 } });
     mockGetCapacity.mockResolvedValue(0);
     mockCancel.mockResolvedValue({ id: 1 });
+    mockCreateCombined.mockResolvedValue({ items: [{ id: 1 }, { id: 2 }] });
     useStoreStore.setState({ selectedStoreId: null });
 });
 
@@ -133,6 +137,34 @@ describe('useCancelAppointment', () => {
         });
 
         expect(mockCancel).toHaveBeenCalledWith(7, 'teste');
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['scheduling'] });
+        expect(mockToastSuccess).toHaveBeenCalled();
+    });
+});
+
+describe('useCreateCombinedAppointment', () => {
+    it('chama createCombined, invalida ["scheduling"] e dispara toast de sucesso', async () => {
+        const client = newClient();
+        const invalidateSpy = jest.spyOn(client, 'invalidateQueries');
+        const { result } = await renderHook(() => useCreateCombinedAppointment(), {
+            wrapper: wrapper(client),
+        });
+
+        await waitFor(() => expect(result.current).toBeTruthy());
+        const payload = {
+            store_id: 1,
+            delivery_date: '2026-06-21',
+            vehicle_plate: 'ABC1D23',
+            departments: [
+                { department: 'film', service_ids: [42] },
+                { department: 'bodywork', service_ids: [43] },
+            ],
+        };
+        await act(async () => {
+            await result.current.mutateAsync(payload);
+        });
+
+        expect(mockCreateCombined).toHaveBeenCalledWith(payload);
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['scheduling'] });
         expect(mockToastSuccess).toHaveBeenCalled();
     });

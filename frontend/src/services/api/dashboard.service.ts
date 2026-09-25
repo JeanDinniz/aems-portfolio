@@ -5,12 +5,10 @@ import type {
   ServiceRankingItem,
   DepartmentBreakdownItem,
   EmployeeRankingItem,
-  ConsultantRankingItem,
-  SLAMetrics,
-  QueueSnapshotItem,
-  TimeSeriesPoint,
   TimeSeriesByTypePoint,
+  RevenueForecast,
   FilmPpfStoreRankingItem,
+  DealershipRankingItem,
 } from '@/types/dashboard.types';
 
 export interface DashboardParams {
@@ -32,24 +30,35 @@ export const dashboardService = {
   getDepartmentBreakdown: (params: DashboardParams) =>
     apiClient.get<DepartmentBreakdownItem[]>('/analytics/dashboard/departments', { params }).then((r) => r.data),
 
-  getEmployeesRanking: (params: DashboardParams & { department?: string; limit?: number }) =>
-    apiClient.get<EmployeeRankingItem[]>('/analytics/dashboard/employees', { params }).then((r) => r.data),
-
-  getConsultantsRanking: (params: DashboardParams & { limit?: number }) =>
-    apiClient.get<ConsultantRankingItem[]>('/analytics/dashboard/consultants', { params }).then((r) => r.data),
-
-  getSla: (params: DashboardParams) =>
-    apiClient.get<SLAMetrics>('/analytics/dashboard/sla', { params }).then((r) => r.data),
-
-  getQueue: () =>
-    apiClient.get<QueueSnapshotItem[]>('/analytics/dashboard/queue').then((r) => r.data),
-
-  getTimeseries: (params: DashboardParams & { granularity: 'day' | 'week' | 'month' }) =>
-    apiClient.get<TimeSeriesPoint[]>('/analytics/dashboard/timeseries', { params }).then((r) => r.data),
+  getEmployeesRanking: ({
+    departments,
+    ...params
+  }: DashboardParams & { departments?: string[]; limit?: number }) => {
+    // Lista vira parâmetro repetido (?departments=a&departments=b) — padrão FastAPI
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) searchParams.append(k, String(v));
+    });
+    (departments ?? []).forEach((d) => searchParams.append('departments', d));
+    return apiClient
+      .get<EmployeeRankingItem[]>(`/analytics/dashboard/employees?${searchParams.toString()}`)
+      .then((r) => r.data);
+  },
 
   getTimeseriesByType: (params: DashboardParams & { granularity: 'day' | 'week' | 'month' }) =>
     apiClient.get<TimeSeriesByTypePoint[]>('/analytics/dashboard/timeseries-by-type', { params }).then((r) => r.data),
 
   getFilmPpfRanking: (params: DashboardParams) =>
     apiClient.get<FilmPpfStoreRankingItem[]>('/analytics/dashboard/film-ppf-ranking', { params }).then((r) => r.data),
+
+  getDealershipsRanking: (params: DashboardParams & { limit?: number }) =>
+    apiClient.get<DealershipRankingItem[]>('/analytics/dashboard/dealerships', { params }).then((r) => r.data),
+
+  // Previsão do mês corrente — só filtro de loja (período não se aplica)
+  getRevenueForecast: (storeId?: number) =>
+    apiClient
+      .get<RevenueForecast>('/analytics/dashboard/revenue-forecast', {
+        params: storeId != null ? { store_id: storeId } : {},
+      })
+      .then((r) => r.data),
 };

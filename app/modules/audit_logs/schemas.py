@@ -25,6 +25,10 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
     user_id: int | None
     user_name: str | None
+    # Detalhes identificadores do recurso afetado, resolvidos no momento da
+    # consulta (ex.: bobina → tipo, tonalidade, data de recebimento e criação).
+    # Preenchido apenas para tipos de recurso suportados; None caso contrário.
+    resource_detail: dict | None = None
 
 
 class AuditLogListResponse(BaseModel):

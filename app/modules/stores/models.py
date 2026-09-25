@@ -2,7 +2,9 @@
 Store model - Represents a physical store location.
 """
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from decimal import Decimal
+
+from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -35,6 +37,14 @@ class Store(Base, TimestampMixin):
         String(20), nullable=True
     )  # Mantido por compatibilidade — use brand_id (FK) como referência principal
     brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id"), nullable=False, index=True)
+
+    # Ponto Eletrônico: coordenadas da loja para o geofence (null = sem geofence;
+    # a batida nunca é bloqueada, apenas sinalizada como fora do raio)
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    geofence_radius_m: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=200, server_default="200"
+    )
 
     # Relationships
     brand: Mapped["Brand"] = relationship(  # noqa: F821

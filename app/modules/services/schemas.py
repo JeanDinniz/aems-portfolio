@@ -21,6 +21,7 @@ class ServiceBase(BaseModel):
     category: ServiceCategory | None = None
     execution_time_minutes: int | None = Field(None, ge=1)
     base_price: Decimal = Field(..., ge=0, decimal_places=2)
+    points: Decimal = Field(default=0, ge=0, decimal_places=2, description="Pontuação do serviço")
     brand_id: int = Field(..., gt=0, description="ID da marca à qual o serviço pertence")
     code: str | None = Field(None, max_length=50, description="Código original da planilha")
     has_variable_price: bool = False
@@ -42,6 +43,7 @@ class ServiceUpdate(BaseModel):
     category: ServiceCategory | None = None
     execution_time_minutes: int | None = Field(None, ge=1)
     base_price: Decimal | None = Field(None, ge=0, decimal_places=2)
+    points: Decimal | None = Field(None, ge=0, decimal_places=2)
     is_active: bool | None = None
     brand_id: int | None = Field(None, gt=0)
     code: str | None = Field(None, max_length=50)
@@ -61,6 +63,7 @@ class ServiceResponse(BaseModel):
     category: str | None = None  # str, não enum — o DB pode ter valores além dos 4 do enum
     execution_time_minutes: int | None = None
     base_price: Decimal
+    points: Decimal
     is_active: bool
     has_variable_price: bool
     is_courtesy_only: bool = False
@@ -69,6 +72,10 @@ class ServiceResponse(BaseModel):
     code: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
+    # Preenchido apenas na resposta do update quando is_courtesy_only propaga
+    # para linhas irmãs (mesmo nome/departamento em outras marcas). Número de
+    # serviços irmãos afetados pela propagação; None nas demais operações.
+    courtesy_propagated_count: int | None = None
 
 
 class ServiceListResponse(BaseModel):

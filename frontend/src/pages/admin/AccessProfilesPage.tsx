@@ -51,6 +51,8 @@ const SUB_MODULE_LABELS: Record<string, string> = {
     scheduling: 'Agendamentos',
     scheduling_os: 'Agend. → O.S.',
     inventory: 'Estoque',
+    time_clock: 'Ponto — Bater',
+    time_clock_mirror: 'Ponto — Espelho',
 };
 
 export function AccessProfilesPage() {
@@ -219,7 +221,7 @@ export function AccessProfilesPage() {
                             <SelectItem value="all" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Todas as lojas</SelectItem>
                             {stores.map((store) => (
                                 <SelectItem key={store.id} value={store.id.toString()} className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">
-                                    {store.code} - {store.name}
+                                    {store.name}
                                 </SelectItem>
                             ))}
                         </SelectContent>

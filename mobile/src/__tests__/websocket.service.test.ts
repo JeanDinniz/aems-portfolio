@@ -193,8 +193,8 @@ describe('handlers de invalidação (registerWsHandlers)', () => {
         expect(keysFor('appointment_cancelled')).toEqual([['scheduling']]);
     });
 
-    it('semaphore_updated → dashboard queue', () => {
-        expect(keysFor('semaphore_updated')).toEqual([['dashboard', 'queue']]);
+    it('semaphore_updated não invalida mais nada (fila do dashboard removida)', () => {
+        expect(keysFor('semaphore_updated')).toEqual([]);
     });
 
     it('notification → notifications + unread-count (melhoria do mobile)', () => {

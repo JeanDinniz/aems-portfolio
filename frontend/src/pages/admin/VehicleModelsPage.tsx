@@ -39,7 +39,7 @@ import { vehicleModelsService } from '@/services/api/vehicle-models.service';
 import type { VehicleModelItem } from '@/services/api/vehicle-models.service';
 import brandsService from '@/services/api/brands.service';
 import { useToast } from '@/hooks/use-toast';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 
 interface ModelForm {
     name: string;
@@ -49,7 +49,7 @@ interface ModelForm {
 const INITIAL_FORM: ModelForm = { name: '', brand_id: '' };
 
 export function VehicleModelsPage() {
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('models', 'edit');
     const { toast } = useToast();
     const queryClient = useQueryClient();

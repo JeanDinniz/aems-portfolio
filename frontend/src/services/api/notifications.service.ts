@@ -23,6 +23,7 @@ interface BackendNotification {
     type: string;
     is_read: boolean;
     created_at: string;
+    related_url?: string | null;
 }
 
 function mapNotification(n: BackendNotification): Notification {
@@ -34,7 +35,7 @@ function mapNotification(n: BackendNotification): Notification {
         type: n.type,
         read: n.is_read,
         created_at: n.created_at,
-        related_url: null,
+        related_url: n.related_url ?? null,
     };
 }
 

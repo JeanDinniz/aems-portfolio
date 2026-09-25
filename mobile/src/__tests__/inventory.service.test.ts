@@ -138,7 +138,7 @@ describe('inventoryService — ações de bobina', () => {
             data: { items: [{ id: 1 }, { id: 7 }], pagination: { total: 2 } },
         });
         const roll = await inventoryService.getRoll(7);
-        expect(mockGet).toHaveBeenCalledWith('/inventory/rolls', expect.anything());
+        expect(mockGet).toHaveBeenCalledWith('/inventory/rolls?page=1&limit=500');
         expect(roll).toEqual({ id: 7 });
     });
 });
@@ -176,5 +176,81 @@ describe('inventoryService — tipos de película', () => {
     it('removeServiceFromFilmType faz DELETE /film-types/{id}/services/{serviceId}', async () => {
         await inventoryService.removeServiceFromFilmType(3, 9);
         expect(mockDelete).toHaveBeenCalledWith('/film-types/3/services/9');
+    });
+});
+
+describe('inventoryService — saída avulsa (withdrawals)', () => {
+    it('createWithdrawal faz POST /inventory/withdrawals com o payload', async () => {
+        mockPost.mockResolvedValueOnce({ data: { id: 11, meters: 1.6 } });
+        const created = await inventoryService.createWithdrawal({
+            film_roll_id: 5,
+            employee_id: 7,
+            meters: 1.6,
+            reason: 'retrabalho',
+        });
+        expect(mockPost).toHaveBeenCalledWith('/inventory/withdrawals', {
+            film_roll_id: 5,
+            employee_id: 7,
+            meters: 1.6,
+            reason: 'retrabalho',
+        });
+        expect(created).toEqual({ id: 11, meters: 1.6 });
+    });
+
+    it('listWithdrawals monta page/limit + filtros e mapeia a paginação', async () => {
+        mockGet.mockResolvedValueOnce({
+            data: { items: [{ id: 1 }], pagination: { total: 3, total_pages: 2 } },
+        });
+        const res = await inventoryService.listWithdrawals({
+            store_id: 2,
+            employee_id: 7,
+            film_type_id: 4,
+            date_from: '2026-07-01',
+            date_to: '2026-07-31',
+            page: 2,
+            limit: 20,
+        });
+        expect(mockGet).toHaveBeenCalledWith('/inventory/withdrawals', {
+            params: {
+                page: 2,
+                limit: 20,
+                store_id: 2,
+                employee_id: 7,
+                film_type_id: 4,
+                date_from: '2026-07-01',
+                date_to: '2026-07-31',
+            },
+        });
+        expect(res).toEqual({ items: [{ id: 1 }], total: 3, total_pages: 2 });
+    });
+
+    it('listWithdrawals usa page=1/limit=20 por padrão e omite filtros vazios', async () => {
+        mockGet.mockResolvedValueOnce({ data: { items: [], pagination: { total: 0 } } });
+        await inventoryService.listWithdrawals();
+        expect(mockGet).toHaveBeenCalledWith('/inventory/withdrawals', {
+            params: { page: 1, limit: 20 },
+        });
+    });
+
+    it('getWithdrawalsSummary faz GET /summary só com os filtros e retorna items/total', async () => {
+        mockGet.mockResolvedValueOnce({
+            data: { items: [{ employee_id: 7, total_meters: 5 }], total_meters: 5 },
+        });
+        const res = await inventoryService.getWithdrawalsSummary({
+            store_id: 2,
+            date_from: '2026-07-01',
+        });
+        expect(mockGet).toHaveBeenCalledWith('/inventory/withdrawals/summary', {
+            params: { store_id: 2, date_from: '2026-07-01' },
+        });
+        expect(res.total_meters).toBe(5);
+        expect(res.items).toHaveLength(1);
+    });
+
+    it('reverseWithdrawal faz POST /inventory/withdrawals/{id}/reverse', async () => {
+        mockPost.mockResolvedValueOnce({ data: { id: 11, is_reversed: true } });
+        const res = await inventoryService.reverseWithdrawal(11);
+        expect(mockPost).toHaveBeenCalledWith('/inventory/withdrawals/11/reverse');
+        expect(res).toEqual({ id: 11, is_reversed: true });
     });
 });

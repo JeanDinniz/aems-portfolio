@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.exceptions import AccountLockedError, AuthenticationError
+from app.core.exceptions import AuthenticationError
 from app.db.session import get_db
 
 settings = get_settings()
@@ -85,11 +85,12 @@ def create_media_token(user_id: int) -> str:
     Cria um JWT de acesso a mídia (fotos em /uploads).
 
     Vai num cookie httpOnly com path=/uploads: o Nginx valida via auth_request
-    antes de servir cada imagem. Validade igual ao refresh token para não
-    quebrar imagens no meio de uma sessão longa. Só concede LEITURA de mídia —
-    não é aceito como access token em nenhum endpoint.
+    antes de servir cada imagem. Validade CURTA (MEDIA_TOKEN_EXPIRE_HOURS) para
+    limitar a janela de um link de foto vazado — é reemitido em todo login/refresh
+    (o access token dura minutos), então não quebra imagens em uso ativo. Só
+    concede LEITURA de mídia — não é aceito como access token em nenhum endpoint.
     """
-    expire = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(UTC) + timedelta(hours=settings.MEDIA_TOKEN_EXPIRE_HOURS)
     payload = {"sub": str(user_id), "exp": expire, "type": "media"}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
@@ -178,13 +179,19 @@ async def get_current_user(
             import logging
 
             # ERROR (não warning): com Redis fora, revogação de token e sessão
-            # única deixam de valer — decisão fail-open consciente (disponibilidade
-            # acima de revogação), mas que precisa ser visível em monitoramento.
+            # única deixam de valer.
             logging.getLogger(__name__).error(
                 "SECURITY: Redis indisponível para checagem de token — "
                 "revogação/sessão única NÃO estão sendo aplicadas: %s",
                 str(e),
             )
+            # Postura configurável: em produção com Redis HA, ativar
+            # TOKEN_REVOCATION_FAIL_CLOSED nega o acesso quando não dá para checar
+            # a blacklist (revogação garantida). Default fail-open p/ disponibilidade.
+            if settings.TOKEN_REVOCATION_FAIL_CLOSED:
+                raise AuthenticationError(
+                    detail="Serviço de autenticação temporariamente indisponível"
+                ) from e
 
     # Buscar usuário no banco (com perfis de acesso para filtro de lojas)
     from sqlalchemy.orm import selectinload as _selectinload
@@ -203,11 +210,6 @@ async def get_current_user(
 
     if not user.is_active:
         raise AuthenticationError(detail="Usuário desativado")
-
-    # Verificar se a conta está bloqueada
-    if user.locked_until and user.locked_until > datetime.now(UTC):
-        minutes_remaining = int((user.locked_until - datetime.now(UTC)).total_seconds() / 60)
-        raise AccountLockedError(minutes_remaining=max(1, minutes_remaining))
 
     return user
 

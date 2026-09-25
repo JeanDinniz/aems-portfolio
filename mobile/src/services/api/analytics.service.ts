@@ -5,9 +5,7 @@ import type {
     ServiceRankingItem,
     DepartmentBreakdownItem,
     EmployeeRankingItem,
-    ConsultantRankingItem,
     SLAMetrics,
-    QueueSnapshotItem,
     TimeSeriesPoint,
     TimeSeriesByTypePoint,
     FilmPpfStoreRankingItem,
@@ -20,7 +18,6 @@ import type {
  * `start_date`/`end_date` são datetime ISO OBRIGATÓRIOS — enviamos "YYYY-MM-DD"
  * (o FastAPI parseia). `store_id` opcional: omitir = todas as lojas.
  *
- * `getQueue` é um snapshot ao vivo (sem período), só `store_id` opcional.
  * `getTimeseries*` e `getFilmPpfRanking` só serão consumidos na Fatia 3b
  * (gráficos via dev build), mas a camada de dados já fica pronta aqui.
  */
@@ -65,23 +62,8 @@ export const analyticsService = {
         return response.data;
     },
 
-    getConsultantsRanking: async (
-        params: DashboardParams & { limit?: number }
-    ): Promise<ConsultantRankingItem[]> => {
-        const response = await apiClient.get('/analytics/dashboard/consultants', { params });
-        return response.data;
-    },
-
     getSla: async (params: DashboardParams): Promise<SLAMetrics> => {
         const response = await apiClient.get('/analytics/dashboard/sla', { params });
-        return response.data;
-    },
-
-    /** Snapshot ao vivo da fila por loja (sem período). */
-    getQueue: async (storeId?: number): Promise<QueueSnapshotItem[]> => {
-        const params: Record<string, number> = {};
-        if (storeId) params.store_id = storeId;
-        const response = await apiClient.get('/analytics/dashboard/queue', { params });
         return response.data;
     },
 

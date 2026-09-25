@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { CreateServiceOrderScreen } from '@/screens/service-orders/CreateServiceOrderScreen';
 import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import type { Photo } from '@/types/photo.types';
 import type { ServiceItemSelection } from '@/components/features/ServiceItemPicker';
 
@@ -82,6 +83,43 @@ let mockGalponFlags = { isGalponProfile: false, hideGalponOption: false };
 jest.mock('@/navigation/guards', () => ({
     useGalponFlags: () => mockGalponFlags,
 }));
+
+// ─── Auth (isOwner controlável) ──────────────────────────────────────────────
+// A trava de "retorno sem O.S. de origem" depende do papel: não-Owner é obrigado
+// a vincular a origem; Owner pode omitir, mas a Observação vira obrigatória.
+let mockIsOwner = false;
+jest.mock('@/stores/auth.store', () => ({
+    useAuthStore: (selector: (s: { isOwner: () => boolean }) => unknown) =>
+        selector({ isOwner: () => mockIsOwner }),
+}));
+
+// ─── ReturnOriginPicker (test-double) ────────────────────────────────────────
+// O real busca a O.S. de origem no backend (rede). Substituímos por um duplo que
+// só expõe um botão para "confirmar origem" (sobe um id via onChange).
+jest.mock('@/components/features/ReturnOriginPicker', () => {
+    const React = require('react');
+    const { Pressable, Text } = require('react-native');
+    return {
+        __esModule: true,
+        ReturnOriginPicker: ({
+            isReturn,
+            onChange,
+        }: {
+            isReturn: boolean;
+            onChange: (id: number | null) => void;
+        }) =>
+            isReturn
+                ? React.createElement(
+                      Pressable,
+                      {
+                          accessibilityLabel: 'confirm-origin',
+                          onPress: () => onChange(9999),
+                      },
+                      React.createElement(Text, null, 'confirm-origin')
+                  )
+                : null,
+    };
+});
 
 // ─── Fila de upload ──────────────────────────────────────────────────────────
 // pruneUploaded é usado no submit; getItem/getItems/remove pela restauração de
@@ -253,7 +291,9 @@ const metrics = {
 function Providers({ children }: { children: ReactNode }) {
     return (
         <SafeAreaProvider initialMetrics={metrics}>
-            <ThemeProvider>{children}</ThemeProvider>
+            <ThemeProvider>
+                <ConfirmProvider>{children}</ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
 }
@@ -293,6 +333,7 @@ beforeEach(() => {
     mockIsPending = false;
     mockSelectedStoreId = 1;
     mockGalponFlags = { isGalponProfile: false, hideGalponOption: false };
+    mockIsOwner = false;
     mockServicesToInject = [];
     mockPhotosToInject = [];
     // Sem rascunho salvo por padrão → form vazio normal.
@@ -789,6 +830,119 @@ describe('CreateServiceOrderScreen — regras condicionais', () => {
             expect(getByText('Consultor obrigatório')).toBeTruthy();
         });
         expect(mockMutateAsync).not.toHaveBeenCalled();
+    });
+});
+
+describe('CreateServiceOrderScreen — retorno sem O.S. de origem', () => {
+    /** Preenche o mínimo válido (film) e marca Retorno, sem tocar na origem. */
+    async function fillReturn(utils: Awaited<ReturnType<typeof renderScreen>>) {
+        const { getByText, getByPlaceholderText } = utils;
+        await act(async () => {
+            fireEvent.press(getByText('Película'));
+        });
+        await act(async () => {
+            fireEvent.press(getByText('Retorno'));
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('ABC1D23'), 'ABC1D23');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: 12345'), 'OS-1');
+        });
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Ex: Branco'), 'Branco');
+        });
+        await selectConsultant(utils);
+        await selectModel(utils);
+        mockServicesToInject = [{ service_id: 1, quantity: 1 }];
+        mockPhotosToInject = [makePhoto()];
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-services'));
+        });
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('inject-photos'));
+        });
+    }
+
+    it('não-Owner sem origem: bloqueia com "Selecione a O.S. de origem do retorno"', async () => {
+        mockIsOwner = false;
+        const utils = await renderScreen();
+        await fillReturn(utils);
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar'));
+        });
+
+        await waitFor(() => {
+            expect(utils.getByText('Selecione a O.S. de origem do retorno')).toBeTruthy();
+        });
+        expect(mockMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('não-Owner com origem vinculada: submit passa com original_service_order_id', async () => {
+        mockIsOwner = false;
+        mockMutateAsync.mockResolvedValueOnce({ id: 1 });
+        const utils = await renderScreen();
+        await fillReturn(utils);
+        await act(async () => {
+            fireEvent.press(utils.getByLabelText('confirm-origin'));
+        });
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar'));
+        });
+
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+        });
+        const payload = mockMutateAsync.mock.calls[0][0];
+        expect(payload.is_return).toBe(true);
+        expect(payload.original_service_order_id).toBe(9999);
+    });
+
+    it('Owner sem origem e sem observação: bloqueia exigindo o motivo', async () => {
+        mockIsOwner = true;
+        const utils = await renderScreen();
+        await fillReturn(utils);
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar'));
+        });
+
+        await waitFor(() => {
+            expect(
+                utils.getByText(
+                    'Informe a observação (motivo) ao lançar um retorno sem O.S. de origem.'
+                )
+            ).toBeTruthy();
+        });
+        expect(mockMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('Owner sem origem, com observação preenchida: submit passa (origem null)', async () => {
+        mockIsOwner = true;
+        mockMutateAsync.mockResolvedValueOnce({ id: 1 });
+        const utils = await renderScreen();
+        await fillReturn(utils);
+        // Campo de observação vira obrigatório → placeholder específico.
+        await act(async () => {
+            fireEvent.changeText(
+                utils.getByPlaceholderText('Motivo do retorno sem O.S. de origem...'),
+                'Cliente retornou por bolha na película'
+            );
+        });
+
+        await act(async () => {
+            fireEvent.press(utils.getByText('Salvar'));
+        });
+
+        await waitFor(() => {
+            expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+        });
+        const payload = mockMutateAsync.mock.calls[0][0];
+        expect(payload.is_return).toBe(true);
+        expect(payload.original_service_order_id).toBeNull();
+        expect(payload.notes).toBe('Cliente retornou por bolha na película');
     });
 });
 

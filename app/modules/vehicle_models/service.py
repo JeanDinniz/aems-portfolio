@@ -254,19 +254,19 @@ async def hard_delete(
 
 async def get_brand_id_for_operator(db: AsyncSession, user: User) -> int:
     """
-    Retorna o brand_id da loja do operador.
+    Retorna o brand_id da loja do usuário (não-owner vinculado a uma loja).
 
     Busca o store do usuário e retorna o brand_id correspondente.
 
     Args:
         db: Sessão do banco de dados
-        user: Usuário operador
+        user: Usuário (não-owner) vinculado a uma loja
 
     Returns:
-        brand_id da loja do operador
+        brand_id da loja do usuário
 
     Raises:
-        AuthorizationError: Operador não está vinculado a uma loja ou
+        AuthorizationError: Usuário não está vinculado a uma loja ou
                             a loja não tem marca associada
     """
     if user.store_id is None:

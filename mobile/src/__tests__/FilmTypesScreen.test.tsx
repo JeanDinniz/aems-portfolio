@@ -4,6 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { FilmTypesScreen } from '@/screens/inventory/FilmTypesScreen';
 import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import type { FilmType } from '@/services/api/inventory.service';
 
 /**
@@ -47,7 +48,9 @@ const metrics = {
 function Providers({ children }: { children: ReactNode }) {
     return (
         <SafeAreaProvider initialMetrics={metrics}>
-            <ThemeProvider>{children}</ThemeProvider>
+            <ThemeProvider>
+                <ConfirmProvider>{children}</ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
 }

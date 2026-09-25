@@ -2,6 +2,7 @@
 Notifications service - Business logic for notification management.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,8 @@ from app.modules.notifications.schemas import NotificationType
 if TYPE_CHECKING:
     from app.modules.auth.models import User
 
+logger = logging.getLogger(__name__)
+
 
 async def create_notification(
     db: AsyncSession,
@@ -23,6 +26,7 @@ async def create_notification(
     title: str,
     body: str,
     is_galpon: bool = False,
+    related_url: str | None = None,
 ) -> Notification:
     """
     Cria uma nova notificacao para um usuario.
@@ -36,6 +40,8 @@ async def create_notification(
         title: Titulo da notificacao
         body: Corpo/mensagem da notificacao
         is_galpon: Se True, notificacao é relativa ao galpão
+        related_url: Deep-link opcional (ex.: "/estoque?roll=42") para o
+            front/app rotear ao abrir a notificação
 
     Returns:
         Notification criada
@@ -49,6 +55,7 @@ async def create_notification(
         body=body,
         is_read=False,
         is_galpon=is_galpon,
+        related_url=related_url,
         created_at=datetime.now(UTC),
     )
     db.add(notification)
@@ -59,13 +66,21 @@ async def create_notification(
     try:
         from app.websocket.manager import manager as ws_manager
 
-        await ws_manager.send_to_store(
-            f"user:{user_id}",
+        await ws_manager.send_to_user(
+            user_id,
             "notification",
-            {"id": notification.id, "title": title, "body": body, "type": type_value},
+            {
+                "id": notification.id,
+                "title": title,
+                "body": body,
+                "type": type_value,
+                "related_url": related_url,
+            },
         )
     except Exception:
-        pass  # Falha no broadcast não deve quebrar o fluxo principal
+        # Falha no broadcast não deve quebrar o fluxo principal — mas logar
+        # (🟠 auditoria: antes engolia silenciosamente, escondendo WS quebrado).
+        logger.warning("Falha no broadcast WS da notificação user_id=%s", user_id, exc_info=True)
 
     # Disparo de push notification nativa (assíncrono via Celery)
     # Importacao local para evitar dependencia circular workers ↔ modules
@@ -77,10 +92,32 @@ async def create_notification(
             title,
             body,
             type_value,
-            {"notification_id": notification.id, "type": type_value},
+            {
+                "notification_id": notification.id,
+                "type": type_value,
+                "related_url": related_url,
+            },
         )
     except Exception:
-        pass  # Broker indisponivel nao deve quebrar o request principal
+        # Broker indisponivel nao deve quebrar o request principal — mas logar.
+        logger.warning("Falha ao enfileirar push nativa user_id=%s", user_id, exc_info=True)
+
+    # Web Push (PWA) — mesmo fan-out; toda notificação do sistema ganha o canal
+    try:
+        from app.workers.tasks import send_web_push
+
+        send_web_push.delay(
+            user_id,
+            title,
+            body,
+            {
+                "notification_id": notification.id,
+                "type": type_value,
+                "related_url": related_url,
+            },
+        )
+    except Exception:
+        logger.warning("Falha ao enfileirar Web Push user_id=%s", user_id, exc_info=True)
 
     return notification
 
@@ -151,7 +188,9 @@ async def mark_as_read(db: AsyncSession, notification_id: int, user_id: int) -> 
         raise NotFoundError(resource="Notificacao")
 
     notification.is_read = True
-    await db.commit()
+    # 🟠 (auditoria): sem commit aqui — get_db comita ao fim da request
+    # (atomicidade + segue o padrão do projeto). flush sincroniza para o refresh.
+    await db.flush()
     await db.refresh(notification)
     return notification
 
@@ -174,7 +213,8 @@ async def mark_all_read(db: AsyncSession, user_id: int) -> dict:
         .returning(Notification.id)
     )
     updated_count = len(result.fetchall())
-    await db.commit()
+    # 🟠 (auditoria): commit é do get_db ao fim da request (atomicidade).
+    await db.flush()
     return {"updated": updated_count, "message": "Todas as notificacoes marcadas como lidas"}
 
 

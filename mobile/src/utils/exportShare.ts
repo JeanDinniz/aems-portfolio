@@ -1,7 +1,7 @@
 /**
- * Infra de exportação de Excel (Sprint 6 — Fatia 4).
+ * Infra de exportação de arquivos (Excel/PDF) para compartilhamento nativo.
  *
- * Baixa um binário .xlsx da API (responseType: 'arraybuffer'), grava num arquivo
+ * Baixa um binário da API (responseType: 'arraybuffer'), grava num arquivo
  * temporário no diretório de cache do app (expo-file-system v19 — File/Directory/
  * Paths) e abre a folha de compartilhamento nativa (expo-sharing) para o usuário
  * salvar/enviar a planilha.
@@ -19,10 +19,13 @@
  * - NÃO mostra toast aqui: resolve ou lança um Error com mensagem amigável; a
  *   tela decide o feedback (sucesso/erro).
  */
+import axios from 'axios';
 import { Directory, File, Paths } from 'expo-file-system';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
 import { apiClient } from '@/services/api/client';
+import { resolveMediaUrl } from '@/lib/resolveMediaUrl';
+import { mediaHeaders } from '@/lib/mediaSource';
 
 /**
  * Carrega `expo-sharing` de forma TARDIA e segura. O módulo nativo `ExpoSharing`
@@ -48,6 +51,8 @@ function getSharing(): SharingModule | null {
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const XLSX_UTI = 'org.openxmlformats.spreadsheetml.sheet';
+const PDF_MIME = 'application/pdf';
+const PDF_UTI = 'com.adobe.pdf';
 
 // ─── base64 (chunked, sem libs) ──────────────────────────────────────────────
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -76,21 +81,28 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     return result;
 }
 
-export interface DownloadAndShareExcelOptions {
+export interface DownloadAndShareOptions {
     /** Caminho do endpoint de export na API (ex.: '/service-orders/export/conferencia'). */
     path: string;
     /** Query params (axios serializa arrays como `key=a&key=b`). */
     params?: Record<string, unknown>;
-    /** Nome do arquivo .xlsx criado no cache e usado no diálogo de compartilhar. */
+    /** Nome do arquivo criado no cache e usado no diálogo de compartilhar. */
     filename: string;
 }
 
+/** @deprecated Nome antigo mantido por compatibilidade; use `DownloadAndShareOptions`. */
+export type DownloadAndShareExcelOptions = DownloadAndShareOptions;
+
 /**
- * Baixa o .xlsx do `path` (com `params`), grava em `Paths.cache/{filename}` e
- * abre o compartilhamento nativo. Resolve ao concluir; lança Error amigável em
- * qualquer falha (sem toast — a tela trata).
+ * Baixa um binário do `path` (com `params`), grava em `Paths.cache/{filename}` e
+ * abre o compartilhamento nativo com o `mimeType`/`uti` informados. Resolve ao
+ * concluir; lança Error amigável em qualquer falha (sem toast — a tela trata).
  */
-export async function downloadAndShareExcel(opts: DownloadAndShareExcelOptions): Promise<void> {
+async function downloadAndShare(
+    opts: DownloadAndShareOptions,
+    mimeType: string,
+    uti: string
+): Promise<void> {
     const Sharing = getSharing();
     if (!Sharing || !(await Sharing.isAvailableAsync())) {
         throw new Error(
@@ -122,8 +134,100 @@ export async function downloadAndShareExcel(opts: DownloadAndShareExcelOptions):
     file.write(base64, { encoding: 'base64' });
 
     await Sharing.shareAsync(file.uri, {
-        mimeType: XLSX_MIME,
+        mimeType,
         dialogTitle: opts.filename,
-        UTI: XLSX_UTI,
+        UTI: uti,
     });
+}
+
+/**
+ * Baixa o .xlsx do `path` (com `params`), grava em cache e abre o
+ * compartilhamento nativo. Resolve ao concluir; lança Error amigável em falha.
+ */
+export function downloadAndShareExcel(opts: DownloadAndShareOptions): Promise<void> {
+    return downloadAndShare(opts, XLSX_MIME, XLSX_UTI);
+}
+
+/**
+ * Baixa o .pdf do `path` (com `params`), grava em cache e abre o
+ * compartilhamento nativo. Mesmo pipeline do Excel, com mime/UTI de PDF —
+ * usado pelos relatórios (Resumo Diário, Carros para Fazer, Espelho de Ponto,
+ * Faltas, Desempenho de Instaladores).
+ */
+export function downloadAndSharePdf(opts: DownloadAndShareOptions): Promise<void> {
+    return downloadAndShare(opts, PDF_MIME, PDF_UTI);
+}
+
+// ─── documentos arbitrários da Biblioteca (PDF/PPT/DOCX/imagem) ───────────────
+
+/** Infere mimeType a partir do `file_type` (quando presente) ou da extensão. */
+function inferMime(fileType: string | null | undefined, filename: string): string {
+    if (fileType && fileType.includes('/')) return fileType;
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    const map: Record<string, string> = {
+        pdf: PDF_MIME,
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xls: 'application/vnd.ms-excel',
+        xlsx: XLSX_MIME,
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        webp: 'image/webp',
+        gif: 'image/gif',
+    };
+    return map[ext] ?? 'application/octet-stream';
+}
+
+export interface DownloadAndShareUrlOptions {
+    /** URL do arquivo (absoluta ou relativa) — ex.: `file_url` de um documento. */
+    url: string;
+    /** Nome do arquivo criado em cache e usado no diálogo de compartilhar. */
+    filename: string;
+    /** `file_type` do backend (mimeType), quando conhecido — melhora a inferência. */
+    fileType?: string | null;
+}
+
+/**
+ * Baixa um arquivo por sua URL (resolvendo host local e anexando o header de
+ * auth via `mediaHeaders`, pois `/uploads/*` é protegido em HML/produção),
+ * grava em cache e abre o compartilhamento nativo. Usado pela Biblioteca para
+ * "abrir/baixar" um documento (PDF, apresentação, imagem etc.).
+ *
+ * Usa uma instância axios crua (não o `apiClient`) porque a URL já é absoluta e
+ * não deve receber a baseURL `/api/v1`. Resolve ao concluir; lança Error
+ * amigável em falha (a tela decide o feedback).
+ */
+export async function downloadAndShareUrl(opts: DownloadAndShareUrlOptions): Promise<void> {
+    const Sharing = getSharing();
+    if (!Sharing || !(await Sharing.isAvailableAsync())) {
+        throw new Error(
+            'Compartilhamento indisponível neste app. Atualize para o build completo para abrir arquivos.'
+        );
+    }
+
+    const resolved = resolveMediaUrl(opts.url);
+    if (!resolved) throw new Error('Arquivo indisponível.');
+
+    const response = await axios.get<ArrayBuffer>(resolved, {
+        responseType: 'arraybuffer',
+        headers: mediaHeaders(),
+    });
+
+    const base64 = arrayBufferToBase64(response.data);
+
+    const cacheDir = new Directory(Paths.cache);
+    if (!cacheDir.exists) {
+        cacheDir.create({ intermediates: true, idempotent: true });
+    }
+
+    const file = new File(Paths.cache, opts.filename);
+    if (file.exists) file.delete();
+    file.create();
+    file.write(base64, { encoding: 'base64' });
+
+    const mime = inferMime(opts.fileType, opts.filename);
+    await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: opts.filename });
 }

@@ -1,10 +1,10 @@
-import { Alert } from 'react-native';
 import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { CreateRollScreen } from '@/screens/inventory/CreateRollScreen';
 import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import { CriticalRollsError } from '@/services/api/inventory.service';
 
 /**
@@ -72,7 +72,9 @@ const metrics = {
 function Providers({ children }: { children: ReactNode }) {
     return (
         <SafeAreaProvider initialMetrics={metrics}>
-            <ThemeProvider>{children}</ThemeProvider>
+            <ThemeProvider>
+                <ConfirmProvider>{children}</ConfirmProvider>
+            </ThemeProvider>
         </SafeAreaProvider>
     );
 }
@@ -137,13 +139,12 @@ describe('CreateRollScreen — caminho feliz', () => {
 });
 
 describe('CreateRollScreen — fluxo 409 → force', () => {
-    it('ao pegar CriticalRollsError abre Alert e confirma com force:true', async () => {
+    it('ao pegar CriticalRollsError abre o diálogo e confirma com force:true', async () => {
         // 1ª chamada lança crítico; 2ª (force) resolve.
         mockMutateAsync
             .mockRejectedValueOnce(new CriticalRollsError())
             .mockResolvedValueOnce({ id: 2 });
 
-        const alertSpy = jest.spyOn(Alert, 'alert');
         const utils = await renderScreen();
         await fillValidForm(utils);
 
@@ -151,19 +152,17 @@ describe('CreateRollScreen — fluxo 409 → force', () => {
             fireEvent.press(utils.getByText('Registrar bobina'));
         });
 
-        // Primeira tentativa (force:false) já ocorreu e disparou o Alert.
-        await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+        // Primeira tentativa (force:false) já ocorreu e abriu o ConfirmDialog.
+        await utils.findByText('Bobinas críticas pendentes');
         expect(mockMutateAsync).toHaveBeenNthCalledWith(
             1,
             expect.objectContaining({ force: false })
         );
         expect(mockToastError).not.toHaveBeenCalled();
 
-        // Simula o usuário tocando em "Registrar" no Alert.
-        const buttons = alertSpy.mock.calls[0][2] as { text: string; onPress?: () => void }[];
-        const confirm = buttons.find((b) => b.text === 'Registrar');
+        // Confirma no botão "Registrar" do diálogo (≠ "Registrar bobina").
         await act(async () => {
-            confirm?.onPress?.();
+            fireEvent.press(utils.getByText('Registrar'));
         });
 
         await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(2));

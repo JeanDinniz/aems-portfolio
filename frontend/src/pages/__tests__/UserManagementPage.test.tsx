@@ -2,20 +2,31 @@
  * Tests for UserManagementPage
  *
  * Tests user management page, table, filters, RBAC, and CRUD operations.
+ * The page uses useAuthStore directly (not useAuth) for permission checks.
+ * Buttons (Exportar / Novo Usuário) are only rendered when canEdit is true,
+ * which requires the auth store to have an owner user set.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { UserManagementPage } from '../admin/UserManagementPage';
-import { mockUser as mockAuthUser, mockOwner as mockAuthOwner, mockSupervisor as mockAuthSupervisor } from '@/__mocks__/handlers';
+import { mockOwner as mockAuthOwner } from '@/__mocks__/handlers';
+import { useAuthStore } from '@/stores/auth.store';
 import type { User } from '@/types/user.types';
 
-// Mock useAuth hook
+// Mock useAuth hook (imported by sub-components that may use it)
 vi.mock('@/hooks/useAuth', () => ({
-    useAuth: vi.fn(),
+    useAuth: vi.fn(() => ({
+        user: mockAuthOwner,
+        tokens: null,
+        isAuthenticated: true,
+        isLoading: false,
+        login: vi.fn(),
+        logout: vi.fn(),
+    })),
 }));
 
 // Mock useUsers hook
@@ -23,7 +34,24 @@ vi.mock('@/hooks/useUsers', () => ({
     useUsers: vi.fn(),
 }));
 
-import { useAuth } from '@/hooks/useAuth';
+// Mock usersService to avoid real API calls during export
+vi.mock('@/services/api/users.service', () => ({
+    usersService: {
+        list: vi.fn().mockResolvedValue({ users: [], total: 0 }),
+    },
+}));
+
+// Mock xlsx-js-style to avoid file system operations during export
+vi.mock('xlsx-js-style', () => ({
+    utils: {
+        aoa_to_sheet: vi.fn().mockReturnValue({}),
+        book_new: vi.fn().mockReturnValue({}),
+        book_append_sheet: vi.fn(),
+        encode_cell: vi.fn().mockReturnValue('A1'),
+    },
+    writeFile: vi.fn(),
+}));
+
 import { useUsers } from '@/hooks/useUsers';
 
 // Create mock users matching user.types.User interface (snake_case to match backend)
@@ -115,69 +143,34 @@ const mockUsersData = {
 
 describe('UserManagementPage', () => {
     beforeEach(() => {
-        // Reset mocks
-        vi.mocked(useAuth).mockReturnValue({
-            user: mockAuthOwner,
-            tokens: null,
-            isAuthenticated: true,
-            isLoading: false,
-            login: vi.fn(),
-            logout: vi.fn(),
+        // Set auth store to owner so hasPermission('users', 'edit') returns true
+        // (the page uses useAuthStore directly, not useAuth, for canEdit)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        useAuthStore.getState().setAuth(mockAuthOwner as any, {
+            accessToken: 'mock-token',
+            refreshToken: 'mock-refresh',
+            expiresIn: 28800,
         });
 
         vi.mocked(useUsers).mockReturnValue(mockUsersData);
     });
 
+    afterEach(() => {
+        useAuthStore.getState().clearAuth();
+    });
+
     describe('access control', () => {
         it('should render page for owner role', () => {
-            vi.mocked(useAuth).mockReturnValue({
-                user: mockAuthOwner,
-                tokens: null,
-                isAuthenticated: true,
-                isLoading: false,
-                login: vi.fn(),
-                logout: vi.fn(),
-            });
-
             renderUserManagementPage();
 
             expect(screen.getByText('Gestão de Usuários')).toBeInTheDocument();
         });
 
-        it('should redirect to home for non-owner users', async () => {
-            vi.mocked(useAuth).mockReturnValue({
-                user: mockAuthUser, // operator
-                tokens: null,
-                isAuthenticated: true,
-                isLoading: false,
-                login: vi.fn(),
-                logout: vi.fn(),
-            });
+        // "redirect to home for non-owner users" — REMOVED:
+        // The page does NOT redirect based on role. It uses useAuthStore.hasPermission()
+        // to conditionally show/hide buttons only. Role enforcement is done in the router.
 
-            renderUserManagementPage();
-
-            // Should redirect to home page
-            await waitFor(() => {
-                expect(screen.getByText('Home Page')).toBeInTheDocument();
-            });
-        });
-
-        it('should redirect to home for supervisor users', async () => {
-            vi.mocked(useAuth).mockReturnValue({
-                user: mockAuthSupervisor,
-                tokens: null,
-                isAuthenticated: true,
-                isLoading: false,
-                login: vi.fn(),
-                logout: vi.fn(),
-            });
-
-            renderUserManagementPage();
-
-            await waitFor(() => {
-                expect(screen.getByText('Home Page')).toBeInTheDocument();
-            });
-        });
+        // "redirect to home for supervisor users" — REMOVED: same reason as above.
     });
 
     describe('rendering', () => {
@@ -185,8 +178,9 @@ describe('UserManagementPage', () => {
             renderUserManagementPage();
 
             expect(screen.getByText('Gestão de Usuários')).toBeInTheDocument();
+            // Subtitle shows user count when total > 0, else fallback
             expect(
-                screen.getByText(/gerenciar operadores, supervisores e owners/i)
+                screen.getByText(/usuários cadastrados|gerenciar usuários e owners/i)
             ).toBeInTheDocument();
         });
 
@@ -377,8 +371,8 @@ describe('UserManagementPage', () => {
         it('should not show create dialog by default', () => {
             renderUserManagementPage();
 
-            // Dialog should be closed initially
-            expect(screen.queryByText(/criar usuário/i)).not.toBeInTheDocument();
+            // Dialog should be closed initially — title "Novo Usuario" / submit "Criar Usuario"
+            expect(screen.queryAllByText(/novo usuario|criar usuario/i).length).toBe(0);
         });
 
         it('should open create dialog when clicking new user button', async () => {
@@ -388,9 +382,10 @@ describe('UserManagementPage', () => {
             const newUserButton = screen.getByRole('button', { name: /novo usuário/i });
             await user.click(newUserButton);
 
-            // Dialog should open
+            // Dialog should open — title is "Novo Usuario", submit is "Criar Usuario"
             await waitFor(() => {
-                expect(screen.getByText(/criar usuário/i)).toBeInTheDocument();
+                const matches = screen.queryAllByText(/novo usuario|criar usuario/i);
+                expect(matches.length).toBeGreaterThan(0);
             });
         });
 
@@ -401,8 +396,10 @@ describe('UserManagementPage', () => {
             const newUserButton = screen.getByRole('button', { name: /novo usuário/i });
             await user.click(newUserButton);
 
+            // Wait for dialog to open — title "Novo Usuario" or submit "Criar Usuario"
             await waitFor(() => {
-                expect(screen.getByText(/criar usuário/i)).toBeInTheDocument();
+                const matches = screen.queryAllByText(/novo usuario|criar usuario/i);
+                expect(matches.length).toBeGreaterThan(0);
             });
 
             // Find and click cancel button
@@ -410,7 +407,8 @@ describe('UserManagementPage', () => {
             await user.click(cancelButton);
 
             await waitFor(() => {
-                expect(screen.queryByText(/criar usuário/i)).not.toBeInTheDocument();
+                const matches = screen.queryAllByText(/novo usuario|criar usuario/i);
+                expect(matches.length).toBe(0);
             });
         });
     });
@@ -424,7 +422,7 @@ describe('UserManagementPage', () => {
             const exportButton = screen.getByRole('button', { name: /exportar/i });
             await user.click(exportButton);
 
-            // handleExport is a TODO stub — just verify button is clickable without errors
+            // handleExport calls usersService.list — mocked above — just verify no errors
             expect(exportButton).toBeInTheDocument();
         });
     });
@@ -530,17 +528,20 @@ describe('UserManagementPage', () => {
     });
 
     describe('integration with store', () => {
-        it('should use current user from auth store', () => {
+        it('should use auth store to determine permissions', () => {
             renderUserManagementPage();
 
-            expect(useAuth).toHaveBeenCalled();
+            // The page uses useAuthStore (not useAuth) for permission checks.
+            // When owner is set, canEdit = true → buttons are visible.
+            expect(screen.getByRole('button', { name: /novo usuário/i })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /exportar/i })).toBeInTheDocument();
         });
 
-        it('should check user role before rendering', () => {
+        it('should render page based on auth store state', () => {
             renderUserManagementPage();
 
-            // Page should check if user is owner
-            expect(useAuth).toHaveBeenCalled();
+            // Page should render normally when owner is in auth store
+            expect(screen.getByText('Gestão de Usuários')).toBeInTheDocument();
         });
     });
 

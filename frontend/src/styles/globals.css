@@ -119,9 +119,35 @@
     --ring:   42 100% 48%;
 
     --radius: 0.5rem;
+    --r-card: 0.75rem;              /* raio dos cards (rounded-card) */
+
+    /* Tokens estruturais do shell (header/sidebar) usados por Header, Sidebar
+       e cards. Valores do visual Clássico. */
+    --shell: #F5F5F5;
+    --header: #FFFFFF;
+    --header-border: #E8E8E8;
+
+    --sidebar: #111111;
+    --sidebar-border: #1E1E1E;
+    --sidebar-hover: #1E1E1E;
+    --sidebar-fg: #F2F2F2;
+    --sidebar-fg-hover: #FFFFFF;
+    --sidebar-muted: #6B7280;
+    --sidebar-dim: #555555;
+    --sidebar-active: rgba(245, 168, 0, 0.10);
+    --sidebar-active-strong: rgba(245, 168, 0, 0.15);
+    --sidebar-active-fg: #F5A800;
+    --sidebar-accent: #F5A800;
+    --sidebar-accent-fg: #111111;
   }
  
   .dark {
+    /* ── Estruturais do shell — tema escuro ───────────────── */
+    --shell: #111111;
+    --header: #1A1A1A;
+    --header-border: #222222;
+    /* sidebar permanece grafite no escuro (mesmos tokens do claro) */
+
     /* ── Design tokens v2 — TEMA ESCURO ───────────────────── */
     --bg-base:        #111111;
     --bg-surface:     #1A1A1A;
@@ -252,7 +278,7 @@
 /* Card hover elevation */
 @layer utilities {
   .aems-card {
-    @apply bg-card rounded-xl border border-border shadow-sm transition-all duration-200;
+    @apply bg-card rounded-card border border-border shadow-aems-sm transition-all duration-200;
   }
   .aems-card:hover {
     box-shadow: var(--aems-shadow-md);

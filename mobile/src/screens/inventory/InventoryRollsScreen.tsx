@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, RefreshControl, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 
@@ -14,24 +14,29 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useFilmRolls } from '@/hooks/useInventory';
+import { useStores } from '@/hooks/useStores';
 import { useCanEdit } from '@/hooks/useMyPermissions';
 import { useStoreStore } from '@/stores/store.store';
 import { useTheme } from '@/theme';
+import { groupInventory, buildInventoryRows, type InvRow, type StoreLite } from '@/utils/inventoryGrouping';
 import type { FilmRoll, FilmRollListParams } from '@/services/api/inventory.service';
 import type { InventoryStackScreenProps } from '@/navigation/types';
 
 /**
- * INV-02 — Lista de bobinas (LISTA PLANA, v1 pragmática).
+ * INV-02 — Lista de bobinas em hierarquia colapsável (Loja→Tipo→Tonalidade).
  *
- * SEM agrupamento por loja/tipo/tonalidade nem merge de estoque compartilhado
- * (isso fica para uma ronda futura). Header preto (título + contagem + filtro),
- * busca por `visual_id` (debounce 400ms, CLIENT-SIDE — o backend não expõe busca
- * textual em /inventory/rolls), filtros em bottom-sheet (departamento, tipo de
- * película, status, galpão), pull-to-refresh e estados Loading/Empty/Error.
+ * Cada tonalidade vira uma linha-resumo (contagem + metros restantes) que inicia
+ * COLAPSADA; tocar expande as bobinas. Com "Todas as lojas" (selectedStoreId ===
+ * null) aparece o header de loja e lojas de estoque compartilhado são fundidas
+ * numa entrada só; com loja específica o nível de loja some. Header preto (título
+ * + contagem + filtro), busca por `visual_id` (debounce 400ms, CLIENT-SIDE — o
+ * backend não expõe busca textual em /inventory/rolls), filtros em bottom-sheet
+ * (departamento, tipo de película, status, galpão), pull-to-refresh e estados
+ * Loading/Empty/Error.
  *
  * A loja selecionada globalmente (`selectedStoreId`) é injetada como `store_id`
  * nos params do hook. FAB "Nova bobina" e atalho "Tipos de película" só com
- * `can_edit` (inventory). Ambos navegam para stubs "Em breve" (INV-04/06).
+ * `can_edit` (inventory).
  */
 
 const SEARCH_DEBOUNCE_MS = 400;
@@ -48,9 +53,11 @@ function countActiveFilters(f: InventoryFilters): number {
 
 export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'InventoryRolls'>) {
     const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
     const canEdit = useCanEdit('inventory');
     const filterSheetRef = useRef<InventoryFilterSheetRef>(null);
     const selectedStoreId = useStoreStore((s) => s.selectedStoreId);
+    const { allStores } = useStores();
 
     const [sheetFilters, setSheetFilters] = useState<InventoryFilters>({});
     const [searchInput, setSearchInput] = useState('');
@@ -81,11 +88,46 @@ export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'
     // Busca textual por `visual_id` é client-side sobre a página atual (o backend
     // de /inventory/rolls não tem param de busca textual).
     const items = useMemo<FilmRoll[]>(() => {
-        const list = rolls ?? [];
+        let list = rolls ?? [];
+        // Esconde bobinas ESGOTADAS por padrão. Só aparecem quando o filtro pede
+        // exatamente "esgotada" (aí o backend já devolve apenas elas).
+        if (sheetFilters.status !== 'esgotada') {
+            list = list.filter((r) => r.status !== 'esgotada');
+        }
         const q = search.trim().toLowerCase();
-        if (!q) return list;
-        return list.filter((r) => r.visual_id.toLowerCase().includes(q));
-    }, [rolls, search]);
+        if (q) list = list.filter((r) => r.visual_id.toLowerCase().includes(q));
+        return list;
+    }, [rolls, search, sheetFilters.status]);
+
+    // useStores() retorna { stores, allStores, selectedStoreId, ... }. Usamos
+    // `allStores` (lista completa) para resolver as lojas parceiras de estoque
+    // compartilhado mesmo quando não estão na seleção do usuário — paridade com o web.
+    const stores = useMemo<StoreLite[]>(
+        () =>
+            allStores.map((s) => ({
+                id: s.id,
+                name: s.name,
+                has_shared_inventory: s.has_shared_inventory,
+                linked_inventory_store_ids: s.linked_inventory_store_ids,
+            })),
+        [allStores]
+    );
+
+    const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+    const toggleGroup = useCallback((groupKey: string) => {
+        setExpanded((prev) => {
+            const next = new Set(prev);
+            if (next.has(groupKey)) next.delete(groupKey);
+            else next.add(groupKey);
+            return next;
+        });
+    }, []);
+
+    const groups = useMemo(() => groupInventory(items, stores), [items, stores]);
+    const rows = useMemo<InvRow[]>(
+        () => buildInventoryRows(groups, expanded, { showStoreHeaders: selectedStoreId === null }),
+        [groups, expanded, selectedStoreId]
+    );
 
     const handleOpen = useCallback(
         (id: number) => navigation.navigate('RollDetail', { id }),
@@ -93,15 +135,67 @@ export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'
     );
 
     const renderItem = useCallback(
-        ({ item }: { item: FilmRoll }) => (
-            <View className="px-4 pb-3">
-                <RollCard roll={item} onPress={() => handleOpen(item.id)} />
-            </View>
-        ),
-        [handleOpen]
+        ({ item }: { item: InvRow }) => {
+            if (item.type === 'store') {
+                return (
+                    <View className="bg-neutral-50 px-4 pb-1 pt-4 dark:bg-dark-bg">
+                        <Text className="font-display-bold text-base text-neutral-900 dark:text-dark-text">
+                            {item.label}
+                        </Text>
+                    </View>
+                );
+            }
+            if (item.type === 'type') {
+                return (
+                    <View className="px-4 pb-1 pt-3">
+                        <Text className="font-sans-bold text-sm uppercase tracking-wide text-neutral-500 dark:text-dark-text-muted">
+                            {item.label}
+                        </Text>
+                    </View>
+                );
+            }
+            if (item.type === 'tonality') {
+                return (
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: item.expanded }}
+                        accessibilityLabel={`${item.label}: ${item.count} bobinas, ${item.totalRemaining.toFixed(1)} metros`}
+                        onPress={() => toggleGroup(item.groupKey)}
+                        className="mx-4 mb-1.5 flex-row items-center justify-between rounded-xl border border-neutral-100 bg-white px-3 py-2.5 active:opacity-80 dark:border-dark-border-soft dark:bg-dark-surface"
+                    >
+                        <View className="flex-row items-center gap-2">
+                            <Ionicons
+                                name={item.expanded ? 'chevron-down' : 'chevron-forward'}
+                                size={16}
+                                color="#98A2B3"
+                            />
+                            <Text className="font-sans-semibold text-sm text-neutral-800 dark:text-dark-text">
+                                {item.label}
+                            </Text>
+                            <View className="rounded-full bg-neutral-100 px-2 py-0.5 dark:bg-dark-elevated">
+                                <Text className="font-sans-bold text-[11px] text-neutral-500 dark:text-dark-text-muted">
+                                    {item.count}
+                                </Text>
+                            </View>
+                        </View>
+                        <Text className="font-sans-semibold text-sm text-neutral-600 dark:text-dark-text-muted">
+                            {item.totalRemaining.toFixed(1)}m
+                        </Text>
+                    </Pressable>
+                );
+            }
+            // roll
+            return (
+                <View className="px-4 pb-2 pl-8">
+                    <RollCard roll={item.roll} onPress={() => handleOpen(item.roll.id)} />
+                </View>
+            );
+        },
+        [handleOpen, toggleGroup]
     );
 
-    const keyExtractor = useCallback((item: FilmRoll) => String(item.id), []);
+    const keyExtractor = useCallback((item: InvRow) => item.key, []);
+    const getItemType = useCallback((item: InvRow) => item.type, []);
 
     const total = items.length;
     const subtitle = isLoading
@@ -137,6 +231,16 @@ export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'
                             className="h-11 w-11 items-center justify-center rounded-full bg-white/10 active:opacity-70"
                         >
                             <Ionicons name="analytics-outline" size={20} color="#FFFFFF" />
+                        </Pressable>
+
+                        {/* Atalho: Saídas avulsas (baixa p/ instalador) */}
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Saídas avulsas"
+                            onPress={() => navigation.navigate('Withdrawals')}
+                            className="h-11 w-11 items-center justify-center rounded-full bg-white/10 active:opacity-70"
+                        >
+                            <Ionicons name="cut-outline" size={20} color="#FFFFFF" />
                         </Pressable>
 
                         {/* Atalho: Tipos de película (INV-06) */}
@@ -221,10 +325,11 @@ export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'
                     />
                 ) : (
                     <FlashList
-                        data={items}
+                        data={rows}
                         renderItem={renderItem}
                         keyExtractor={keyExtractor}
-                        contentContainerStyle={{ paddingTop: 12, paddingBottom: 96 }}
+                        getItemType={getItemType}
+                        contentContainerStyle={{ paddingTop: 4, paddingBottom: 96 + insets.bottom }}
                         refreshControl={
                             <RefreshControl
                                 refreshing={isRefetching}
@@ -242,7 +347,8 @@ export function InventoryRollsScreen({ navigation }: InventoryStackScreenProps<'
                     accessibilityRole="button"
                     accessibilityLabel="Nova bobina"
                     onPress={() => navigation.navigate('CreateRoll')}
-                    className="absolute bottom-6 right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
+                    style={{ bottom: insets.bottom + 24 }}
+                    className="absolute right-5 h-14 flex-row items-center gap-2 rounded-full bg-brand px-5 shadow-lg active:opacity-90"
                 >
                     <Ionicons name="add" size={24} color="#1A1A1A" />
                     <Text className="font-sans-bold text-base text-brand-black">Nova bobina</Text>

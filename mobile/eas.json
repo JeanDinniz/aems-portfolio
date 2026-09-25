@@ -21,6 +21,31 @@
         "WS_URL": "wss://aems.example.com/ws"
       }
     },
+    "hml": {
+      "distribution": "internal",
+      "channel": "hml",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_ENV": "staging",
+        "API_URL": "https://hml.aems.example.com/api/v1",
+        "WS_URL": "wss://hml.aems.example.com/ws"
+      }
+    },
+    "production-apk": {
+      "autoIncrement": false,
+      "channel": "production",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "API_URL": "https://aems.example.com/api/v1",
+        "WS_URL": "wss://aems.example.com/ws"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production",

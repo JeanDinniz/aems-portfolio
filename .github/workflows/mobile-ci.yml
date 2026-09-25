@@ -69,6 +69,10 @@ jobs:
   build-preview:
     name: EAS Build (preview / HML)
     needs: [quality, check-secrets]
+    # Não bloqueia o CI: o gate de qualidade é o job `quality`. O build EAS é
+    # oportunista — falhas de cota do plano free ou erros transitórios da nuvem
+    # não devem reprovar o push/merge.
+    continue-on-error: true
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop' &&
@@ -99,6 +103,8 @@ jobs:
   build-production:
     name: EAS Build (production)
     needs: [quality, check-secrets]
+    # Oportunista, não bloqueia o CI (ver build-preview).
+    continue-on-error: true
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&

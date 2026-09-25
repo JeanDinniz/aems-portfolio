@@ -33,9 +33,6 @@ export function registerWsHandlers(queryClient: QueryClient): () => void {
     const invalidateConference = () =>
         queryClient.invalidateQueries({ queryKey: ['service-orders', 'conference', 'summary'] });
 
-    const invalidateQueue = () =>
-        queryClient.invalidateQueries({ queryKey: ['dashboard', 'queue'] });
-
     const invalidateNotifications = () => {
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
         queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
@@ -57,7 +54,6 @@ export function registerWsHandlers(queryClient: QueryClient): () => void {
     wsService.on('os_finalized', invalidateOrders);
     wsService.on('os_cancelled', invalidateOrders);
     wsService.on('os_verified', onOsVerified);
-    wsService.on('semaphore_updated', invalidateQueue);
     wsService.on('appointment_created', invalidateScheduling);
     wsService.on('appointment_updated', invalidateScheduling);
     wsService.on('appointment_cancelled', invalidateScheduling);
@@ -70,7 +66,6 @@ export function registerWsHandlers(queryClient: QueryClient): () => void {
         wsService.off('os_finalized', invalidateOrders);
         wsService.off('os_cancelled', invalidateOrders);
         wsService.off('os_verified', onOsVerified);
-        wsService.off('semaphore_updated', invalidateQueue);
         wsService.off('appointment_created', invalidateScheduling);
         wsService.off('appointment_updated', invalidateScheduling);
         wsService.off('appointment_cancelled', invalidateScheduling);

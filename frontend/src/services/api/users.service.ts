@@ -14,10 +14,35 @@ export const usersService = {
         if (filters?.is_active !== undefined) params.append('is_active', filters.is_active.toString());
         if (filters?.store_id) params.append('store_id', filters.store_id.toString());
         if (filters?.search) params.append('search', filters.search);
+        if (filters?.has_employee !== undefined) params.append('has_employee', filters.has_employee.toString());
         params.append('page', page.toString());
         params.append('limit', pageSize.toString());
 
         const response = await apiClient.get<{ items: User[]; pagination: { total: number } }>(`/users?${params.toString()}`);
+        return {
+            users: response.data.items,
+            total: response.data.pagination.total,
+            page,
+            pageSize,
+        };
+    },
+
+    // A2 (auditoria): listagem leve para comboboxes de vínculo/perfil.
+    // GET /users exige users:can_view; este endpoint aceita grants de
+    // employees/profiles (ou Owner), sem vazar a listagem completa.
+    async listSelectable(
+        filters?: Pick<UserFilters, 'is_active' | 'search' | 'has_employee'>,
+        page = 1,
+        pageSize = 20,
+    ): Promise<UsersListResponse> {
+        const params = new URLSearchParams();
+        if (filters?.is_active !== undefined) params.append('is_active', filters.is_active.toString());
+        if (filters?.search) params.append('search', filters.search);
+        if (filters?.has_employee !== undefined) params.append('has_employee', filters.has_employee.toString());
+        params.append('page', page.toString());
+        params.append('limit', pageSize.toString());
+
+        const response = await apiClient.get<{ items: User[]; pagination: { total: number } }>(`/users/selectable?${params.toString()}`);
         return {
             users: response.data.items,
             total: response.data.pagination.total,

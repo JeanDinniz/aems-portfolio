@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { MoreHorizontal, Edit, Eye, Trash2 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import {
     Table,
     TableBody,
@@ -83,7 +83,7 @@ export function ConsultantsTable({ consultants, isLoading, page, pageSize, total
     const [editDialogOpen, setEditDialogOpen] = useState(false);
     const [consultantToDelete, setConsultantToDelete] = useState<Consultant | null>(null);
 
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('consultants', 'edit');
     const canDelete = hasPermission('consultants', 'delete');
 

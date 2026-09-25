@@ -9,6 +9,10 @@ import { ConsultantsAdminScreen } from '@/screens/admin/ConsultantsAdminScreen';
 import { StoresAdminScreen } from '@/screens/admin/StoresAdminScreen';
 import { AccessProfilesAdminScreen } from '@/screens/admin/AccessProfilesAdminScreen';
 import { AccessProfileDetailScreen } from '@/screens/admin/AccessProfileDetailScreen';
+import { DayAbsencesScreen } from '@/screens/admin/DayAbsencesScreen';
+import { TimeClockMirrorScreen } from '@/screens/admin/TimeClockMirrorScreen';
+import { HolidaysAdminScreen } from '@/screens/admin/HolidaysAdminScreen';
+import { AuditAdminScreen } from '@/screens/admin/AuditAdminScreen';
 import { BrandsAdminScreen } from '@/screens/admin/BrandsAdminScreen';
 import { VehicleModelsAdminScreen } from '@/screens/admin/VehicleModelsAdminScreen';
 import { ServicesAdminScreen } from '@/screens/admin/ServicesAdminScreen';
@@ -40,6 +44,10 @@ export function AdminStack() {
             <Stack.Screen name="StoresAdmin" component={StoresAdminScreen} />
             <Stack.Screen name="AccessProfilesAdmin" component={AccessProfilesAdminScreen} />
             <Stack.Screen name="AccessProfileDetail" component={AccessProfileDetailScreen} />
+            <Stack.Screen name="DayAbsencesAdmin" component={DayAbsencesScreen} />
+            <Stack.Screen name="TimeClockMirrorAdmin" component={TimeClockMirrorScreen} />
+            <Stack.Screen name="HolidaysAdmin" component={HolidaysAdminScreen} />
+            <Stack.Screen name="AuditAdmin" component={AuditAdminScreen} />
             <Stack.Screen name="BrandsAdmin" component={BrandsAdminScreen} />
             <Stack.Screen name="VehicleModelsAdmin" component={VehicleModelsAdminScreen} />
             <Stack.Screen name="ServicesAdmin" component={ServicesAdminScreen} />

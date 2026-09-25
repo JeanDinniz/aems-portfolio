@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { MoreHorizontal, Edit, Key, Eye, Trash2 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import {
     Table,
     TableBody,
@@ -52,7 +52,7 @@ export function UsersTable({ users, isLoading, page, pageSize, total, onPageChan
     const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
     const [userToDelete, setUserToDelete] = useState<User | null>(null);
 
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('users', 'edit');
     const canDelete = hasPermission('users', 'delete');
 
@@ -94,6 +94,7 @@ export function UsersTable({ users, isLoading, page, pageSize, total, onPageChan
                             <TableHead>Usuário</TableHead>
                             <TableHead>Cargo</TableHead>
                             <TableHead>Loja(s)</TableHead>
+                            <TableHead>Funcionário</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead>Último Login</TableHead>
                             <TableHead className="text-right">Ações</TableHead>
@@ -102,7 +103,7 @@ export function UsersTable({ users, isLoading, page, pageSize, total, onPageChan
                     <TableBody>
                         {users.length === 0 ? (
                             <TableRow>
-                                <TableCell colSpan={6} className="text-center text-[#666666] dark:text-zinc-500 py-8">
+                                <TableCell colSpan={7} className="text-center text-[#666666] dark:text-zinc-500 py-8">
                                     Nenhum usuário encontrado
                                 </TableCell>
                             </TableRow>
@@ -138,6 +139,13 @@ export function UsersTable({ users, isLoading, page, pageSize, total, onPageChan
                                         ) : (
                                             <span className="text-sm text-[#444444] dark:text-zinc-300">{user.store_name || '-'}</span>
                                         )}
+                                    </TableCell>
+
+                                    <TableCell className="text-sm">
+                                        {user.employee_name
+                                            ? <span className="text-[#444444] dark:text-zinc-300">{user.employee_name}</span>
+                                            : <span className="text-muted-foreground">—</span>
+                                        }
                                     </TableCell>
 
                                     <TableCell>

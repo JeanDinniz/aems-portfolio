@@ -17,6 +17,7 @@ export const APPOINTMENT_STATUS_CONFIG: Record<
   atencao:     { label: 'Atenção',     color: '#F59E0B', borderColor: 'border-l-amber-500',  bgDot: 'bg-amber-500',  bgCard: 'bg-amber-50 dark:bg-amber-900/20' },
   agendado:    { label: 'Agendado',    color: '#3B82F6', borderColor: 'border-l-blue-500',   bgDot: 'bg-blue-500',   bgCard: 'bg-blue-50 dark:bg-blue-900/20' },
   em_execucao: { label: 'Em execução', color: '#22C55E', borderColor: 'border-l-green-500',  bgDot: 'bg-green-500',  bgCard: 'bg-green-50 dark:bg-green-900/20' },
+  duplicidade: { label: 'Duplicidade', color: '#F97316', borderColor: 'border-l-orange-500', bgDot: 'bg-orange-500', bgCard: 'bg-orange-50 dark:bg-orange-900/20' },
   finalizado:  { label: 'Finalizado',  color: '#A855F7', borderColor: 'border-l-purple-500', bgDot: 'bg-purple-500', bgCard: 'bg-purple-50 dark:bg-purple-900/20' },
   cancelado:   { label: 'Cancelado',   color: '#9CA3AF', borderColor: 'border-l-gray-400',   bgDot: 'bg-gray-400',   bgCard: 'bg-gray-100 dark:bg-zinc-800' },
 }
@@ -32,14 +33,33 @@ export const DEPARTMENT_LABELS: Record<string, string> = {
   workshop: 'Oficina',
 }
 
+// Departamentos temporariamente ocultos no módulo de Agendamentos (criação, edição e filtro).
+// Para reexibir, basta esvaziar esta lista. O backend continua aceitando todos.
+export const HIDDEN_SCHEDULING_DEPARTMENTS = ['bodywork', 'vn', 'vd', 'vu', 'workshop']
+
+export const VISIBLE_DEPARTMENT_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(DEPARTMENT_LABELS).filter(([value]) => !HIDDEN_SCHEDULING_DEPARTMENTS.includes(value))
+)
+
+// Departamentos exibidos no Agendamento respeitando a restrição do perfil de acesso.
+// `allowed` vazio/ausente = comportamento padrão (todos os visíveis); caso contrário,
+// exibe exatamente os departamentos permitidos pelo perfil.
+export function visibleDepartmentEntries(allowed?: string[] | null): [string, string][] {
+  if (!allowed || allowed.length === 0) {
+    return Object.entries(VISIBLE_DEPARTMENT_LABELS)
+  }
+  return allowed.map((value) => [value, DEPARTMENT_LABELS[value] ?? value] as [string, string])
+}
+
 
 export const STATUS_PRIORITY: Record<AppointmentDisplayStatus, number> = {
   atrasado:    0,
   atencao:     1,
   agendado:    2,
   em_execucao: 3,
-  finalizado:  4,
-  cancelado:   5,
+  duplicidade: 4,
+  finalizado:  5,
+  cancelado:   6,
 }
 
 export const FILM_TONALITY_OPTIONS = [
@@ -54,6 +74,16 @@ export const FILM_TONALITY_OPTIONS = [
 // Serviços de Película Transparente: apenas G75 e Incolor são válidos
 export const TRANSPARENT_FILM_CODES = ['WB']
 export const TRANSPARENT_FILM_TONALITIES = ['G75', 'Incolor']
+
+// Sugestões de região do carro para tonalidades por região (texto livre curto)
+export const FILM_REGION_SUGGESTIONS = [
+  'Portas dianteiras',
+  'Portas traseiras',
+  'Vidro traseiro',
+  'Para-brisa',
+  'Quebra-ventos',
+  'Teto',
+]
 
 /**
  * Opções de tonalidade para um item.

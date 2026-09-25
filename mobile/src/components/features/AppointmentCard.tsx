@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-import { APPOINTMENT_STATUS_CONFIG, DEPARTMENT_LABELS } from '@/constants/scheduling';
+import { getAppointmentStatusConfig, DEPARTMENT_LABELS } from '@/constants/scheduling';
 import { formatClock } from '@/utils/formatDate';
 import type { Appointment } from '@/types/scheduling.types';
 
@@ -28,7 +28,7 @@ export interface AppointmentCardProps {
 const MAX_SERVICE_CHIPS = 3;
 
 function AppointmentCardComponent({ appointment, onPress }: AppointmentCardProps) {
-    const cfg = APPOINTMENT_STATUS_CONFIG[appointment.display_status];
+    const cfg = getAppointmentStatusConfig(appointment.display_status);
     const time = formatClock(appointment.delivery_time);
     const services = appointment.service_names ?? [];
     const extraServices = services.length - MAX_SERVICE_CHIPS;
@@ -113,11 +113,16 @@ function AppointmentCardComponent({ appointment, onPress }: AppointmentCardProps
                 </View>
 
                 {/* Badges */}
-                {(appointment.is_galpon || appointment.is_courtesy || appointment.is_return) && (
+                {(appointment.is_galpon ||
+                    appointment.is_courtesy ||
+                    appointment.is_return ||
+                    !!appointment.appointment_group_id) && (
                     <View className="mt-2 flex-row flex-wrap gap-1.5">
                         {appointment.is_galpon ? <Badge label="Galpão" /> : null}
                         {appointment.is_courtesy ? <Badge label="Cortesia" /> : null}
                         {appointment.is_return ? <Badge label="Retorno" /> : null}
+                        {/* Selo de agendamento combinado (parte de um grupo). */}
+                        {appointment.appointment_group_id ? <GroupBadge appointment={appointment} /> : null}
                     </View>
                 )}
             </View>
@@ -144,6 +149,32 @@ function Badge({ label }: { label: string }) {
             <Text className="font-sans-medium text-[11px] text-neutral-500 dark:text-dark-text-muted">
                 {label}
             </Text>
+        </View>
+    );
+}
+
+/**
+ * Selo discreto de agendamento combinado: ícone de link + "+N depto" (quando os
+ * irmãos vierem carregados). Espelha o web (AppointmentCard).
+ */
+function GroupBadge({ appointment }: { appointment: Appointment }) {
+    const siblings = appointment.group_siblings?.length ?? 0;
+    return (
+        <View
+            accessible
+            accessibilityLabel={
+                siblings > 0
+                    ? `Agendamento combinado, mais ${siblings} departamento${siblings > 1 ? 's' : ''}`
+                    : 'Agendamento combinado'
+            }
+            className="flex-row items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 dark:bg-violet-900/40"
+        >
+            <Ionicons name="link" size={11} color="#7C3AED" />
+            {siblings > 0 ? (
+                <Text className="font-sans-medium text-[11px] text-violet-700 dark:text-violet-300">
+                    {`+${siblings} depto`}
+                </Text>
+            ) : null}
         </View>
     );
 }

@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { useConfirm } from '@/components/ui';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -101,6 +102,7 @@ export function AccessProfileDetailScreen({
 }: AdminStackScreenProps<'AccessProfileDetail'>) {
     const { id } = route.params;
     const canEdit = useCanEdit('profiles');
+    const { confirm } = useConfirm();
 
     const { data: profile, isLoading, isError, refetch } = useAccessProfile(id);
     // Resolve nomes dos usuários vinculados (o perfil só carrega user_ids).
@@ -135,31 +137,25 @@ export function AccessProfileDetailScreen({
         );
     }
 
-    const confirmToggle = () => {
+    const confirmToggle = async () => {
         const next = !profile.is_active;
-        Alert.alert(
-            next ? 'Ativar perfil' : 'Desativar perfil',
-            `${next ? 'Ativar' : 'Desativar'} o perfil ${profile.name}?`,
-            [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                    text: next ? 'Ativar' : 'Desativar',
-                    style: next ? 'default' : 'destructive',
-                    onPress: () => toggle.mutate({ id: profile.id, isActive: next }),
-                },
-            ]
-        );
+        const ok = await confirm({
+            title: next ? 'Ativar perfil' : 'Desativar perfil',
+            message: `${next ? 'Ativar' : 'Desativar'} o perfil ${profile.name}?`,
+            confirmLabel: next ? 'Ativar' : 'Desativar',
+            destructive: !next,
+        });
+        if (ok) toggle.mutate({ id: profile.id, isActive: next });
     };
 
-    const confirmRemoveUser = (userId: string, name: string) => {
-        Alert.alert('Remover usuário', `Remover ${name} deste perfil?`, [
-            { text: 'Cancelar', style: 'cancel' },
-            {
-                text: 'Remover',
-                style: 'destructive',
-                onPress: () => removeUser.mutate({ id: profile.id, userId }),
-            },
-        ]);
+    const confirmRemoveUser = async (userId: string, name: string) => {
+        const ok = await confirm({
+            title: 'Remover usuário',
+            message: `Remover ${name} deste perfil?`,
+            confirmLabel: 'Remover',
+            destructive: true,
+        });
+        if (ok) removeUser.mutate({ id: profile.id, userId });
     };
 
     const userIds = profile.user_ids ?? [];

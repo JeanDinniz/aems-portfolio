@@ -28,6 +28,9 @@ class Service(Base, TimestampMixin):
     category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     execution_time_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     base_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=0)
+    points: Mapped[Decimal] = mapped_column(
+        Numeric(6, 2), nullable=False, default=0, server_default="0"
+    )  # pontuação do serviço para o Desempenho de Instaladores
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     has_variable_price: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_courtesy_only: Mapped[bool] = mapped_column(

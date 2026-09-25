@@ -57,7 +57,7 @@ def _set_media_cookie(response: Response, login_result) -> None:
     response.set_cookie(
         key="aems_media",
         value=create_media_token(user_id),
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=settings.MEDIA_TOKEN_EXPIRE_HOURS * 3600,
         path="/uploads",
         httponly=True,
         secure=not settings.DEBUG,
@@ -77,7 +77,8 @@ async def login(
     Autenticação com email e senha.
 
     - Valida credenciais
-    - Verifica bloqueio por tentativas falhas (máx. 5 tentativas)
+    - Protegido por rate-limit por IP (RATE_LIMIT_LOGIN); tentativas falhas são
+      apenas contabilizadas para auditoria (não há bloqueio automático da conta)
     - Retorna JWT access token (8h) + refresh token (7d)
 
     Usar OAuth2PasswordRequestForm:

@@ -93,6 +93,82 @@ class TestRefreshToken:
         )
         assert response.status_code == 401
 
+    @pytest.mark.asyncio
+    async def test_refresh_fail_open_when_redis_down_and_fail_closed_false(
+        self, client: AsyncClient, test_user: User, test_user_profile
+    ):
+        """
+        A1 (fail-open): TOKEN_REVOCATION_FAIL_CLOSED=False + Redis fora deve
+        CONTINUAR emitindo tokens (modo disponibilidade).
+        """
+        from unittest.mock import AsyncMock, patch
+
+        login_resp = await client.post(
+            "/api/v1/auth/login",
+            data={"username": "user@test.com", "password": VALID_TEST_PASSWORD},
+        )
+        assert login_resp.status_code == 200
+        refresh_token = login_resp.json()["refresh_token"]
+
+        # Simula Redis completamente fora — patch no módulo core onde é definido e
+        # de onde o service importa localmente.
+        broken_redis = AsyncMock()
+        broken_redis.get = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+        with (
+            patch("app.core.redis.get_redis", return_value=broken_redis),
+            patch("app.modules.auth.service.settings") as mock_settings,
+        ):
+            mock_settings.TOKEN_REVOCATION_FAIL_CLOSED = False
+            mock_settings.REFRESH_TOKEN_EXPIRE_DAYS = 7
+            mock_settings.ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+            response = await client.post(
+                "/api/v1/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        # Deve ter passado (fail-open = modo disponibilidade)
+        assert response.status_code == 200, response.text
+        assert "access_token" in response.json()
+
+    @pytest.mark.asyncio
+    async def test_refresh_fail_closed_when_redis_down(
+        self, client: AsyncClient, test_user: User, test_user_profile
+    ):
+        """
+        A1 (fail-closed): TOKEN_REVOCATION_FAIL_CLOSED=True + Redis fora deve
+        NEGAR o refresh (401) — mesma postura do access token em security.py.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        login_resp = await client.post(
+            "/api/v1/auth/login",
+            data={"username": "user@test.com", "password": VALID_TEST_PASSWORD},
+        )
+        assert login_resp.status_code == 200
+        refresh_token = login_resp.json()["refresh_token"]
+
+        # Simula Redis completamente fora — patch no módulo core onde é definido.
+        broken_redis = AsyncMock()
+        broken_redis.get = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+        with (
+            patch("app.core.redis.get_redis", return_value=broken_redis),
+            patch("app.modules.auth.service.settings") as mock_settings,
+        ):
+            mock_settings.TOKEN_REVOCATION_FAIL_CLOSED = True
+            mock_settings.REFRESH_TOKEN_EXPIRE_DAYS = 7
+            mock_settings.ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+            response = await client.post(
+                "/api/v1/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        # Deve ter negado (fail-closed = segurança sobre disponibilidade)
+        assert response.status_code == 401, response.text
+
 
 class TestChangePassword:
     """Tests for change password endpoint."""
@@ -234,45 +310,25 @@ class TestLogout:
         assert "sucesso" in response.json()["message"].lower()
 
 
-class TestAccountLockout:
-    """Tests for account lockout mechanism after failed login attempts."""
+class TestNoAccountLockout:
+    """Login must NOT lock the account after repeated failed attempts."""
 
     @pytest.mark.asyncio
-    async def test_account_locks_after_max_attempts(
-        self, client: AsyncClient, test_user: User, db_session
+    async def test_login_succeeds_after_many_failed_attempts(
+        self, client: AsyncClient, test_user: User, test_user_profile, db_session
     ):
-        """Account should lock after MAX_LOGIN_ATTEMPTS failed attempts."""
-        # Make multiple failed login attempts (default is 5)
-        for _ in range(5):
+        """Correct password must work even after several failed attempts."""
+        for _ in range(6):
             await client.post(
                 "/api/v1/auth/login",
                 data={"username": "user@test.com", "password": "wrongpass"},
             )
 
-        # Next attempt should return account locked error
         response = await client.post(
             "/api/v1/auth/login",
             data={"username": "user@test.com", "password": VALID_TEST_PASSWORD},
         )
-        assert response.status_code in [401, 423]  # 423 is Locked
-        assert "bloqueada" in response.json()["detail"].lower() or "locked" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_locked_user_cannot_login(
-        self, client: AsyncClient, test_user: User, db_session
-    ):
-        """Locked user cannot login even with correct password."""
-        from datetime import UTC, datetime, timedelta
-
-        # Manually lock the user
-        test_user.locked_until = datetime.now(UTC) + timedelta(minutes=30)
-        await db_session.commit()
-
-        response = await client.post(
-            "/api/v1/auth/login",
-            data={"username": "user@test.com", "password": VALID_TEST_PASSWORD},
-        )
-        assert response.status_code in [401, 423]
+        assert response.status_code == 200, response.json()
 
 
 class TestInactiveUser:
@@ -466,16 +522,32 @@ class TestForgotPassword:
     async def test_forgot_password_existing_email(
         self, client: AsyncClient, test_user: User
     ):
-        """Existing email should return generic message without revealing token."""
-        response = await client.post(
-            "/api/v1/auth/forgot-password",
-            json={"email": "user@test.com"},
-        )
+        """Existing email enfileira e-mail de reset e retorna mensagem genérica."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_redis_client = AsyncMock()
+        mock_redis_client.setex = AsyncMock()
+
+        with (
+            patch("app.core.redis.get_redis", return_value=mock_redis_client),
+            patch("app.workers.tasks.send_transactional_email.delay") as mock_delay,
+        ):
+            response = await client.post(
+                "/api/v1/auth/forgot-password",
+                json={"email": "user@test.com"},
+            )
+
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
         assert "dev_token" not in data
         assert "dev_user_id" not in data
+
+        # E-mail de reset foi enfileirado com o link do frontend (token não vaza na resposta)
+        mock_delay.assert_called_once()
+        kwargs = mock_delay.call_args.kwargs
+        assert kwargs["to"] == "user@test.com"
+        assert "/reset-password?token=" in kwargs["text"]
 
 
 class TestResetPassword:

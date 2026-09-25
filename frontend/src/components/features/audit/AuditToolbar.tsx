@@ -9,6 +9,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import { AUDIT_ACTION_LABELS, AUDIT_RESOURCE_LABELS } from '@/constants/audit';
 import { AUDIT_ACTIONS, AUDIT_RESOURCE_TYPES } from '@/types/audit';
 import type { AuditLogFilters } from '@/types/audit';
 
@@ -16,37 +17,6 @@ interface AuditToolbarProps {
     filters: AuditLogFilters;
     onChange: (filters: AuditLogFilters) => void;
 }
-
-const ACTION_LABELS: Record<string, string> = {
-    login: 'Login',
-    logout: 'Logout',
-    password_reset: 'Reset de Senha',
-    create: 'Criar',
-    update: 'Atualizar',
-    delete: 'Excluir',
-    activate: 'Ativar',
-    deactivate: 'Desativar',
-    status_change: 'Mudança de Status',
-    verify: 'Verificar',
-    user_created: 'Usuário Criado',
-    user_updated: 'Usuário Atualizado',
-    user_deleted: 'Usuário Excluído',
-    user_activated: 'Usuário Ativado',
-    user_deactivated: 'Usuário Desativado',
-    role_changed: 'Role Alterado',
-};
-
-const RESOURCE_LABELS: Record<string, string> = {
-    auth: 'Autenticação',
-    user: 'Usuário',
-    employee: 'Funcionário',
-    consultant: 'Consultor',
-    service_order: 'Ordem de Serviço',
-    store: 'Loja',
-    access_profile: 'Perfil de Acesso',
-    film_type: 'Tipo de Película',
-    film_roll: 'Bobina',
-};
 
 export function AuditToolbar({ filters, onChange }: AuditToolbarProps) {
     const hasFilters =
@@ -81,7 +51,7 @@ export function AuditToolbar({ filters, onChange }: AuditToolbarProps) {
                         <SelectItem value="__all__">Todas as ações</SelectItem>
                         {AUDIT_ACTIONS.map((a) => (
                             <SelectItem key={a} value={a}>
-                                {ACTION_LABELS[a] ?? a}
+                                {AUDIT_ACTION_LABELS[a] ?? a}
                             </SelectItem>
                         ))}
                     </SelectContent>
@@ -102,7 +72,7 @@ export function AuditToolbar({ filters, onChange }: AuditToolbarProps) {
                         <SelectItem value="__all__">Todos os tipos</SelectItem>
                         {AUDIT_RESOURCE_TYPES.map((t) => (
                             <SelectItem key={t} value={t}>
-                                {RESOURCE_LABELS[t] ?? t}
+                                {AUDIT_RESOURCE_LABELS[t] ?? t}
                             </SelectItem>
                         ))}
                     </SelectContent>

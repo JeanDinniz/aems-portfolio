@@ -46,9 +46,34 @@ jest.mock('@/hooks/useMyPermissions', () => ({
     useCanEdit: () => mockCanEdit,
 }));
 
+let mockSelectedStoreId: number | null = 1;
 jest.mock('@/stores/store.store', () => ({
     useStoreStore: (selector: (s: { selectedStoreId: number | null }) => unknown) =>
-        selector({ selectedStoreId: 1 }),
+        selector({ selectedStoreId: mockSelectedStoreId }),
+}));
+
+// ─── exportShare + Toast (Carros para fazer PDF) ──────────────────────────────
+const mockDownloadPdf = jest.fn().mockResolvedValue(undefined);
+jest.mock('@/utils/exportShare', () => ({
+    downloadAndSharePdf: (...args: unknown[]) => mockDownloadPdf(...args),
+}));
+
+const mockToastError = jest.fn();
+jest.mock('@/components/ui/Toast', () => {
+    const actual = jest.requireActual('@/components/ui/Toast');
+    return {
+        ...actual,
+        useToast: () => ({
+            success: jest.fn(),
+            error: mockToastError,
+            info: jest.fn(),
+            show: jest.fn(),
+        }),
+    };
+});
+
+jest.mock('@/lib/api-error', () => ({
+    getApiErrorMessage: (_e: unknown, fallback: string) => fallback,
 }));
 
 const metrics = {
@@ -125,6 +150,7 @@ beforeEach(() => {
     mockListState.isLoading = false;
     mockListState.isError = false;
     mockCanEdit = false;
+    mockSelectedStoreId = 1;
     lastFilters = null;
 });
 
@@ -228,5 +254,72 @@ describe('SchedulingListScreen — busca e navegação', () => {
         mockCanEdit = true;
         const { getByText } = await renderScreen();
         expect(getByText('Novo')).toBeTruthy();
+    });
+});
+
+describe('SchedulingListScreen — Carros para fazer (PDF)', () => {
+    it('exporta reusando a loja global; sem filtros só envia store_id', async () => {
+        mockSelectedStoreId = 1;
+        const { getByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Carros para fazer (PDF)'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        const arg = mockDownloadPdf.mock.calls[0][0];
+        expect(arg.path).toBe('/scheduling/export/carros-para-fazer');
+        expect(arg.params.store_id).toBe(1);
+        // Sem filtros aplicados na tela: campos ficam undefined (não enviados).
+        expect(arg.params.department).toBeUndefined();
+        expect(arg.params.category).toBeUndefined();
+        expect(arg.params.date_from).toBeUndefined();
+        expect(arg.params.date_to).toBeUndefined();
+        expect(arg.params.search).toBeUndefined();
+        expect(arg.filename).toMatch(/^carros-para-fazer-\d{4}-\d{2}-\d{2}\.pdf$/);
+    });
+
+    it('reusa a busca da tela no param search', async () => {
+        jest.useFakeTimers();
+        const { getByLabelText, getByPlaceholderText } = await renderScreen();
+
+        // Digita na busca e avança o debounce → vira `search`.
+        await act(async () => {
+            fireEvent.changeText(getByPlaceholderText('Buscar por placa ou O.S.'), 'ABC1D23');
+        });
+        await act(async () => {
+            jest.advanceTimersByTime(500);
+        });
+        jest.useRealTimers();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Carros para fazer (PDF)'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        expect(mockDownloadPdf.mock.calls[0][0].params.search).toBe('ABC1D23');
+    });
+
+    it('com "Todas as lojas" (store null) não envia store_id', async () => {
+        mockSelectedStoreId = null;
+        const { getByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Carros para fazer (PDF)'));
+        });
+
+        await waitFor(() => expect(mockDownloadPdf).toHaveBeenCalledTimes(1));
+        expect(mockDownloadPdf.mock.calls[0][0].params.store_id).toBeUndefined();
+    });
+
+    it('em erro do export mostra toast de erro', async () => {
+        mockDownloadPdf.mockRejectedValueOnce(new Error('boom'));
+        const { getByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Carros para fazer (PDF)'));
+        });
+
+        await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
     });
 });

@@ -3,13 +3,16 @@ import { consultantsService } from '@/services/api/consultants.service';
 import { toast } from '@/hooks/use-toast';
 import type { CreateConsultantPayload, UpdateConsultantPayload, ConsultantFilters } from '@/types/consultant.types';
 import { getApiErrorMessage } from '@/lib/api-error';
+import { CATALOG_STALE_TIME, CATALOG_GC_TIME, consultantsKey } from '@/lib/catalog-queries';
 
 export function useConsultants(filters?: ConsultantFilters, page = 1, pageSize = 20) {
     const queryClient = useQueryClient();
 
     const { data, isLoading, error } = useQuery({
-        queryKey: ['consultants', filters, page, pageSize],
+        queryKey: consultantsKey(filters, page, pageSize),
         queryFn: () => consultantsService.list(filters, page, pageSize),
+        staleTime: CATALOG_STALE_TIME,
+        gcTime: CATALOG_GC_TIME,
     });
 
     const createMutation = useMutation({

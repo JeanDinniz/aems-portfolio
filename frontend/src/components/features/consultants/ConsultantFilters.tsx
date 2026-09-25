@@ -40,7 +40,7 @@ export function ConsultantFilters({ filters, onFiltersChange }: ConsultantFilter
                         <SelectItem value="all" className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">Todas as lojas</SelectItem>
                         {stores?.map((store) => (
                             <SelectItem key={store.id} value={store.id.toString()} className="focus:bg-gray-100 dark:focus:bg-zinc-700 focus:text-[#111111] dark:focus:text-white">
-                                {store.code} - {store.name}
+                                {store.name}
                             </SelectItem>
                         ))}
                     </SelectContent>

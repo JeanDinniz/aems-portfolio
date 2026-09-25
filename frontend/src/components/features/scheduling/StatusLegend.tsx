@@ -7,25 +7,27 @@ const ALL_STATUSES: AppointmentDisplayStatus[] = [
   'atencao',
   'agendado',
   'em_execucao',
+  'duplicidade',
   'finalizado',
   'cancelado',
 ]
 
 interface StatusLegendProps {
-  selectedStatus?: AppointmentDisplayStatus | null
+  selectedStatuses?: AppointmentDisplayStatus[]
   onStatusClick?: (status: AppointmentDisplayStatus) => void
 }
 
-export function StatusLegend({ selectedStatus, onStatusClick }: StatusLegendProps) {
+export function StatusLegend({ selectedStatuses = [], onStatusClick }: StatusLegendProps) {
   const isInteractive = !!onStatusClick
+  const hasSelection = selectedStatuses.length > 0
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
       {ALL_STATUSES.map((status) => {
         const config = APPOINTMENT_STATUS_CONFIG[status]
-        const isSelected = selectedStatus === status
-        const isSecondary = status === 'finalizado' || status === 'cancelado'
-        const isDimmed = !isSelected && isSecondary && !selectedStatus
+        const isSelected = selectedStatuses.includes(status)
+        const isSecondary = status === 'finalizado' || status === 'cancelado' || status === 'duplicidade'
+        const isDimmed = !isSelected && isSecondary && !hasSelection
 
         if (isInteractive) {
           return (

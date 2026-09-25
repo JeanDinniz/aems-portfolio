@@ -11,6 +11,7 @@ import { useNotifications, useMarkRead, useMarkAllRead } from '@/hooks/useNotifi
 import { useTheme } from '@/theme';
 import { getNotificationTypeConfig, getNotificationTarget } from '@/constants/notifications';
 import { formatRelativeTime } from '@/utils/formatDate';
+import { parseRelatedUrl } from '@/utils/relatedUrl';
 import type { AppNotification } from '@/types/notification.types';
 import type { AppStackScreenProps } from '@/navigation/types';
 
@@ -46,6 +47,15 @@ export function NotificationsScreen({ navigation }: AppStackScreenProps<'Notific
     const handlePress = useCallback(
         (item: AppNotification) => {
             if (!item.is_read) markRead.mutate(item.id);
+            // related_url é o mais específico: abre o recurso exato (ex.: bobina).
+            const related = parseRelatedUrl(item.related_url);
+            if (related?.type === 'roll') {
+                navigation.navigate('Tabs', {
+                    screen: 'Inventory',
+                    params: { screen: 'RollDetail', params: { id: related.id } },
+                });
+                return;
+            }
             const target = getNotificationTarget(item.type);
             if (target) {
                 navigation.navigate('Tabs', { screen: target.tab });

@@ -213,10 +213,16 @@ global.mockManipulatorState = {
 };
 jest.mock('expo-image-manipulator', () => {
   const state = global.mockManipulatorState;
+  state.cropCalls = state.cropCalls ?? [];
   const makeContext = (uri) => {
     const ctx = {
       resize: (target) => {
         state.resizeCalls.push(target);
+        return ctx;
+      },
+      // crop() usado pelo pipeline de embedding facial (recorte do bounding box).
+      crop: (rect) => {
+        state.cropCalls.push(rect);
         return ctx;
       },
       renderAsync: async () => {
@@ -251,6 +257,7 @@ jest.mock('expo-image-manipulator', () => {
 global.mockFileSize = 500 * 1024; // 500 KB (dentro do limite de 10 MB)
 global.mockFileSystemFiles = new Set(); // URIs que "existem" (copy/create os populam)
 global.mockFileWrites = []; // chamadas de File.write (exportação de Excel)
+global.mockFileBytes = null; // Uint8Array devolvido por File.bytes() (embedding facial)
 jest.mock('expo-file-system', () => {
   const join = (...parts) =>
     parts
@@ -275,6 +282,11 @@ jest.mock('expo-file-system', () => {
     copy(dest) {
       const destUri = typeof dest === 'string' ? dest : dest.uri;
       global.mockFileSystemFiles.add(destUri);
+    }
+    // bytes() — leitura crua (v19), usada pelo pipeline de embedding facial.
+    // Devolve global.mockFileBytes (Uint8Array) para os testes controlarem.
+    async bytes() {
+      return global.mockFileBytes ?? new Uint8Array();
     }
     // write(content, { encoding }) — usado pela exportação de Excel (v19).
     // Registra a chamada em global.mockFileWrites para os testes inspecionarem.
@@ -423,6 +435,21 @@ jest.mock('expo-local-authentication', () => ({
   authenticateAsync: jest.fn(async () => global.mockBiometrics.authenticateResult),
 }));
 
+// expo-location — Ponto Eletrônico. `global.mockLocation` controla a permissão
+// e a posição retornada; os testes forçam negação/erro sobrescrevendo os mocks.
+global.mockLocation = {
+  permission: { granted: true, canAskAgain: true, status: 'granted' },
+  position: {
+    coords: { latitude: -23.5, longitude: -46.6, accuracy: 12 },
+  },
+};
+jest.mock('expo-location', () => ({
+  __esModule: true,
+  Accuracy: { Lowest: 1, Low: 2, Balanced: 3, High: 4, Highest: 5, BestForNavigation: 6 },
+  requestForegroundPermissionsAsync: jest.fn(async () => global.mockLocation.permission),
+  getCurrentPositionAsync: jest.fn(async () => global.mockLocation.position),
+}));
+
 // expo-camera — componentes/permissões mockados (não usado direto nos testes,
 // mas evita carregar o nativo se algum módulo importar).
 jest.mock('expo-camera', () => {
@@ -470,6 +497,12 @@ jest.mock('@gorhom/bottom-sheet', () => {
   };
 });
 
+// react-native-keyboard-controller — mock oficial da lib (KeyboardProvider,
+// KeyboardAwareScrollView etc. viram no-ops/passthrough; nenhum nativo carrega).
+jest.mock('react-native-keyboard-controller', () =>
+  require('react-native-keyboard-controller/jest')
+);
+
 // @shopify/flash-list — em jsdom o FlashList nem sempre mede e renderiza itens.
 // Mapeamos data → renderItem dentro de uma View simples para que os itens
 // apareçam na árvore de teste.
@@ -509,3 +542,45 @@ jest.mock('@shopify/flash-list', () => {
   };
   return { __esModule: true, FlashList };
 });
+
+// ─── Reconhecimento facial do Ponto (Fase 1) ────────────────────────────────
+// react-native-fast-tflite — módulo nativo (JSI). Mock controlável por
+// global.mockTflite: `loadThrows` simula build sem o módulo; `output` é o
+// embedding devolvido por model.run() (como ArrayBuffer de Float32).
+global.mockTflite = {
+  loadThrows: false,
+  runThrows: false,
+  output: new Float32Array(512).fill(0.1),
+};
+jest.mock('react-native-fast-tflite', () => ({
+  __esModule: true,
+  loadTensorflowModel: jest.fn(async () => {
+    if (global.mockTflite.loadThrows) throw new Error('native module unavailable');
+    return {
+      inputs: [{ shape: [1, 160, 160, 3], dataType: 'float32' }],
+      outputs: [{ shape: [1, 512], dataType: 'float32' }],
+      run: jest.fn(async () => {
+        if (global.mockTflite.runThrows) throw new Error('inference failed');
+        // Cópia defensiva (o pipeline faz Float32Array(out)).
+        const src = global.mockTflite.output;
+        return [src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength)];
+      }),
+    };
+  }),
+}));
+
+// @react-native-ml-kit/face-detection — detecção de rosto. global.mockFaceDetect
+// controla os rostos devolvidos (frames {left,top,width,height}).
+global.mockFaceDetect = {
+  faces: [{ frame: { left: 40, top: 60, width: 200, height: 200 } }],
+  detectThrows: false,
+};
+jest.mock('@react-native-ml-kit/face-detection', () => ({
+  __esModule: true,
+  default: {
+    detect: jest.fn(async () => {
+      if (global.mockFaceDetect.detectThrows) throw new Error('ml-kit unavailable');
+      return global.mockFaceDetect.faces;
+    }),
+  },
+}));

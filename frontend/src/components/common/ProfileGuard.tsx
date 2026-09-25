@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import type { SubModule } from '@/types/accessProfile.types';
 
 interface ProfileGuardProps {
@@ -22,7 +23,7 @@ export function ProfileGuard({
     fallback = null,
 }: ProfileGuardProps) {
     const isOwnerFn = useAuthStore((s) => s.isOwner);
-    const hasPermissionFn = useAuthStore((s) => s.hasPermission);
+    const hasPermissionFn = useHasPermission();
 
     if (isOwnerFn()) return <>{children}</>;
     if (hasPermissionFn(sub_module, action)) return <>{children}</>;

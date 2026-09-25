@@ -5,6 +5,7 @@ VehicleModel router - API endpoints for vehicle model management.
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import check_profile_permission
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse, get_pagination_params
@@ -24,9 +25,7 @@ async def list_vehicle_models(
     db: AsyncSession = Depends(get_db),
     pagination: dict = Depends(get_pagination_params),
     current_user=Depends(get_current_user),
-    brand_id: int | None = Query(
-        None, description="ID da marca (obrigatório para Supervisor/Owner)"
-    ),
+    brand_id: int | None = Query(None, description="ID da marca (filtro opcional)"),
     active_only: bool = Query(True, description="Retornar apenas modelos ativos"),
 ):
     """
@@ -57,7 +56,7 @@ async def list_vehicle_models(
 async def create_vehicle_model(
     data: VehicleModelCreate,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(check_profile_permission("models", "can_edit")),
 ):
     """
     Cria um novo modelo de veículo para a marca.
@@ -72,7 +71,7 @@ async def update_vehicle_model(
     model_id: int,
     data: VehicleModelUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(check_profile_permission("models", "can_edit")),
     brand_id: int = Query(..., description="ID da marca dona do modelo"),
 ):
     """
@@ -86,7 +85,7 @@ async def update_vehicle_model(
 async def delete_vehicle_model(
     model_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(check_profile_permission("models", "can_delete")),
     brand_id: int = Query(..., description="ID da marca dona do modelo"),
 ):
     """
@@ -100,7 +99,7 @@ async def delete_vehicle_model(
 async def hard_delete_vehicle_model(
     model_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(check_profile_permission("models", "can_delete")),
     brand_id: int = Query(..., description="ID da marca dona do modelo"),
 ):
     """

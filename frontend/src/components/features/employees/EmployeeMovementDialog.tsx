@@ -61,6 +61,21 @@ const schema = z.object({
     // Shared
     notes: z.string().optional(),
     attachment_url: z.string().optional(),
+}).superRefine((data, ctx) => {
+    if (data.type === 'fault' && (!data.fault_date || data.fault_date.trim() === '')) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Data da falta é obrigatória',
+            path: ['fault_date'],
+        });
+    }
+    if (data.type === 'absence' && (!data.absence_start || data.absence_start.trim() === '')) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Data de início é obrigatória',
+            path: ['absence_start'],
+        });
+    }
 });
 
 type FormData = z.infer<typeof schema>;
@@ -239,7 +254,7 @@ export function EmployeeMovementDialog({ employee, open, onOpenChange }: Employe
                                         <SelectContent>
                                             {allStores.filter((s) => s.id !== employee.store_id).map((store) => (
                                                 <SelectItem key={store.id} value={store.id.toString()}>
-                                                    {store.code} - {store.name}
+                                                    {store.name}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
@@ -297,8 +312,13 @@ export function EmployeeMovementDialog({ employee, open, onOpenChange }: Employe
                                 </div>
                                 <div className="space-y-2 col-span-1" />
                                 <div className="space-y-2">
-                                    <label htmlFor="mov-abs-start" className="text-sm font-medium">Data Inicio</label>
+                                    <label htmlFor="mov-abs-start" className="text-sm font-medium">
+                                        Data Inicio <span className="text-red-500">*</span>
+                                    </label>
                                     <Input id="mov-abs-start" type="date" {...register('absence_start')} />
+                                    {errors.absence_start && (
+                                        <p className="text-sm text-red-500">{errors.absence_start.message}</p>
+                                    )}
                                 </div>
                                 <div className="space-y-2">
                                     <label htmlFor="mov-abs-return" className="text-sm font-medium">Data Retorno</label>
@@ -334,8 +354,13 @@ export function EmployeeMovementDialog({ employee, open, onOpenChange }: Employe
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <label htmlFor="mov-fault-date" className="text-sm font-medium">Data</label>
+                                    <label htmlFor="mov-fault-date" className="text-sm font-medium">
+                                        Data <span className="text-red-500">*</span>
+                                    </label>
                                     <Input id="mov-fault-date" type="date" {...register('fault_date')} />
+                                    {errors.fault_date && (
+                                        <p className="text-sm text-red-500">{errors.fault_date.message}</p>
+                                    )}
                                 </div>
                                 <div className="space-y-2">
                                     <label htmlFor="mov-fault-days" className="text-sm font-medium">Qtd Dias</label>

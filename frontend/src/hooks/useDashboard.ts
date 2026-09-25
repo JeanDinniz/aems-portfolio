@@ -45,53 +45,11 @@ export function useDashboardDepartmentBreakdown(params: DashboardParams) {
 
 export function useDashboardEmployeesRanking(
   params: DashboardParams,
-  department?: string
+  departments?: string[]
 ) {
   return useQuery({
-    queryKey: ['dashboard', 'employees', params, department],
-    queryFn: () => dashboardService.getEmployeesRanking({ ...params, department, limit: 20 }),
-    staleTime: STALE_TIME,
-    enabled: !!params.start_date && !!params.end_date,
-  });
-}
-
-export function useDashboardConsultantsRanking(params: DashboardParams) {
-  return useQuery({
-    queryKey: ['dashboard', 'consultants', params],
-    queryFn: () => dashboardService.getConsultantsRanking({ ...params, limit: 20 }),
-    staleTime: STALE_TIME,
-    enabled: !!params.start_date && !!params.end_date,
-  });
-}
-
-export function useDashboardSla(params: DashboardParams) {
-  return useQuery({
-    queryKey: ['dashboard', 'sla', params],
-    queryFn: () => dashboardService.getSla(params),
-    staleTime: STALE_TIME,
-    enabled: !!params.start_date && !!params.end_date,
-  });
-}
-
-export function useDashboardQueue() {
-  return useQuery({
-    queryKey: ['dashboard', 'queue'],
-    queryFn: () => dashboardService.getQueue(),
-    staleTime: STALE_TIME,
-    // O WebSocket (semaphore_updated) é o invalidador primário; o interval
-    // fica só como fallback para conexões WS caídas silenciosamente.
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-  });
-}
-
-export function useDashboardTimeseries(
-  params: DashboardParams,
-  granularity: 'day' | 'week' | 'month'
-) {
-  return useQuery({
-    queryKey: ['dashboard', 'timeseries', params, granularity],
-    queryFn: () => dashboardService.getTimeseries({ ...params, granularity }),
+    queryKey: ['dashboard', 'employees', params, departments],
+    queryFn: () => dashboardService.getEmployeesRanking({ ...params, departments, limit: 20 }),
     staleTime: STALE_TIME,
     enabled: !!params.start_date && !!params.end_date,
   });
@@ -115,5 +73,26 @@ export function useDashboardFilmPpfRanking(params: DashboardParams) {
     queryFn: () => dashboardService.getFilmPpfRanking(params),
     staleTime: STALE_TIME,
     enabled: !!params.start_date && !!params.end_date,
+  });
+}
+
+export function useDashboardDealershipsRanking(params: DashboardParams) {
+  return useQuery({
+    queryKey: ['dashboard', 'dealerships', params],
+    queryFn: () => dashboardService.getDealershipsRanking({ ...params, limit: 20 }),
+    staleTime: STALE_TIME,
+    enabled: !!params.start_date && !!params.end_date,
+  });
+}
+
+/**
+ * Previsão de faturamento do mês corrente (run-rate por dias úteis).
+ * Ignora o filtro de período de propósito — só a loja se aplica.
+ */
+export function useDashboardRevenueForecast(storeId: number | null) {
+  return useQuery({
+    queryKey: ['dashboard', 'revenue-forecast', storeId],
+    queryFn: () => dashboardService.getRevenueForecast(storeId ?? undefined),
+    staleTime: STALE_TIME,
   });
 }

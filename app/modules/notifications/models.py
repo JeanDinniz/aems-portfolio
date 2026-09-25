@@ -34,6 +34,9 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Deep-link opcional (ex.: "/estoque?roll=42") para o front/app rotear ao abrir
+    related_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Estado
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_galpon: Mapped[bool] = mapped_column(

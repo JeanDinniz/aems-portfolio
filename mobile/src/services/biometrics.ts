@@ -93,3 +93,39 @@ export async function authenticate(reason: string): Promise<boolean> {
         return false;
     }
 }
+
+// ─── Supressão temporária do re-bloqueio (app-lock) ──────────────────────────
+/**
+ * Alguns fluxos abrem uma ACTIVITY nativa que joga o app para background e volta
+ * (câmera, galeria, folha de compartilhar). Isso NÃO é o usuário saindo do app,
+ * mas o `BiometricGate` re-bloquearia ao voltar do background — fazendo a tela de
+ * digital aparecer, p.ex., logo após confirmar uma foto. Estas funções permitem
+ * que esses fluxos suprimam o re-bloqueio durante o vaivém.
+ *
+ * Uso: `suppressAppLock()` ANTES de abrir a activity e `releaseAppLock()` no
+ * `finally`. `isAppLockSuppressed()` é lido pelo `BiometricGate`. A supressão é
+ * mantida por um curto período após liberar, porque o evento `active` costuma
+ * chegar logo DEPOIS da activity fechar.
+ */
+let appLockSuppressed = false;
+let appLockReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function suppressAppLock(): void {
+    appLockSuppressed = true;
+    if (appLockReleaseTimer) {
+        clearTimeout(appLockReleaseTimer);
+        appLockReleaseTimer = null;
+    }
+}
+
+export function releaseAppLock(delayMs = 1000): void {
+    if (appLockReleaseTimer) clearTimeout(appLockReleaseTimer);
+    appLockReleaseTimer = setTimeout(() => {
+        appLockSuppressed = false;
+        appLockReleaseTimer = null;
+    }, delayMs);
+}
+
+export function isAppLockSuppressed(): boolean {
+    return appLockSuppressed;
+}

@@ -16,6 +16,13 @@ export interface SelectOption<T extends string | number = string | number> {
   label: string;
   /** Cor opcional (chip/ponto) ao lado do rótulo — ex.: cor de departamento. */
   color?: string;
+  /**
+   * Item travado: renderiza com cadeado, não seleciona. Tocar dispara
+   * `onDisabledPress` (ex.: bobina lacrada → abrir para uso), se fornecido.
+   */
+  disabled?: boolean;
+  /** Legenda secundária abaixo do rótulo (ex.: "lacrada — abra antes de usar"). */
+  hint?: string;
 }
 
 export interface SelectRef {
@@ -26,6 +33,8 @@ export interface SelectRef {
 interface BaseProps<T extends string | number> {
   title?: string;
   options: SelectOption<T>[];
+  /** Chamado ao tocar um item `disabled` (não altera a seleção). */
+  onDisabledPress?: (value: T) => void;
 }
 
 interface SingleSelectProps<T extends string | number> extends BaseProps<T> {
@@ -104,8 +113,16 @@ function SelectInner<T extends string | number>(
   return (
     <BottomSheetModal
       ref={modalRef}
+      // `stackBehavior="push"` (em vez do default 'switch'): quando este Select é
+      // aberto por cima de um Sheet já presente (ex.: CreateWithdrawalSheet), o
+      // 'switch' MINIMIZA o Sheet pai — e como os Selects são renderizados DENTRO
+      // do conteúdo portalizado do pai, minimizar o pai desmonta o portal do filho
+      // e o Select "fecha sozinho" antes de terminar de abrir. Com 'push' o pai
+      // permanece montado e o Select empilha por cima.
+      stackBehavior="push"
       enableDynamicSizing={false}
       snapPoints={snapPoints}
+      bottomInset={insets.bottom}
       backdropComponent={renderBackdrop}
       handleIndicatorStyle={{ backgroundColor: isDark ? '#555555' : '#D0D5DD' }}
       backgroundStyle={{ backgroundColor: colors.surface }}
@@ -119,10 +136,37 @@ function SelectInner<T extends string | number>(
           `enableDynamicSizing`. Com BottomSheetFlatList (virtualizado) a sheet
           colapsava para a altura do título e a lista ficava abaixo da tela. */}
       <BottomSheetScrollView
-        contentContainerStyle={{ paddingBottom: insets.bottom + 12, paddingTop: 4 }}
+        contentContainerStyle={{ paddingBottom: 12, paddingTop: 4 }}
       >
         {options.map((item) => {
           const selected = isSelected(item.value);
+          if (item.disabled) {
+            // Item travado: cadeado + legenda, não seleciona. Tocar dispara
+            // onDisabledPress (ex.: abrir bobina lacrada) quando fornecido.
+            return (
+              <Pressable
+                key={String(item.value)}
+                accessibilityRole="button"
+                accessibilityLabel={item.label}
+                accessibilityState={{ disabled: true }}
+                disabled={!props.onDisabledPress}
+                onPress={() => props.onDisabledPress?.(item.value)}
+                className="min-h-[48px] flex-row items-center gap-3 px-5 py-3 active:bg-neutral-50 dark:active:bg-dark-elevated"
+              >
+                <Ionicons name="lock-closed" size={16} color={colors.textMuted} />
+                <View className="flex-1">
+                  <Text className="font-sans text-base text-neutral-400 dark:text-dark-text-muted">
+                    {item.label}
+                  </Text>
+                  {item.hint ? (
+                    <Text className="font-sans text-xs text-neutral-400 dark:text-dark-text-muted">
+                      {item.hint}
+                    </Text>
+                  ) : null}
+                </View>
+              </Pressable>
+            );
+          }
           return (
             <Pressable
               key={String(item.value)}

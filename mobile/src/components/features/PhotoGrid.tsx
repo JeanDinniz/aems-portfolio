@@ -2,6 +2,8 @@ import { Pressable, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 
 import { EmptyState } from '@/components/ui/EmptyState';
+import { resolveMediaUrl } from '@/lib/resolveMediaUrl';
+import { mediaHeaders } from '@/lib/mediaSource';
 
 /**
  * OS-04 — Grade de miniaturas das fotos da O.S.
@@ -31,15 +33,20 @@ export function PhotoGrid({ photos, damagePhotos = [], onPressPhoto }: PhotoGrid
         );
     }
 
+    // Fotos vêm de `/uploads` (protegido/host local em dev). Resolve aqui para que
+    // tanto as miniaturas quanto o viewer (via onPressPhoto) recebam URLs válidas.
+    const resolvedPhotos = photos.map((uri) => resolveMediaUrl(uri));
+    const resolvedDamagePhotos = damagePhotos.map((uri) => resolveMediaUrl(uri));
+
     return (
         <View className="gap-4">
-            {photos.length > 0 ? (
-                <Section title="Fotos da O.S" photos={photos} onPressPhoto={onPressPhoto} />
+            {resolvedPhotos.length > 0 ? (
+                <Section title="Fotos da O.S" photos={resolvedPhotos} onPressPhoto={onPressPhoto} />
             ) : null}
-            {damagePhotos.length > 0 ? (
+            {resolvedDamagePhotos.length > 0 ? (
                 <Section
                     title="Fotos de avaria"
-                    photos={damagePhotos}
+                    photos={resolvedDamagePhotos}
                     onPressPhoto={onPressPhoto}
                 />
             ) : null}
@@ -69,7 +76,7 @@ function Section({ title, photos, onPressPhoto }: SectionProps) {
                         className="h-24 w-24 overflow-hidden rounded-lg bg-neutral-100 active:opacity-80 dark:bg-dark-elevated"
                     >
                         <Image
-                            source={{ uri }}
+                            source={{ uri, headers: mediaHeaders() }}
                             style={{ width: '100%', height: '100%' }}
                             contentFit="cover"
                             transition={120}

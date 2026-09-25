@@ -5,7 +5,7 @@ import { ConsultantFilters } from '@/components/features/consultants/ConsultantF
 import { CreateConsultantDialog } from '@/components/features/consultants/CreateConsultantDialog';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useDebounce } from '@/hooks/useDebounce';
-import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import apiClient from '@/services/api/client';
 import type { ConsultantFilters as Filters } from '@/types/consultant.types';
 
@@ -15,7 +15,7 @@ export function ConsultantManagementPage() {
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
 
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const canEdit = hasPermission('consultants', 'edit');
     const debouncedSearch = useDebounce(filters.search);
     const { consultants, total, isLoading } = useConsultants(

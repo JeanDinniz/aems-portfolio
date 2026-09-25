@@ -123,7 +123,7 @@ describe('useAuth', () => {
             });
         });
 
-        it('should navigate to dashboard on successful login', async () => {
+        it('should navigate to home on successful login', async () => {
             const { result } = renderHook(() => useAuth(), {
                 wrapper: createWrapper(),
             });
@@ -136,7 +136,7 @@ describe('useAuth', () => {
             });
 
             await waitFor(() => {
-                expect(mockNavigate).toHaveBeenCalledWith('/service-orders');
+                expect(mockNavigate).toHaveBeenCalledWith('/');
             });
         });
 
@@ -183,28 +183,19 @@ describe('useAuth', () => {
             // and show appropriate toast
         });
 
-        it('should handle login errors', async () => {
+        it('should reject and stay unauthenticated on login errors', async () => {
+            // O hook rejeita a promise em credenciais inválidas; a exibição do
+            // erro (toast) é responsabilidade da tela de Login, não do hook.
             const { result } = renderHook(() => useAuth(), {
                 wrapper: createWrapper(),
             });
 
-            try {
-                await result.current.login({
+            await expect(
+                result.current.login({
                     email: 'wrong@example.com',
                     password: 'wrongpassword',
-                });
-            } catch {
-                // Expected - invalid credentials
-            }
-
-            await waitFor(() => {
-                expect(mockToast).toHaveBeenCalledWith(
-                    expect.objectContaining({
-                        title: 'Erro no login',
-                        variant: 'destructive',
-                    })
-                );
-            });
+                })
+            ).rejects.toBeDefined();
 
             expect(result.current.isAuthenticated).toBe(false);
         });
@@ -341,42 +332,7 @@ describe('useAuth', () => {
     });
 
     describe('role-based authentication', () => {
-        it('should authenticate operator user', async () => {
-            const { result } = renderHook(() => useAuth(), {
-                wrapper: createWrapper(),
-            });
-
-            await waitFor(() => {
-                result.current.login({
-                    email: 'test@example.com',
-                    password: 'password123',
-                });
-            });
-
-            await waitFor(() => {
-                expect(result.current.user?.role).toBe('operator');
-            });
-        });
-
-        it('should authenticate supervisor user', async () => {
-            const { result } = renderHook(() => useAuth(), {
-                wrapper: createWrapper(),
-            });
-
-            await waitFor(() => {
-                result.current.login({
-                    email: 'supervisor@example.com',
-                    password: 'password123',
-                });
-            });
-
-            await waitFor(() => {
-                expect(result.current.user?.role).toBe('supervisor');
-                expect(result.current.user?.supervised_store_ids).toEqual([1, 2]);
-            });
-        });
-
-        it('should include store information for operators', async () => {
+        it('should include store information for the logged user', async () => {
             const { result } = renderHook(() => useAuth(), {
                 wrapper: createWrapper(),
             });

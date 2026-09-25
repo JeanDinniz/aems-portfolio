@@ -43,7 +43,10 @@ export async function compressImage(
     ctx.drawImage(bitmap, 0, 0)
     bitmap.close()
 
-    const blob = await canvas.convertToBlob({ type: file.type, quality: options.quality })
+    // Saída sempre em JPEG: o canvas não exporta HEIC (formato padrão do iPhone) e,
+    // quando o arquivo da galeria vem sem MIME (file.type === ''), convertToBlob
+    // cairia em PNG — pesado demais para foto. JPEG cobre todos os casos de origem.
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: options.quality })
     if (!blob) {
         throw new Error('Failed to compress image')
     }

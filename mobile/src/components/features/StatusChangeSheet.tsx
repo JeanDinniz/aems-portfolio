@@ -6,7 +6,7 @@ import { Sheet, type SheetRef } from '@/components/ui/Sheet';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { useToast } from '@/components/ui/Toast';
-import { useUpdateServiceOrderStatus } from '@/hooks/useServiceOrders';
+import { useUndoWrong, useUpdateServiceOrderStatus } from '@/hooks/useServiceOrders';
 import { getApiErrorMessage } from '@/lib/api-error';
 import type { ServiceOrderStatus } from '@/types/service-order.types';
 
@@ -21,7 +21,7 @@ import type { ServiceOrderStatus } from '@/types/service-order.types';
  * Transições do backend (workflows.py), em status FRONTEND (ready → completed):
  *   waiting → doing | ready | wrong
  *   doing   → waiting | ready | wrong
- *   wrong   → waiting
+ *   wrong   → desfazer (undo-wrong: restaura o status anterior, ex.: Finalizado)
  *   ready   → wrong                  (reverter um finalizado)
  *
  * `cancelled` NÃO é transição de status — vai pela rota DELETE (CancelOSSheet).
@@ -49,12 +49,19 @@ interface TransitionOption {
     description: string;
     icon: keyof typeof Ionicons.glyphMap;
     tone: 'brand' | 'neutral' | 'warning';
+    /**
+     * Quando true, a ação NÃO é uma troca de status genérica: chama o endpoint
+     * dedicado `undo-wrong`, que restaura o status anterior ao "Lançado Errado".
+     * `status` aqui é só fallback de exibição.
+     */
+    undoWrong?: boolean;
 }
 
 /**
  * Transições oferecidas no sheet (acompanhamento básico, sem `cancelled`).
  * "Finalizado" (`ready`) é troca de status simples; `ready → wrong` permite
- * reverter um finalizado lançado errado.
+ * reverter um finalizado lançado errado. Sair de `wrong` usa `undo-wrong`
+ * (restaura o status anterior), nunca o `waiting` genérico.
  */
 const TRANSITIONS: Record<ServiceOrderStatus, TransitionOption[]> = {
     waiting: [
@@ -106,10 +113,11 @@ const TRANSITIONS: Record<ServiceOrderStatus, TransitionOption[]> = {
     wrong: [
         {
             status: 'waiting',
-            label: 'Voltar para Aguardando',
-            description: 'Reabrir a O.S. corrigida',
+            label: 'Desfazer Lançado Errado',
+            description: 'Restaura o status anterior (ex.: Finalizado)',
             icon: 'arrow-undo-outline',
             tone: 'brand',
+            undoWrong: true,
         },
     ],
     ready: [
@@ -159,6 +167,7 @@ export const StatusChangeSheet = forwardRef<StatusChangeSheetRef, StatusChangeSh
         const sheetRef = useRef<SheetRef>(null);
         const toast = useToast();
         const updateStatus = useUpdateServiceOrderStatus();
+        const undoWrong = useUndoWrong();
 
         // Passo de confirmação: null = lista de transições; senão = confirmar alvo.
         const [pending, setPending] = useState<TransitionOption | null>(null);
@@ -182,48 +191,65 @@ export const StatusChangeSheet = forwardRef<StatusChangeSheetRef, StatusChangeSh
         const apply = useCallback(async () => {
             if (!pending) return;
             try {
-                await updateStatus.mutateAsync({
-                    id: serviceOrderId,
-                    status: pending.status,
-                    extras: notes.trim() ? { notes: notes.trim() } : undefined,
-                });
-                toast.success(`Status alterado para "${STATUS_LABEL[pending.status]}".`);
+                if (pending.undoWrong) {
+                    await undoWrong.mutateAsync(serviceOrderId);
+                    toast.success('Lançado Errado desfeito — status anterior restaurado.');
+                } else {
+                    await updateStatus.mutateAsync({
+                        id: serviceOrderId,
+                        status: pending.status,
+                        extras: notes.trim() ? { notes: notes.trim() } : undefined,
+                    });
+                    toast.success(`Status alterado para "${STATUS_LABEL[pending.status]}".`);
+                }
                 sheetRef.current?.dismiss();
                 onChanged?.();
             } catch (err) {
                 toast.error(getApiErrorMessage(err as Error, 'Não foi possível alterar o status.'));
             }
-        }, [pending, updateStatus, serviceOrderId, notes, toast, onChanged]);
+        }, [pending, undoWrong, updateStatus, serviceOrderId, notes, toast, onChanged]);
 
-        const isBusy = updateStatus.isPending;
+        const isBusy = updateStatus.isPending || undoWrong.isPending;
 
         return (
             <Sheet ref={sheetRef} title="Alterar status" onDismiss={reset}>
                 {pending ? (
                     // ─── Confirmação ──────────────────────────────────────
                     <View className="gap-3 pb-1">
-                        <Text className="font-sans text-sm text-neutral-600 dark:text-dark-text-muted">
-                            Confirmar mudança de{' '}
-                            <Text className="font-sans-semibold text-neutral-800 dark:text-dark-text">
-                                {STATUS_LABEL[currentStatus]}
-                            </Text>{' '}
-                            para{' '}
-                            <Text className="font-sans-semibold text-neutral-800 dark:text-dark-text">
-                                {STATUS_LABEL[pending.status]}
+                        {pending.undoWrong ? (
+                            <Text className="font-sans text-sm text-neutral-600 dark:text-dark-text-muted">
+                                Desfazer o{' '}
+                                <Text className="font-sans-semibold text-neutral-800 dark:text-dark-text">
+                                    Lançado Errado
+                                </Text>{' '}
+                                e restaurar o status anterior desta O.S. (ex.: Finalizado)?
                             </Text>
-                            ?
-                        </Text>
+                        ) : (
+                            <Text className="font-sans text-sm text-neutral-600 dark:text-dark-text-muted">
+                                Confirmar mudança de{' '}
+                                <Text className="font-sans-semibold text-neutral-800 dark:text-dark-text">
+                                    {STATUS_LABEL[currentStatus]}
+                                </Text>{' '}
+                                para{' '}
+                                <Text className="font-sans-semibold text-neutral-800 dark:text-dark-text">
+                                    {STATUS_LABEL[pending.status]}
+                                </Text>
+                                ?
+                            </Text>
+                        )}
 
-                        <TextField
-                            label="Observação (opcional)"
-                            placeholder="Motivo ou nota desta mudança..."
-                            multiline
-                            numberOfLines={3}
-                            style={{ minHeight: 72, textAlignVertical: 'top' }}
-                            value={notes}
-                            onChangeText={setNotes}
-                            editable={!isBusy}
-                        />
+                        {!pending.undoWrong && (
+                            <TextField
+                                label="Observação (opcional)"
+                                placeholder="Motivo ou nota desta mudança..."
+                                multiline
+                                numberOfLines={3}
+                                style={{ minHeight: 72, textAlignVertical: 'top' }}
+                                value={notes}
+                                onChangeText={setNotes}
+                                editable={!isBusy}
+                            />
+                        )}
 
                         <Button
                             title="Confirmar"

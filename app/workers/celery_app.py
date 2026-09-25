@@ -4,6 +4,7 @@ Defines the Celery app instance and beat schedule.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -29,6 +30,12 @@ celery_app.conf.update(
         "purge-old-audit-logs": {
             "task": "app.workers.tasks.purge_old_audit_logs",
             "schedule": 30 * 24 * 3600,  # Monthly (30 days)
+        },
+        # Lembretes de ponto: verifica a cada 5 min quem está na janela do
+        # horário de entrada/saída sem batida (idempotente por funcionário/dia/tipo)
+        "time-clock-reminders": {
+            "task": "app.workers.tasks.send_time_clock_reminders",
+            "schedule": crontab(minute="*/5"),
         },
     },
 )

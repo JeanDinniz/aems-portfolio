@@ -50,6 +50,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useAuthStore } from '@/stores/auth.store';
+import { useHasPermission } from '@/hooks/useMyPermissions';
 import { storesService, type Store as StoreType, type UpdateStorePayload, type CreateStorePayload } from '@/services/api/stores.service';
 import { SharedInventoryStoresSection } from '@/components/features/stores/SharedInventoryStoresSection';
 import { getApiErrorMessage } from '@/lib/api-error';
@@ -268,6 +269,9 @@ const editStoreSchema = z.object({
     is_galpon_store: z.boolean(),
     address: z.string().optional(),
     phone: z.string().optional(),
+    latitude: z.number().min(-90).max(90).nullable().optional(),
+    longitude: z.number().min(-180).max(180).nullable().optional(),
+    geofence_radius_m: z.number().min(10).max(10000).nullable().optional(),
 });
 
 type EditStoreFormValues = z.infer<typeof editStoreSchema>;
@@ -303,6 +307,9 @@ function EditStoreDialog({ store, open, onOpenChange, isOwner }: EditStoreDialog
                   is_galpon_store: store.is_galpon_store ?? false,
                   address: store.address ?? '',
                   phone: store.phone ?? '',
+                  latitude: store.latitude ?? null,
+                  longitude: store.longitude ?? null,
+                  geofence_radius_m: store.geofence_radius_m ?? null,
               }
             : undefined,
     });
@@ -333,6 +340,9 @@ function EditStoreDialog({ store, open, onOpenChange, isOwner }: EditStoreDialog
                 phone: data.phone,
                 has_shared_inventory: hasSharedInventory,
                 linked_inventory_store_ids: hasSharedInventory ? linkedInventoryStoreIds : [],
+                latitude: data.latitude ?? null,
+                longitude: data.longitude ?? null,
+                geofence_radius_m: data.geofence_radius_m ?? null,
             });
         },
         [updateMutation, hasSharedInventory, linkedInventoryStoreIds]
@@ -496,6 +506,79 @@ function EditStoreDialog({ store, open, onOpenChange, isOwner }: EditStoreDialog
                                 )}
                             </div>
                         )}
+
+                        {/* ── Ponto Eletrônico ── */}
+                        <div className="space-y-3">
+                            <p className="text-xs font-semibold text-[#666666] dark:text-zinc-400 uppercase tracking-wide pt-1">
+                                Ponto Eletrônico
+                            </p>
+                            <p className="text-xs text-[#999999] dark:text-zinc-500">
+                                No Google Maps: clique com o botão direito no local e copie as coordenadas
+                            </p>
+                            <div className="grid grid-cols-2 gap-3">
+                                <FormField
+                                    control={form.control}
+                                    name="latitude"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel className="text-[#666666] dark:text-zinc-300">Latitude</FormLabel>
+                                            <FormControl>
+                                                <Input
+                                                    type="number"
+                                                    step="0.000001"
+                                                    placeholder="-23.550520"
+                                                    className="bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
+                                                    value={field.value ?? ''}
+                                                    onChange={(e) => field.onChange(e.target.value === '' ? null : parseFloat(e.target.value))}
+                                                />
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+                                <FormField
+                                    control={form.control}
+                                    name="longitude"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel className="text-[#666666] dark:text-zinc-300">Longitude</FormLabel>
+                                            <FormControl>
+                                                <Input
+                                                    type="number"
+                                                    step="0.000001"
+                                                    placeholder="-46.633308"
+                                                    className="bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
+                                                    value={field.value ?? ''}
+                                                    onChange={(e) => field.onChange(e.target.value === '' ? null : parseFloat(e.target.value))}
+                                                />
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+                            </div>
+                            <FormField
+                                control={form.control}
+                                name="geofence_radius_m"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel className="text-[#666666] dark:text-zinc-300">Raio de Geofence (metros)</FormLabel>
+                                        <FormControl>
+                                            <Input
+                                                type="number"
+                                                min={10}
+                                                max={10000}
+                                                placeholder="200"
+                                                className="bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
+                                                value={field.value ?? ''}
+                                                onChange={(e) => field.onChange(e.target.value === '' ? null : parseInt(e.target.value, 10))}
+                                            />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                        </div>
                         </div>
 
                         <DialogFooter className="shrink-0 pt-4 border-t border-[#D1D1D1] dark:border-[#333333] mt-4">
@@ -524,9 +607,10 @@ function EditStoreDialog({ store, open, onOpenChange, isOwner }: EditStoreDialog
 }
 
 export function StoreManagementPage() {
-    const hasPermission = useAuthStore((s) => s.hasPermission);
+    const hasPermission = useHasPermission();
     const isOwner = useAuthStore((s) => s.isOwner);
     const canEdit = hasPermission('stores', 'edit');
+    const canDelete = hasPermission('stores', 'delete');
 
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -751,6 +835,7 @@ export function StoreManagementPage() {
                                     </td>
                                     <td className="px-4 py-3 text-sm text-[#111111] dark:text-zinc-200">
                                         <div className="flex items-center justify-end">
+                                            {(canEdit || canDelete) && (
                                             <DropdownMenu>
                                                 <DropdownMenuTrigger asChild>
                                                     <Button variant="ghost" size="icon" aria-label="Ações" className="text-[#F5A800]">
@@ -758,11 +843,13 @@ export function StoreManagementPage() {
                                                     </Button>
                                                 </DropdownMenuTrigger>
                                                 <DropdownMenuContent align="end">
-                                                    <DropdownMenuItem onClick={() => handleEditClick(store)}>
-                                                        <Edit className="h-4 w-4 mr-2" />
-                                                        Editar
-                                                    </DropdownMenuItem>
-                                                    {store.is_active ? (
+                                                    {canEdit && (
+                                                        <DropdownMenuItem onClick={() => handleEditClick(store)}>
+                                                            <Edit className="h-4 w-4 mr-2" />
+                                                            Editar
+                                                        </DropdownMenuItem>
+                                                    )}
+                                                    {canEdit && (store.is_active ? (
                                                         <DropdownMenuItem onClick={() => toggleStatusMutation.mutate({ id: store.id, is_active: false })} className="ring-1 ring-[#F5A800] ring-inset rounded-sm">
                                                             <Eye className="h-4 w-4 mr-2" />
                                                             Desativar
@@ -772,13 +859,16 @@ export function StoreManagementPage() {
                                                             <Eye className="h-4 w-4 mr-2 text-green-600" />
                                                             <span className="text-green-600">Ativar</span>
                                                         </DropdownMenuItem>
+                                                    ))}
+                                                    {canDelete && (
+                                                        <DropdownMenuItem onClick={() => handleDeleteClick(store)} className="text-red-600 focus:text-red-600">
+                                                            <Trash2 className="h-4 w-4 mr-2" />
+                                                            Excluir
+                                                        </DropdownMenuItem>
                                                     )}
-                                                    <DropdownMenuItem onClick={() => handleDeleteClick(store)} className="text-red-600 focus:text-red-600">
-                                                        <Trash2 className="h-4 w-4 mr-2" />
-                                                        Excluir
-                                                    </DropdownMenuItem>
                                                 </DropdownMenuContent>
                                             </DropdownMenu>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>

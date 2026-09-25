@@ -58,7 +58,10 @@ class TestUploadPhoto:
         assert response.status_code == 200
         data = response.json()
         assert "url" in data
-        assert "/uploads/" in data["url"]
+        # Agnóstico ao backend de storage: filesystem devolve "/uploads/....jpg"
+        # e MinIO/S3 devolve "http://host/bucket/....jpg" — validamos só o que
+        # vale nos dois (URL não-vazia apontando para um .jpg).
+        assert isinstance(data["url"], str) and data["url"].lower().endswith(".jpg")
 
     @pytest.mark.asyncio
     async def test_upload_png_success(self, authenticated_client: AsyncClient):
@@ -188,49 +191,172 @@ class TestUploadValidations:
 # ===========================================================================
 
 
+def make_pdf_bytes(size: int = 256) -> bytes:
+    """Return minimal PDF-like bytes (magic header + padding)."""
+    header = b"%PDF-1.4"
+    return header + b"\x00" * max(0, size - len(header))
+
+
+def make_ooxml_bytes(size: int = 256) -> bytes:
+    """Return minimal OOXML (docx/xlsx/pptx = zip) bytes."""
+    header = b"PK\x03\x04"
+    return header + b"\x00" * max(0, size - len(header))
+
+
+class TestUploadDocument:
+    """Tests for POST /api/v1/upload/document."""
+
+    @pytest.mark.asyncio
+    async def test_upload_pdf_success(self, authenticated_client: AsyncClient):
+        content = make_pdf_bytes(512)
+        response = await authenticated_client.post(
+            "/api/v1/upload/document",
+            files={"file": ("manual.pdf", io.BytesIO(content), "application/pdf")},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["url"].lower().endswith(".pdf")
+        assert data["file_name"] == "manual.pdf"
+        assert data["file_type"] == "pdf"
+        assert data["file_size"] == len(content)
+
+    @pytest.mark.asyncio
+    async def test_upload_pptx_success(self, authenticated_client: AsyncClient):
+        content = make_ooxml_bytes(512)
+        response = await authenticated_client.post(
+            "/api/v1/upload/document",
+            files={
+                "file": (
+                    "apresentacao.pptx",
+                    io.BytesIO(content),
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["file_type"] == "pptx"
+
+    @pytest.mark.asyncio
+    async def test_reject_invalid_extension(self, authenticated_client: AsyncClient):
+        response = await authenticated_client.post(
+            "/api/v1/upload/document",
+            files={"file": ("nota.txt", io.BytesIO(b"hello"), "text/plain")},
+        )
+        assert response.status_code == 422
+        assert "Extensão" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_reject_magic_mismatch(self, authenticated_client: AsyncClient):
+        # extensão .pdf mas conteúdo é zip (OOXML)
+        content = make_ooxml_bytes(256)
+        response = await authenticated_client.post(
+            "/api/v1/upload/document",
+            files={"file": ("manual.pdf", io.BytesIO(content), "application/pdf")},
+        )
+        assert response.status_code == 422
+        assert "corrompido" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_reject_empty(self, authenticated_client: AsyncClient):
+        response = await authenticated_client.post(
+            "/api/v1/upload/document",
+            files={"file": ("manual.pdf", io.BytesIO(b""), "application/pdf")},
+        )
+        assert response.status_code == 422
+        assert "vazio" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated(self, client: AsyncClient):
+        response = await client.post(
+            "/api/v1/upload/document",
+            files={"file": ("manual.pdf", io.BytesIO(make_pdf_bytes()), "application/pdf")},
+        )
+        assert response.status_code == 401
+
+
+class TestValidateDocMagic:
+    """Unit tests for _validate_doc_magic."""
+
+    def test_pdf_valid(self):
+        from app.modules.upload.router import _validate_doc_magic
+
+        assert _validate_doc_magic(make_pdf_bytes(), "pdf") is True
+
+    def test_ooxml_valid(self):
+        from app.modules.upload.router import _validate_doc_magic
+
+        assert _validate_doc_magic(make_ooxml_bytes(), "pptx") is True
+
+    def test_pdf_bytes_declared_pptx_returns_false(self):
+        from app.modules.upload.router import _validate_doc_magic
+
+        assert _validate_doc_magic(make_pdf_bytes(), "pptx") is False
+
+    def test_ole2_valid_for_legacy_ppt(self):
+        from app.modules.upload.router import _validate_doc_magic
+
+        content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64
+        assert _validate_doc_magic(content, "ppt") is True
+
+    def test_unknown_extension_returns_false(self):
+        from app.modules.upload.router import _validate_doc_magic
+
+        assert _validate_doc_magic(make_pdf_bytes(), "txt") is False
+
+
 class TestValidateMagicBytes:
     """Unit tests for _validate_magic_bytes."""
 
     def test_jpeg_valid(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_jpeg_bytes(), "image/jpeg") is True
 
     def test_jpeg_as_jpg(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_jpeg_bytes(), "image/jpg") is True
 
     def test_png_valid(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_png_bytes(), "image/png") is True
 
     def test_webp_valid(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_webp_bytes(), "image/webp") is True
 
     def test_heic_valid(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_heic_bytes(), "image/heic") is True
 
     def test_heif_valid(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_heic_bytes(), "image/heif") is True
 
     def test_invalid_magic_returns_false(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(b"\x00\x00\x00\x00" * 10, "image/jpeg") is False
 
     def test_png_declared_as_jpeg_returns_false(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         assert _validate_magic_bytes(make_png_bytes(), "image/jpeg") is False
 
     def test_webp_without_webp_marker(self):
         """RIFF header without WEBP at offset 8 should fail."""
         from app.modules.upload.router import _validate_magic_bytes
+
         content = b"RIFF" + b"\x00" * 4 + b"XXXX"
         assert _validate_magic_bytes(content, "image/webp") is False
 
     def test_heic_without_ftyp(self):
         from app.modules.upload.router import _validate_magic_bytes
+
         content = b"\x00" * 20
         assert _validate_magic_bytes(content, "image/heic") is False
 
@@ -240,6 +366,7 @@ class TestGetLocalUrl:
 
     def test_returns_correct_path(self):
         from app.modules.upload.router import _get_local_url
+
         assert "/uploads/abc.jpg" in _get_local_url("abc.jpg")
 
 
@@ -262,7 +389,10 @@ class TestUploadToS3:
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
 
-        with patch.dict("sys.modules", {"boto3": mock_boto3, "botocore": MagicMock(), "botocore.exceptions": MagicMock()}):
+        with patch.dict(
+            "sys.modules",
+            {"boto3": mock_boto3, "botocore": MagicMock(), "botocore.exceptions": MagicMock()},
+        ):
             with patch("app.modules.upload.router.settings") as mock_settings:
                 mock_settings.S3_ACCESS_KEY = "test-key"
                 mock_settings.S3_SECRET_KEY = "test-secret"
@@ -286,7 +416,10 @@ class TestUploadToS3:
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
 
-        with patch.dict("sys.modules", {"boto3": mock_boto3, "botocore": MagicMock(), "botocore.exceptions": MagicMock()}):
+        with patch.dict(
+            "sys.modules",
+            {"boto3": mock_boto3, "botocore": MagicMock(), "botocore.exceptions": MagicMock()},
+        ):
             with patch("app.modules.upload.router.settings") as mock_settings:
                 mock_settings.S3_ACCESS_KEY = "test-key"
                 mock_settings.S3_SECRET_KEY = "test-secret"
@@ -324,11 +457,14 @@ class TestUploadToS3:
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = mock_client
 
-        with patch.dict("sys.modules", {
-            "boto3": mock_boto3,
-            "botocore": MagicMock(),
-            "botocore.exceptions": mock_botocore_exceptions,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "boto3": mock_boto3,
+                "botocore": MagicMock(),
+                "botocore.exceptions": mock_botocore_exceptions,
+            },
+        ):
             with patch("app.modules.upload.router.settings") as mock_settings:
                 mock_settings.S3_ACCESS_KEY = "test-key"
                 mock_settings.S3_SECRET_KEY = "test-secret"
@@ -340,9 +476,7 @@ class TestUploadToS3:
                 assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_upload_photo_uses_s3_when_configured(
-        self, authenticated_client: AsyncClient
-    ):
+    async def test_upload_photo_uses_s3_when_configured(self, authenticated_client: AsyncClient):
         """Integration: upload endpoint uses S3 when S3_ACCESS_KEY is set."""
         from unittest.mock import AsyncMock, patch
 
@@ -366,3 +500,65 @@ class TestUploadToS3:
                 assert response.status_code == 200
                 assert response.json()["url"] == "http://minio:9000/test-bucket/photos/abc.jpg"
                 mock_s3.assert_called_once()
+
+
+# ===========================================================================
+# Upload Video endpoint tests
+# ===========================================================================
+
+
+def make_mp4_bytes(size: int = 256) -> bytes:
+    """Bytes MP4-like: box ftyp em offset 4 (mesmo padrão de HEIC/MOV)."""
+    header = b"\x00\x00\x00\x18ftyp" + b"mp42"
+    return header + b"\x00" * max(0, size - len(header))
+
+
+class TestUploadVideo:
+    """Tests for POST /api/v1/upload/video."""
+
+    @pytest.mark.asyncio
+    async def test_upload_mp4_success(self, authenticated_client: AsyncClient):
+        content = make_mp4_bytes(512)
+        response = await authenticated_client.post(
+            "/api/v1/upload/video",
+            files={"file": ("clip.mp4", io.BytesIO(content), "video/mp4")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["url"], str) and data["url"].lower().endswith(".mp4")
+
+    @pytest.mark.asyncio
+    async def test_upload_mov_success(self, authenticated_client: AsyncClient):
+        content = make_mp4_bytes(512)  # MOV também tem box ftyp
+        response = await authenticated_client.post(
+            "/api/v1/upload/video",
+            files={"file": ("clip.mov", io.BytesIO(content), "video/quicktime")},
+        )
+        assert response.status_code == 200
+        assert response.json()["url"].lower().endswith(".mov")
+
+    @pytest.mark.asyncio
+    async def test_reject_invalid_content_type(self, authenticated_client: AsyncClient):
+        response = await authenticated_client.post(
+            "/api/v1/upload/video",
+            files={"file": ("clip.avi", io.BytesIO(b"x" * 128), "video/x-msvideo")},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_reject_bad_magic_bytes(self, authenticated_client: AsyncClient):
+        # extensão/content-type ok, mas conteúdo não tem ftyp
+        response = await authenticated_client.post(
+            "/api/v1/upload/video",
+            files={"file": ("clip.mp4", io.BytesIO(b"NOTAVIDEO" + b"\x00" * 128), "video/mp4")},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_reject_too_large(self, authenticated_client: AsyncClient):
+        big = make_mp4_bytes(51 * 1024 * 1024)  # 51 MB > teto de 50
+        response = await authenticated_client.post(
+            "/api/v1/upload/video",
+            files={"file": ("big.mp4", io.BytesIO(big), "video/mp4")},
+        )
+        assert response.status_code == 422

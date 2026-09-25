@@ -8,9 +8,17 @@ import { ConferenceScreen } from '@/screens/service-orders/ConferenceScreen';
 import { FechamentoScreen } from '@/screens/service-orders/FechamentoScreen';
 import { NotificationsScreen } from '@/screens/notifications/NotificationsScreen';
 import { DashboardScreen } from '@/screens/dashboard/DashboardScreen';
+import { TimeClockScreen } from '@/screens/time-clock/TimeClockScreen';
+import { FaceEnrollScreen } from '@/screens/time-clock/FaceEnrollScreen';
+import { MyTimeClockMirrorScreen } from '@/screens/time-clock/MyTimeClockMirrorScreen';
+import { InstallerPerformanceScreen } from '@/screens/installer-performance/InstallerPerformanceScreen';
+import { EbookListScreen } from '@/screens/ebook/EbookListScreen';
+import { EbookCertificatesScreen } from '@/screens/ebook/EbookCertificatesScreen';
+import { EpiScreen } from '@/screens/epi/EpiScreen';
 
 import { AppTabs } from './AppTabs';
 import { AdminStack } from './AdminStack';
+import { MaterialRequestsStack } from './MaterialRequestsStack';
 import type { AppStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<AppStackParamList>();
@@ -34,6 +42,14 @@ export function AppStack() {
             <Stack.Screen name="Fechamento" component={FechamentoScreen} />
             <Stack.Screen name="Notifications" component={NotificationsScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
+            <Stack.Screen name="TimeClock" component={TimeClockScreen} />
+            <Stack.Screen name="FaceEnroll" component={FaceEnrollScreen} />
+            <Stack.Screen name="MyTimeClockMirror" component={MyTimeClockMirrorScreen} />
+            <Stack.Screen name="InstallerPerformance" component={InstallerPerformanceScreen} />
+            <Stack.Screen name="EbookList" component={EbookListScreen} />
+            <Stack.Screen name="EbookCertificates" component={EbookCertificatesScreen} />
+            <Stack.Screen name="Epi" component={EpiScreen} />
+            <Stack.Screen name="MaterialRequests" component={MaterialRequestsStack} />
             <Stack.Screen name="Admin" component={AdminStack} />
             <Stack.Screen
                 name="PhotoViewer"

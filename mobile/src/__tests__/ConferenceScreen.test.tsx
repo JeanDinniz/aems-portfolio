@@ -250,3 +250,60 @@ describe('ConferenceScreen — Gerar cópia da O.S.', () => {
         expect(copyFrom).not.toHaveProperty('items');
     });
 });
+
+describe('ConferenceScreen — briefing do consultor x relato técnico', () => {
+    it('renderiza os dois blocos rotulados, colapsados em 2 linhas', async () => {
+        mockItems = [
+            makeOrder({
+                notes: 'Aplicar G20 nas portas',
+                execution_notes: 'Risco pré-existente na porta traseira',
+            }),
+        ];
+        const { getByText, getByLabelText } = await renderScreen();
+
+        expect(getByLabelText('Briefing do Consultor')).toBeTruthy();
+        expect(getByLabelText('Relato Técnico do Instalador')).toBeTruthy();
+        expect(getByText('Aplicar G20 nas portas').props.numberOfLines).toBe(2);
+        expect(getByText('Risco pré-existente na porta traseira').props.numberOfLines).toBe(2);
+    });
+
+    it('toque expande/recolhe apenas o bloco tocado', async () => {
+        mockItems = [
+            makeOrder({
+                notes: 'Aplicar G20 nas portas',
+                execution_notes: 'Risco pré-existente na porta traseira',
+            }),
+        ];
+        const { getByText, getByLabelText } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Relato Técnico do Instalador'));
+        });
+        expect(
+            getByText('Risco pré-existente na porta traseira').props.numberOfLines
+        ).toBeUndefined();
+        // O outro bloco segue colapsado (estado local por bloco).
+        expect(getByText('Aplicar G20 nas portas').props.numberOfLines).toBe(2);
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Relato Técnico do Instalador'));
+        });
+        expect(getByText('Risco pré-existente na porta traseira').props.numberOfLines).toBe(2);
+    });
+
+    it('mostra só o bloco que tem conteúdo', async () => {
+        mockItems = [makeOrder({ notes: null, execution_notes: 'Borracha ressecada' })];
+        const { queryByLabelText, getByLabelText } = await renderScreen();
+
+        expect(getByLabelText('Relato Técnico do Instalador')).toBeTruthy();
+        expect(queryByLabelText('Briefing do Consultor')).toBeNull();
+    });
+
+    it('não renderiza nenhum bloco quando ambos estão vazios', async () => {
+        mockItems = [makeOrder({ notes: null, execution_notes: null })];
+        const { queryByLabelText } = await renderScreen();
+
+        expect(queryByLabelText('Briefing do Consultor')).toBeNull();
+        expect(queryByLabelText('Relato Técnico do Instalador')).toBeNull();
+    });
+});

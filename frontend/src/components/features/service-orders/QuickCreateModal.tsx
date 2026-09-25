@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useQuery } from '@tanstack/react-query';
 import { useForm, type Resolver } from 'react-hook-form';
@@ -36,6 +36,7 @@ import { useServices } from '@/hooks/useServices';
 import { useFilmInstallers } from '@/hooks/useEmployees';
 import { useConsultants } from '@/hooks/useConsultants';
 import { useCreateServiceOrder } from '@/hooks/useServiceOrders';
+import { CATALOG_STALE_TIME, CATALOG_GC_TIME, filmTypesKey } from '@/lib/catalog-queries';
 import type { Department, ServiceOrder } from '@/types/service-order.types';
 import { CourtesyReturnSelect } from './CourtesyReturnSelect';
 import { ServiceCodeCombobox } from './ServiceCodeCombobox';
@@ -44,15 +45,20 @@ import { CameraCapture } from '@/components/common/CameraCapture';
 import { compressImage } from '@/utils/imageCompression';
 import { validateImageFile } from '@/utils/fileValidation';
 import { markDirty, markClean } from '@/lib/pendingWork';
+import { useFormDraft } from '@/hooks/useFormDraft';
 import { generateId } from '@/utils/generateId';
 import { isValidPlateOrChassi, PLATE_ERROR_MESSAGE } from '@/utils/plate';
 import { DismissibleNotice } from '@/components/common/DismissibleNotice';
+import { DraftRestoredBanner } from '@/components/common/DraftRestoredBanner';
 import { DuplicateAlert } from './DuplicateAlert';
 import { useDuplicateCheck } from '@/hooks/useDuplicateCheck';
+import { VideoCapture } from '@/components/features/service-orders/VideoCapture';
 import { logger } from '@/lib/logger';
 import { uploadService } from '@/services/api/upload.service';
+import { serviceOrdersService } from '@/services/api/service-orders.service';
 import { inventoryService } from '@/services/api/inventory.service';
-import type { FilmRoll, FilmType } from '@/services/api/inventory.service';
+import type { FilmRoll, FilmRollStatus, FilmType } from '@/services/api/inventory.service';
+import { formatFilmRollName, formatMeters, formatReceiptDate } from '@/utils/filmRoll';
 import {
     Camera,
     ImageIcon,
@@ -64,9 +70,13 @@ import {
     Repeat,
     Search,
 } from 'lucide-react';
+import { cleanConsultantNotes } from '@/utils/serviceOrderNotes';
 
 // ─── Zod schema ───────────────────────────────────────────────────────────────
-const schema = z.object({
+// Schema base (sem a validação condicional de retorno sem origem) — usado só
+// para inferir o tipo do form. A validação completa nasce de `buildQuickCreateSchema`,
+// parametrizada por `isOwner` (regra "retorno sem O.S. de origem").
+const baseSchema = z.object({
     department: z.enum(['film', 'security_film', 'ppf', 'vn', 'vd', 'vu', 'bodywork', 'workshop'] as const, {
         error: 'Selecione um departamento',
     }),
@@ -92,70 +102,110 @@ const schema = z.object({
         roll_code:    z.string().optional(),
         film_roll_id: z.number().optional(),
         film_type_id: z.number().optional(),
+        // Retalho (sobra de corte anterior): dispensa a bobina obrigatória — não
+        // há metros a debitar. Ver superRefine abaixo.
+        used_scrap:   z.boolean().optional(),
     })).optional(),
     installers: z.array(z.number()).optional(),
     form_store_id: z.number().optional(),
     service_prices: z.record(z.string(), z.string()).optional(),
-}).superRefine((data, ctx) => {
-    if (data.department === 'film' || data.department === 'security_film' || data.department === 'ppf') {
-        const isTonalityDept = data.department === 'film' || data.department === 'security_film';
-        // Bobina obrigatória apenas para Película comum. Película de Segurança e PPF têm bobina opcional.
-        const isRollRequiredDept = data.department === 'film';
-        if (!data.film_entries || data.film_entries.length === 0) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message: 'Adicione ao menos uma película',
-                path: ['film_entries'],
-            });
-        } else {
-            data.film_entries.forEach((entry, i) => {
-                if (!entry.service_id || entry.service_id <= 0) {
-                    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione uma película', path: ['film_entries', i, 'service_id'] });
-                }
-                if (isTonalityDept && !entry.tonality) {
-                    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione a tonalidade', path: ['film_entries', i, 'tonality'] });
-                }
-                if (isRollRequiredDept && !entry.film_roll_id) {
-                    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione uma bobina', path: ['film_entries', i, 'film_roll_id'] });
-                }
-            });
-        }
-    } else if (data.department) {
-        if (data.selected_services.length === 0) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message: 'Selecione pelo menos 1 serviço',
-                path: ['selected_services'],
-            });
-        }
-    }
-
-    if (data.department !== 'vn' && data.department !== 'vd' && data.department !== 'vu' && !data.external_os_number?.trim()) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Nº OS Concessionária obrigatório',
-            path: ['external_os_number'],
-        });
-    }
-
-    if (!data.is_galpon && !data.consultant_id) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Consultor obrigatório',
-            path: ['consultant_id'],
-        });
-    }
-
-    if ((data.department === 'film' || data.department === 'security_film' || data.department === 'ppf') && (!data.installers || data.installers.length === 0)) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Selecione pelo menos 1 instalador',
-            path: ['installers'],
-        });
-    }
+    original_service_order_id: z.number().optional(),
 });
 
-export type QuickCreateFormData = z.infer<typeof schema>;
+/**
+ * Constrói o schema completo (objeto base + validação condicional) parametrizado
+ * por `isOwner`. Regra "retorno sem O.S. de origem":
+ * - Não-Owner: origem continua obrigatória (comportamento histórico).
+ * - Owner: pode deixar a origem vazia, mas a Observação (`notes`) passa a ser
+ *   obrigatória (motivo do lançamento retroativo/sem origem no sistema).
+ * O backend espelha esta mesma regra (403/422) — aqui é só UX antecipada.
+ */
+function buildQuickCreateSchema(isOwner: boolean) {
+    return baseSchema.superRefine((data, ctx) => {
+        if (data.department === 'film' || data.department === 'security_film' || data.department === 'ppf') {
+            const isTonalityDept = data.department === 'film' || data.department === 'security_film';
+            // Bobina obrigatória apenas para Película comum. Película de Segurança e PPF têm bobina opcional.
+            const isRollRequiredDept = data.department === 'film';
+            if (!data.film_entries || data.film_entries.length === 0) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Adicione ao menos uma película',
+                    path: ['film_entries'],
+                });
+            } else {
+                data.film_entries.forEach((entry, i) => {
+                    if (!entry.service_id || entry.service_id <= 0) {
+                        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione uma película', path: ['film_entries', i, 'service_id'] });
+                    }
+                    if (isTonalityDept && !entry.tonality) {
+                        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione a tonalidade', path: ['film_entries', i, 'tonality'] });
+                    }
+                    if (isRollRequiredDept && !entry.film_roll_id && !entry.used_scrap) {
+                        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Selecione uma bobina', path: ['film_entries', i, 'film_roll_id'] });
+                    }
+                });
+            }
+        } else if (data.department) {
+            if (data.selected_services.length === 0) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Selecione pelo menos 1 serviço',
+                    path: ['selected_services'],
+                });
+            }
+        }
+
+        if (data.department !== 'vn' && data.department !== 'vd' && data.department !== 'vu' && !data.external_os_number?.trim()) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Nº OS Concessionária obrigatório',
+                path: ['external_os_number'],
+            });
+        }
+
+        if (!data.is_galpon && !data.consultant_id) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Consultor obrigatório',
+                path: ['consultant_id'],
+            });
+        }
+
+        if ((data.department === 'film' || data.department === 'security_film' || data.department === 'ppf') && (!data.installers || data.installers.length === 0)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Selecione pelo menos 1 instalador',
+                path: ['installers'],
+            });
+        }
+
+        if (data.is_return && !data.original_service_order_id) {
+            if (!isOwner) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Selecione a O.S. de origem do retorno',
+                    path: ['original_service_order_id'],
+                });
+            } else if (!data.notes?.trim()) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: 'Informe a observação (motivo) ao lançar um retorno sem O.S. de origem.',
+                    path: ['notes'],
+                });
+            }
+        }
+    });
+}
+
+export type QuickCreateFormData = z.infer<typeof baseSchema>;
+
+/**
+ * Chave do rascunho local (localStorage) do formulário. O rascunho guarda só
+ * os campos de texto/seleção do form (mesmo shape do `QuickCreateFormData`)
+ * — NUNCA fotos/vídeo, que vivem nos `useState` separados (`photos`,
+ * `damagePhotos`, `videoUrl`).
+ */
+const QUICK_CREATE_DRAFT_KEY = 'aems-draft:quick-create-os';
 
 // ─── Prefill types ─────────────────────────────────────────────────────────────
 /**
@@ -187,10 +237,7 @@ export function buildPrefillFromOrder(order: ServiceOrder): QuickCreatePrefill {
 
     // Mesma lógica de strip de notas do EditDialog (ConferencePage ~linha 317)
     const rawNotes = order.notes ?? '';
-    const strippedNotes = rawNotes
-        .replace(/\s*\|\s*\[CORTESIA\]|\[CORTESIA\]\s*\|\s*/g, '')
-        .replace(/\s*\|\s*\[RETORNO\]|\[RETORNO\]\s*\|\s*/g, '')
-        .trim();
+    const strippedNotes = cleanConsultantNotes(rawNotes) ?? '';
 
     const values: Partial<QuickCreateFormData> = {
         plate: order.plate,
@@ -290,6 +337,13 @@ export function DeptToggle({ value, onChange, error }: DeptToggleProps) {
 }
 
 // ─── Sub-component: inline service picker (no prices) ─────────────────────────
+// Tipo mínimo de item de O.S. necessário para identificar serviços "fora do catálogo"
+export interface ServicePickerOrderItem {
+    service_id: number;
+    service_name?: string | null;
+    service_code?: string | null;
+}
+
 export interface ServicePickerProps {
     department: Department | undefined;
     brandId?: number;
@@ -300,17 +354,43 @@ export interface ServicePickerProps {
     onPriceChange?: (serviceId: number, price: string) => void;
     priceErrors?: Record<number, string>;
     isCourtesy?: boolean;
+    /**
+     * Itens já vinculados à O.S. em edição. Quando fornecido, serviços presentes
+     * na O.S. mas ausentes do catálogo ativo aparecem marcados com rótulo "(atual)"
+     * — mesmo padrão do EditServicesModal — evitando descarte silencioso ao salvar.
+     */
+    currentOrderItems?: ServicePickerOrderItem[];
 }
 
-export function ServicePicker({ department, brandId, selectedIds, onChange, error, prices, onPriceChange, priceErrors, isCourtesy = false }: ServicePickerProps) {
+export function ServicePicker({ department, brandId, selectedIds, onChange, error, prices, onPriceChange, priceErrors, isCourtesy = false, currentOrderItems }: ServicePickerProps) {
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState('');
 
     const { data: services, isLoading } = useServices(department, brandId);
 
-    const filtered = (services ?? [])
+    // Serviços do catálogo ativo filtrados por cortesia e busca
+    const catalogFiltered = (services ?? [])
         .filter((s) => isCourtesy || !s.is_courtesy_only)
         .filter((s) => s.name.toLowerCase().includes(search.toLowerCase()));
+
+    // Serviços que a O.S. já tem mas que NÃO aparecem no catálogo ativo (inativos ou
+    // de marca/departamento diferente). Precisam aparecer marcados para não serem
+    // descartados silenciosamente ao salvar. Mesmo padrão do EditServicesModal.
+    const catalogIds = new Set((services ?? []).map((s) => s.id));
+    const orphanServices: Array<{ id: number; name: string; outOfCatalog: true }> = (currentOrderItems ?? [])
+        .filter((i) => i.service_id != null && !catalogIds.has(i.service_id))
+        .filter((i, idx, arr) => arr.findIndex((x) => x.service_id === i.service_id) === idx)
+        .map((i) => ({
+            id: i.service_id,
+            name: i.service_name || i.service_code || `Serviço #${i.service_id}`,
+            outOfCatalog: true as const,
+        }));
+
+    // Exibe órfãos primeiro (já marcados), depois o catálogo filtrado
+    const visibleInPopover: Array<{ id: number; name: string; code?: string | null; outOfCatalog?: boolean }> = [
+        ...orphanServices.filter((o) => o.name.toLowerCase().includes(search.toLowerCase())),
+        ...catalogFiltered.map((s) => ({ id: s.id, name: s.name, code: s.code })),
+    ];
 
     const toggle = useCallback(
         (id: number) => {
@@ -330,9 +410,13 @@ export function ServicePicker({ department, brandId, selectedIds, onChange, erro
         [selectedIds, onChange]
     );
 
-    const selectedNames = selectedIds
-        .map((id) => services?.find((s) => s.id === id)?.name)
-        .filter(Boolean) as string[];
+    // Resolve o nome de exibição: tenta catálogo, cai no órfão, cai no genérico
+    const orphanMap = new Map(orphanServices.map((o) => [o.id, o.name]));
+    const selectedNames = selectedIds.map((id) => {
+        return services?.find((s) => s.id === id)?.name
+            ?? orphanMap.get(id)
+            ?? `Serviço #${id}`;
+    });
 
     return (
         <div className="space-y-1.5">
@@ -380,14 +464,14 @@ export function ServicePicker({ department, brandId, selectedIds, onChange, erro
                         <p className="p-4 text-sm text-muted-foreground text-center">
                             Selecione um departamento primeiro
                         </p>
-                    ) : filtered.length === 0 ? (
+                    ) : visibleInPopover.length === 0 ? (
                         <p className="p-4 text-sm text-muted-foreground text-center">
                             Nenhum serviço encontrado
                         </p>
                     ) : (
                         <ScrollArea className="h-[240px]">
                             <div className="p-1">
-                                {filtered.map((svc) => (
+                                {visibleInPopover.map((svc) => (
                                     <div
                                         key={svc.id}
                                         className="flex items-center gap-2 px-3 py-2 rounded-sm cursor-pointer hover:bg-accent"
@@ -407,7 +491,16 @@ export function ServicePicker({ department, brandId, selectedIds, onChange, erro
                                         >
                                             <Check className="h-3 w-3" />
                                         </div>
-                                        <span className="text-sm">{svc.code ? `${svc.code} - ${svc.name}` : svc.name}</span>
+                                        <span className="text-sm">
+                                            {svc.outOfCatalog
+                                                ? svc.name
+                                                : (svc.code ? `${svc.code} - ${svc.name}` : svc.name)}
+                                            {svc.outOfCatalog && (
+                                                <span className="ml-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                                    (atual)
+                                                </span>
+                                            )}
+                                        </span>
                                     </div>
                                 ))}
                             </div>
@@ -475,6 +568,77 @@ export function ServicePicker({ department, brandId, selectedIds, onChange, erro
     );
 }
 
+// ─── Sub-component: RollSelect ────────────────────────────────────────────────
+// Seletor de bobina com o mesmo visual do FilmRollSelector do Agendamento:
+// item em 2 linhas (nome + data/metragem) e campo fechado com resumo de 1 linha.
+function RollSelect({
+    rolls,
+    value,
+    onChange,
+    disabled,
+    hasError,
+    emptyMessage,
+    allowScrap,
+    isScrap,
+}: {
+    rolls: FilmRoll[];
+    value: string;
+    onChange: (v: string) => void;
+    disabled?: boolean;
+    hasError?: boolean;
+    emptyMessage: string;
+    /** Habilita a opção "Retalho (sobra)" no topo do dropdown. */
+    allowScrap?: boolean;
+    /** A entry atual está em modo retalho — reflete no valor/placeholder exibido. */
+    isScrap?: boolean;
+}) {
+    const selected = rolls.find((r) => r.id.toString() === value);
+    return (
+        <Select value={isScrap ? 'scrap' : value} onValueChange={onChange} disabled={disabled}>
+            <SelectTrigger className={cn('h-10', hasError && 'border-destructive')}>
+                <SelectValue placeholder="Selecionar bobina">
+                    {isScrap
+                        ? 'Retalho (sobra)'
+                        : selected
+                            ? `${formatFilmRollName(selected)} · ${formatReceiptDate(selected.receipt_date)} · ${formatMeters(selected.remaining_meters)}`
+                            : undefined}
+                </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+                {allowScrap && <SelectItem value="scrap">Retalho (sobra)</SelectItem>}
+                {rolls.length === 0 ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                        {emptyMessage}
+                    </div>
+                ) : (
+                    rolls.map((roll) => (
+                        <SelectItem
+                            key={roll.id}
+                            value={roll.id.toString()}
+                            textValue={`${formatFilmRollName(roll)} ${formatReceiptDate(roll.receipt_date)}`}
+                        >
+                            <div className="flex flex-col items-start">
+                                <span className="font-medium">
+                                    {formatFilmRollName(roll)}
+                                    {roll.status === 'em_uso' && (
+                                        <span className="ml-1 text-xs font-normal text-amber-600">(em uso)</span>
+                                    )}
+                                    {roll.status === 'esgotada' && (
+                                        <span className="ml-1 text-xs font-normal text-red-600 dark:text-red-400">(esgotada)</span>
+                                    )}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                    {formatReceiptDate(roll.receipt_date)} · restam {formatMeters(roll.remaining_meters)}
+                                </span>
+                            </div>
+                        </SelectItem>
+                    ))
+                )}
+            </SelectContent>
+        </Select>
+    );
+}
+
 // ─── Sub-component: FilmPicker ────────────────────────────────────────────────
 export interface FilmEntry {
     service_id: number;
@@ -483,6 +647,9 @@ export interface FilmEntry {
     roll_code?: string;
     film_roll_id?: number;
     film_type_id?: number;
+    /** Retalho (sobra de corte anterior): selecionado como opção dentro do próprio
+     * dropdown de bobina — sem film_roll_id vinculado, nenhum metro é debitado. */
+    used_scrap?: boolean;
 }
 
 export interface FilmPickerProps {
@@ -517,21 +684,39 @@ export function FilmPicker({
 
     // Marcas PPF cadastradas (apenas para ppf)
     const { data: ppfBrandsData } = useQuery({
-        queryKey: ['film-types-ppf'],
+        queryKey: filmTypesKey('ppf'),
         queryFn: () => inventoryService.listFilmTypes({ department: 'ppf', limit: 100 }),
         enabled: department === 'ppf',
-        staleTime: 1000 * 60 * 5,
+        staleTime: CATALOG_STALE_TIME,
+        gcTime: CATALOG_GC_TIME,
     });
     const ppfBrands: FilmType[] = ppfBrandsData?.items ?? [];
 
     // Tipos de película do departamento (film ou security_film) — usados para cruzar service_code → film_type_id
     const { data: filmFilmTypesData } = useQuery({
-        queryKey: ['film-types-for-os', department],
+        queryKey: filmTypesKey(department as 'film' | 'security_film'),
         queryFn: () => inventoryService.listFilmTypes({ department: department as 'film' | 'security_film', limit: 100 }),
         enabled: department === 'film' || department === 'security_film',
-        staleTime: 1000 * 60 * 5,
+        staleTime: CATALOG_STALE_TIME,
+        gcTime: CATALOG_GC_TIME,
     });
-    const filmFilmTypes: FilmType[] = filmFilmTypesData?.items ?? [];
+    const filmFilmTypes: FilmType[] = useMemo(() => filmFilmTypesData?.items ?? [], [filmFilmTypesData]);
+
+    // União das tonalidades configuradas nos tipos que incluem o serviço.
+    // Vazio → getTonalityOptions cai no fallback por departamento (todas).
+    const tonalitiesForService = useCallback(
+        (serviceId?: number | null): string[] => {
+            if (!serviceId) return [];
+            const set = new Set<string>();
+            for (const ft of filmFilmTypes) {
+                if ((ft.services ?? []).some((s) => s.service_id === serviceId)) {
+                    for (const t of ft.available_tonalities ?? []) set.add(t);
+                }
+            }
+            return Array.from(set);
+        },
+        [filmFilmTypes]
+    );
 
     // Ids de bobinas PPF já vinculadas nas entries — garante que bobinas esgotadas continuem visíveis
     const linkedPpfRollIds = selectedEntries
@@ -551,11 +736,12 @@ export function FilmPicker({
                 ? { use_galpon_store: true as const }
                 : { store_id: storeId }
             const includeIds = linkedPpfRollIds.length > 0 ? linkedPpfRollIds : undefined;
-            const [stock, inUse] = await Promise.all([
-                inventoryService.listRolls({ ...rollParams, status: 'em_estoque', department: 'ppf', include_roll_ids: includeIds, limit: 200 }),
-                inventoryService.listRolls({ ...rollParams, status: 'em_uso', department: 'ppf', include_roll_ids: includeIds, limit: 200 }),
-            ]);
-            return [...stock.items, ...inUse.items] as FilmRoll[];
+            // Só bobinas EM USO — lacradas (em estoque) nunca são ofertadas aqui.
+            const statuses: FilmRollStatus[] = ['em_uso'];
+            const results = await Promise.all(
+                statuses.map((status) => inventoryService.listRolls({ ...rollParams, status, department: 'ppf', include_roll_ids: includeIds, limit: 200 }))
+            );
+            return Array.from(new Map(results.flatMap((r) => r.items).map((r) => [r.id, r])).values()) as FilmRoll[];
         },
         enabled: (isGalpon ? true : !!storeId) && department === 'ppf',
         staleTime: 1000 * 60 * 2,
@@ -570,11 +756,12 @@ export function FilmPicker({
                 ? { use_galpon_store: true as const }
                 : { store_id: storeId }
             const includeIds = linkedFilmRollIds.length > 0 ? linkedFilmRollIds : undefined;
-            const [stock, inUse] = await Promise.all([
-                inventoryService.listRolls({ ...rollParams, status: 'em_estoque', department: department as 'film' | 'security_film', include_roll_ids: includeIds, limit: 200 }),
-                inventoryService.listRolls({ ...rollParams, status: 'em_uso', department: department as 'film' | 'security_film', include_roll_ids: includeIds, limit: 200 }),
-            ]);
-            return [...stock.items, ...inUse.items] as FilmRoll[];
+            // Só bobinas EM USO — lacradas (em estoque) nunca são ofertadas aqui.
+            const statuses: FilmRollStatus[] = ['em_uso'];
+            const results = await Promise.all(
+                statuses.map((status) => inventoryService.listRolls({ ...rollParams, status, department: department as 'film' | 'security_film', include_roll_ids: includeIds, limit: 200 }))
+            );
+            return Array.from(new Map(results.flatMap((r) => r.items).map((r) => [r.id, r])).values()) as FilmRoll[];
         },
         enabled: (isGalpon ? true : !!storeId) && (department === 'film' || department === 'security_film'),
         staleTime: 1000 * 60 * 2,
@@ -588,7 +775,9 @@ export function FilmPicker({
             const selectedRollId = entry?.film_roll_id;
             if (!brandId) return [];
             return allPpfRolls.filter(
-                (r) => r.film_type_id === brandId || r.id === selectedRollId
+                (r) =>
+                    (r.status !== 'esgotada' || r.id === selectedRollId) &&
+                    (r.film_type_id === brandId || r.id === selectedRollId)
             );
         },
         [selectedEntries, allPpfRolls]
@@ -600,10 +789,14 @@ export function FilmPicker({
             const tonality = entry?.tonality;
             const selectedRollId = entry?.film_roll_id;
 
+            let rolls = allFilmRolls.filter(
+                (r) => r.status !== 'esgotada' || r.id === selectedRollId
+            );
+
             // Filtrar por tonalidade, mas nunca remover a bobina já selecionada da entry
-            let rolls = tonality
-                ? allFilmRolls.filter((r) => r.tonality === tonality || r.id === selectedRollId)
-                : allFilmRolls;
+            rolls = tonality
+                ? rolls.filter((r) => r.tonality === tonality || r.id === selectedRollId)
+                : rolls;
 
             if (entry?.service_id) {
                 const entryCode = (services ?? []).find((s) => s.id === entry.service_id)?.code;
@@ -669,7 +862,7 @@ export function FilmPicker({
             const roll = allFilmRolls.find((r) => r.id.toString() === rollId);
             const updated = selectedEntries.map((entry, i) =>
                 i === index
-                    ? { ...entry, film_roll_id: roll?.id, roll_code: roll?.visual_id ?? '' }
+                    ? { ...entry, film_roll_id: roll?.id, roll_code: roll?.visual_id ?? '', used_scrap: false }
                     : entry
             );
             onChange(updated);
@@ -682,12 +875,26 @@ export function FilmPicker({
             const roll = allPpfRolls.find((r) => r.id.toString() === rollId);
             const updated = selectedEntries.map((entry, i) =>
                 i === index
-                    ? { ...entry, film_roll_id: roll?.id, roll_code: roll?.visual_id ?? '' }
+                    ? { ...entry, film_roll_id: roll?.id, roll_code: roll?.visual_id ?? '', used_scrap: false }
                     : entry
             );
             onChange(updated);
         },
         [selectedEntries, allPpfRolls, onChange]
+    );
+
+    // Marca a entry como retalho (sobra de corte anterior) — selecionado
+    // diretamente no dropdown de bobina. Sem bobina vinculada, sem código.
+    const selectScrap = useCallback(
+        (index: number) => {
+            const updated = selectedEntries.map((entry, i) =>
+                i === index
+                    ? { ...entry, used_scrap: true, film_roll_id: undefined, roll_code: '' }
+                    : entry
+            );
+            onChange(updated);
+        },
+        [selectedEntries, onChange]
     );
 
     const selectPpfBrand = useCallback(
@@ -793,37 +1000,24 @@ export function FilmPicker({
                                     {ppfRollsLoading ? (
                                         <Skeleton className="h-10 w-full" />
                                     ) : (
-                                        <Select
+                                        <RollSelect
+                                            rolls={getPpfRollsForEntry(index)}
                                             value={entry.film_roll_id?.toString() ?? ''}
-                                            onValueChange={(v) => selectPpfRoll(index, v)}
+                                            onChange={(v) => (v === 'scrap' ? selectScrap(index) : selectPpfRoll(index, v))}
                                             disabled={!entry.film_type_id}
-                                        >
-                                            <SelectTrigger className={cn('h-10', rollCodeErrors?.[index] && 'border-destructive')}>
-                                                <SelectValue placeholder="Selecionar bobina" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {getPpfRollsForEntry(index).length === 0 ? (
-                                                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                                                        {entry.film_type_id ? 'Nenhuma bobina disponível' : 'Selecione a marca primeiro'}
-                                                    </div>
-                                                ) : (
-                                                    getPpfRollsForEntry(index).map((roll) => (
-                                                        <SelectItem key={roll.id} value={roll.id.toString()}>
-                                                            {roll.visual_id} — {roll.remaining_meters.toFixed(1)}m
-                                                            {roll.status === 'em_uso' && (
-                                                                <span className="ml-1 text-xs text-amber-600">(em uso)</span>
-                                                            )}
-                                                            {roll.status === 'esgotada' && (
-                                                                <span className="ml-1 text-xs text-red-600 dark:text-red-400">(esgotada)</span>
-                                                            )}
-                                                        </SelectItem>
-                                                    ))
-                                                )}
-                                            </SelectContent>
-                                        </Select>
+                                            hasError={!!rollCodeErrors?.[index]}
+                                            emptyMessage={entry.film_type_id ? 'Nenhuma bobina disponível' : 'Selecione a marca primeiro'}
+                                            allowScrap
+                                            isScrap={!!entry.used_scrap}
+                                        />
                                     )}
                                     {rollCodeErrors?.[index] && (
                                         <p className="text-xs text-destructive">{rollCodeErrors[index]}</p>
+                                    )}
+                                    {entry.used_scrap && (
+                                        <p className="text-[11px] text-muted-foreground leading-tight">
+                                            A sobra já foi descontada no corte anterior — a bobina não será debitada.
+                                        </p>
                                     )}
                                 </div>
                             </div>
@@ -839,7 +1033,7 @@ export function FilmPicker({
                                         <SelectValue placeholder="Tonalidade" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {getTonalityOptions({ serviceCode: (services ?? []).find(s => s.id === entry.service_id)?.code, department }).map((opt) => (
+                                        {getTonalityOptions({ serviceCode: (services ?? []).find(s => s.id === entry.service_id)?.code, department, availableTonalities: tonalitiesForService(entry.service_id) }).map((opt) => (
                                             <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                                         ))}
                                     </SelectContent>
@@ -849,37 +1043,24 @@ export function FilmPicker({
                                     {filmRollsLoading ? (
                                         <Skeleton className="h-10 w-full" />
                                     ) : (
-                                        <Select
+                                        <RollSelect
+                                            rolls={getFilmRollsForEntry(index)}
                                             value={entry.film_roll_id?.toString() ?? ''}
-                                            onValueChange={(v) => selectFilmRoll(index, v)}
+                                            onChange={(v) => (v === 'scrap' ? selectScrap(index) : selectFilmRoll(index, v))}
                                             disabled={!entry.tonality}
-                                        >
-                                            <SelectTrigger className={cn('h-10', rollCodeErrors?.[index] && 'border-destructive')}>
-                                                <SelectValue placeholder="Selecionar bobina" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {getFilmRollsForEntry(index).length === 0 ? (
-                                                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                                                        {entry.tonality ? 'Nenhuma bobina disponível' : 'Selecione a tonalidade primeiro'}
-                                                    </div>
-                                                ) : (
-                                                    getFilmRollsForEntry(index).map((roll) => (
-                                                        <SelectItem key={roll.id} value={roll.id.toString()}>
-                                                            {roll.visual_id} — {roll.remaining_meters.toFixed(1)}m
-                                                            {roll.status === 'em_uso' && (
-                                                                <span className="ml-1 text-xs text-amber-600">(em uso)</span>
-                                                            )}
-                                                            {roll.status === 'esgotada' && (
-                                                                <span className="ml-1 text-xs text-red-600 dark:text-red-400">(esgotada)</span>
-                                                            )}
-                                                        </SelectItem>
-                                                    ))
-                                                )}
-                                            </SelectContent>
-                                        </Select>
+                                            hasError={!!rollCodeErrors?.[index]}
+                                            emptyMessage={entry.tonality ? 'Nenhuma bobina disponível' : 'Selecione a tonalidade primeiro'}
+                                            allowScrap
+                                            isScrap={!!entry.used_scrap}
+                                        />
                                     )}
                                     {rollCodeErrors?.[index] && (
                                         <p className="text-xs text-destructive">{rollCodeErrors[index]}</p>
+                                    )}
+                                    {entry.used_scrap && (
+                                        <p className="text-[11px] text-muted-foreground leading-tight">
+                                            A sobra já foi descontada no corte anterior — a bobina não será debitada.
+                                        </p>
                                     )}
                                 </div>
                             </div>
@@ -1128,11 +1309,18 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
     const effectivePermissions = useAuthStore((s) => s.effectivePermissions);
     const isGalponProfile = effectivePermissions?.is_galpon_profile === true;
     const hideGalponOption = !isGalponProfile && effectivePermissions?.hide_galpon_option === true;
-    const { availableStores, selectedStoreId } = useStoreStore();
+    // Regra "retorno sem O.S. de origem": Owner pode lançar retorno sem origem
+    // (observação vira obrigatória); demais perfis seguem exigindo a origem.
+    // Fonte única do papel: mesmo selector da store usado em AppointmentForm/useMyPermissions.
+    const isOwnerFn = useAuthStore((s) => s.isOwner);
+    const isOwner = isOwnerFn();
+    const quickCreateSchema = useMemo(() => buildQuickCreateSchema(isOwner), [isOwner]);
+    const { availableStores } = useStoreStore();
     const createServiceOrder = useCreateServiceOrder();
 
     const [photos, setPhotos] = useState<Photo[]>(prefill?.photos ?? []);
     const [damagePhotos, setDamagePhotos] = useState<Photo[]>(prefill?.damagePhotos ?? []);
+    const [videoUrl, setVideoUrl] = useState<string | null>(null);
     const plateInputRef = useRef<HTMLInputElement>(null);
     const formRef = useRef<HTMLFormElement>(null);
 
@@ -1149,9 +1337,25 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         };
     }, []);
 
+    // ─── Sugestão de O.S. de origem (campo Retorno) ───────────────────────────
+    type ReturnOriginSuggestion = {
+        id: number;
+        order_number: string | null;
+        external_os_number: string | null;
+        service_date: string | null;
+        services: string[];
+    };
+
+    const [originSuggestion, setOriginSuggestion] = useState<ReturnOriginSuggestion | null>(null);
+    const [originLoadingPlate, setOriginLoadingPlate] = useState<string | null>(null);
+    const [originConfirmed, setOriginConfirmed] = useState(false);
+    const [originChanging, setOriginChanging] = useState(false);
+    const [originInputValue, setOriginInputValue] = useState('');
+
     const scrollToFirstError = useCallback((fieldErrors: Record<string, unknown>) => {
         const fieldOrder = [
             'courtesy_return_set',
+            'original_service_order_id',
             'department',
             'service_date',
             'external_os_number',
@@ -1159,6 +1363,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
             'vehicle_model',
             'selected_services',
             'film_entries',
+            'notes',
         ];
         for (const field of fieldOrder) {
             if (!(field in fieldErrors)) continue;
@@ -1177,12 +1382,12 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         setValue,
         getValues,
         reset,
-        formState: { errors, isSubmitting },
+        formState: { errors, isSubmitting, isDirty },
     } = useForm<QuickCreateFormData>({
         // @hookform/resolvers v5 + zod v4 têm incompatibilidade no genérico Resolver;
         // o cast via unknown para o tipo correto preserva a checagem de tipos do form
         // (mesmo padrão de EditServiceOrderPage).
-        resolver: zodResolver(schema) as unknown as Resolver<QuickCreateFormData>,
+        resolver: zodResolver(quickCreateSchema) as unknown as Resolver<QuickCreateFormData>,
         defaultValues: {
             department: undefined,
             plate: '',
@@ -1215,6 +1420,17 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
     const watchedPlate       = watch('plate');
     const watchedServiceDate = watch('service_date');
     const watchedFilmEntries = watch('film_entries');
+    // Campos adicionais assistidos só para compor o snapshot do rascunho local
+    // (não usados diretamente no render fora do draft).
+    const watchedVehicleModel           = watch('vehicle_model');
+    const watchedVehicleModelId         = watch('vehicle_model_id');
+    const watchedVehicleColor           = watch('vehicle_color');
+    const watchedConsultantId           = watch('consultant_id');
+    const watchedExternalOsNumber       = watch('external_os_number');
+    const watchedNotes                  = watch('notes');
+    const watchedInstallers             = watch('installers');
+    const watchedServicePrices          = watch('service_prices');
+    const watchedOriginalServiceOrderId = watch('original_service_order_id');
 
     // Sinaliza "trabalho não salvo" para o auto-update do PWA não recarregar a
     // página no meio de uma O.S. em digitação (fotos são blobs, não sobrevivem
@@ -1228,6 +1444,30 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         else markClean('quick-create-os');
         return () => markClean('quick-create-os');
     }, [watchedPlate, photos, selectedSvcs]);
+
+    // Busca sugestão de O.S. de origem quando is_return=true e placa é válida
+    useEffect(() => {
+        const plate = (watchedPlate ?? '').toUpperCase().trim();
+        if (!isReturn || !plate || !isValidPlateOrChassi(plate)) {
+            setOriginSuggestion(null);
+            setOriginConfirmed(false);
+            setOriginChanging(false);
+            setOriginInputValue('');
+            setValue('original_service_order_id', undefined);
+            return;
+        }
+        if (originConfirmed) return; // já confirmado — não sobrescrever com nova busca
+        setOriginLoadingPlate(plate);
+        const returnStoreId = formStoreId ?? user?.store_id ?? undefined;
+        serviceOrdersService.suggestReturnOrigin(plate, undefined, returnStoreId, department || undefined).then((suggestion) => {
+            setOriginSuggestion(suggestion);
+            setOriginLoadingPlate(null);
+        }).catch(() => {
+            setOriginSuggestion(null);
+            setOriginLoadingPlate(null);
+        });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isReturn, watchedPlate, formStoreId, department]);
 
     // Reúne todos os service_ids selecionados (película ou catálogo)
     const isFilmDeptWatch = department === 'film' || department === 'security_film' || department === 'ppf';
@@ -1243,8 +1483,8 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         is_return: isReturn,
     });
 
-    // Resolve loja: form_store_id (multi-store) or selectedStoreId/user's store
-    const storeId = formStoreId ?? selectedStoreId ?? user?.store_id ?? undefined;
+    // Resolve loja: form_store_id (multi-store) ou loja do usuário
+    const storeId = formStoreId ?? user?.store_id ?? undefined;
     const currentStore = availableStores.find((s) => s.id === storeId);
     const storeBrandId = currentStore?.brand_id ?? undefined;
 
@@ -1258,7 +1498,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
     useEffect(() => {
         if (open) {
             if (formStoreId === undefined) {
-                const defaultId = selectedStoreId ?? user?.store_id ?? availableStores[0]?.id;
+                const defaultId = user?.store_id ?? availableStores[0]?.id;
                 if (defaultId) setValue('form_store_id', defaultId);
             }
             if (isGalponProfile) {
@@ -1267,6 +1507,65 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
+
+    // ─── Rascunho local (localStorage) ────────────────────────────────────────
+    // Snapshot serializável do form para autosave — só texto/seleção, nunca
+    // mídia (photos/damagePhotos/videoUrl vivem fora do draft, em useState).
+    const draftValue = useMemo<QuickCreateFormData>(() => ({
+        department,
+        plate: watchedPlate,
+        vehicle_model: watchedVehicleModel,
+        vehicle_model_id: watchedVehicleModelId,
+        vehicle_color: watchedVehicleColor,
+        consultant_id: watchedConsultantId,
+        external_os_number: watchedExternalOsNumber,
+        selected_services: selectedSvcs,
+        is_return: isReturn,
+        is_courtesy: isCourtesy,
+        courtesy_return_set: courtesyReturnSet,
+        is_galpon: isGalpon,
+        notes: watchedNotes,
+        service_date: watchedServiceDate,
+        film_entries: watchedFilmEntries,
+        installers: watchedInstallers,
+        form_store_id: formStoreId,
+        service_prices: watchedServicePrices,
+        original_service_order_id: watchedOriginalServiceOrderId,
+    }), [
+        department, watchedPlate, watchedVehicleModel, watchedVehicleModelId,
+        watchedVehicleColor, watchedConsultantId, watchedExternalOsNumber,
+        selectedSvcs, isReturn, isCourtesy, courtesyReturnSet, isGalpon,
+        watchedNotes, watchedServiceDate, watchedFilmEntries, watchedInstallers,
+        formStoreId, watchedServicePrices, watchedOriginalServiceOrderId,
+    ]);
+
+    const { discard: discardDraft, restored: draftRestored } = useFormDraft<QuickCreateFormData>({
+        key: QUICK_CREATE_DRAFT_KEY,
+        enabled: open,
+        value: draftValue,
+        onRestore: (draft) => {
+            reset({ ...getValues(), ...draft });
+            // O perfil galpão sempre vence sobre o rascunho (mesma regra do
+            // efeito acima, reafirmada aqui independente da ordem dos efeitos).
+            if (isGalponProfile) setValue('is_galpon', true);
+        },
+        // Só persiste quando o usuário de fato colocou conteúdo. `isDirty` pega
+        // os campos registrados (placa, modelo, cor, nº OS, observações). Vários
+        // controles usam `setValue` SEM `shouldDirty` (departamento, serviços,
+        // toggles de cortesia/retorno) — checados explicitamente. Exclui o que o
+        // efeito de abertura seta como base (loja, galpão, data de hoje) para não
+        // gravar uma O.S. intocada e reexibir o banner.
+        shouldPersist: (v) =>
+            isDirty ||
+            v.department !== undefined ||
+            (v.selected_services?.length ?? 0) > 0 ||
+            (v.film_entries?.length ?? 0) > 0 ||
+            (v.installers?.length ?? 0) > 0 ||
+            v.is_return ||
+            v.is_courtesy ||
+            v.courtesy_return_set,
+    });
+
     const { consultants, isLoading: consultantsLoading } = useConsultants(
         storeId ? { store_id: storeId, is_active: true } : undefined,
         1,
@@ -1285,6 +1584,46 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         }
     }, [open]);
 
+    const clearOriginState = useCallback(() => {
+        setOriginSuggestion(null);
+        setOriginConfirmed(false);
+        setOriginChanging(false);
+        setOriginInputValue('');
+        setOriginLoadingPlate(null);
+    }, []);
+
+    // Trocar a loja muda a MARCA-base da O.S. de origem: um vínculo já confirmado para
+    // a marca anterior deixa de valer e seria descartado silenciosamente no backend.
+    // Reseta o estado para forçar nova busca/confirmação (paridade com o mobile).
+    const prevStoreRef = useRef(formStoreId);
+    useEffect(() => {
+        // Só reseta numa troca genuína entre duas lojas reais. A 1ª hidratação
+        // (undefined→loja), inclusive a de edição que repõe o vínculo existente,
+        // apenas registra a loja — senão apagaria o vínculo restaurado.
+        if (prevStoreRef.current == null || prevStoreRef.current === formStoreId) {
+            prevStoreRef.current = formStoreId;
+            return;
+        }
+        prevStoreRef.current = formStoreId;
+        clearOriginState();
+        setValue('original_service_order_id', undefined);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [formStoreId]);
+
+    // Trocar o DEPARTAMENTO invalida um vínculo de origem já confirmado (a busca é
+    // estrita por departamento). Reseta o estado para forçar nova busca/confirmação.
+    const prevReturnDeptRef = useRef(department);
+    useEffect(() => {
+        if (prevReturnDeptRef.current == null || prevReturnDeptRef.current === department) {
+            prevReturnDeptRef.current = department;
+            return;
+        }
+        prevReturnDeptRef.current = department;
+        clearOriginState();
+        setValue('original_service_order_id', undefined);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [department]);
+
     // Reset everything on close
     const handleClose = useCallback(() => {
         photos.forEach((p) => URL.revokeObjectURL(p.preview));
@@ -1292,14 +1631,16 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         reset();
         setPhotos([]);
         setDamagePhotos([]);
+        setVideoUrl(null);
+        clearOriginState();
         onClose();
-    }, [reset, onClose, photos, damagePhotos]);
+    }, [reset, onClose, photos, damagePhotos, clearOriginState]);
 
     // Full reset: clear form and stay open for next OS
     const fullReset = useCallback(() => {
         photos.forEach((p) => URL.revokeObjectURL(p.preview));
         damagePhotos.forEach((p) => URL.revokeObjectURL(p.preview));
-        const currentFormStoreId = formStoreId ?? selectedStoreId ?? user?.store_id ?? availableStores[0]?.id;
+        const currentFormStoreId = formStoreId ?? user?.store_id ?? availableStores[0]?.id;
         reset({
             department: undefined,
             plate: '',
@@ -1322,8 +1663,10 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
         });
         setPhotos([]);
         setDamagePhotos([]);
+        setVideoUrl(null);
+        clearOriginState();
         setTimeout(() => plateInputRef.current?.focus(), 50);
-    }, [reset, formStoreId, selectedStoreId, user, availableStores, isGalponProfile, photos, damagePhotos]);
+    }, [reset, formStoreId, user, availableStores, isGalponProfile, photos, damagePhotos, clearOriginState]);
 
     // Partial reset: keep dept and store — for "Salvar e Próxima"
     const partialReset = useCallback(
@@ -1352,9 +1695,11 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
             });
             setPhotos([]);
             setDamagePhotos([]);
+            setVideoUrl(null);
+            clearOriginState();
             setTimeout(() => plateInputRef.current?.focus(), 50);
         },
-        [reset, isGalponProfile, photos, damagePhotos]
+        [reset, isGalponProfile, photos, damagePhotos, clearOriginState]
     );
 
     // Keep-vehicle reset: preserves plate/car/consultant/store/notes for "Salvar e Outro Depto."
@@ -1382,6 +1727,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                 film_entries: [],
                 installers: [],
             });
+            clearOriginState();
             setPriceErrors({});
             setTimeout(
                 () =>
@@ -1391,7 +1737,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                 50
             );
         },
-        [reset, isGalponProfile]
+        [reset, isGalponProfile, clearOriginState]
     );
 
     const validatePrices = useCallback((): boolean => {
@@ -1424,8 +1770,10 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                     service_id:   e.service_id,
                     quantity:     1,
                     tonality:     e.tonality,
-                    roll_code:    e.roll_code || undefined,
-                    film_roll_id: e.film_roll_id || undefined,
+                    // Retalho (sobra): sem bobina vinculada — nenhum metro é debitado.
+                    roll_code:    e.used_scrap ? undefined : (e.roll_code || undefined),
+                    film_roll_id: e.used_scrap ? undefined : (e.film_roll_id || undefined),
+                    used_scrap:   e.used_scrap || undefined,
                 }))
                 : data.selected_services.map((id) => ({
                     service_id: id,
@@ -1456,15 +1804,20 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                 is_galpon: data.is_galpon,
                 is_return: data.is_return,
                 is_courtesy: data.is_courtesy,
+                original_service_order_id: data.is_return ? (data.original_service_order_id ?? null) : null,
                 items,
                 workers,
+                // Lançamento direto de película já traz instalador + bobina: nasce finalizada
+                // (completed), entrando no Desempenho/Fechamento. Demais deptos seguem em Aguardando.
+                finalize_on_create: isFilmDept,
                 notes: notesText,
                 photos: uploadedPhotoUrls,
                 damage_photos: uploadedDamageUrls,
+                video_url: videoUrl ?? undefined,
                 service_date: data.service_date,
             };
         },
-        [storeId, availableStores, prefill]
+        [storeId, availableStores, prefill, videoUrl]
     );
 
     const uploadPhotos = useCallback(async (): Promise<string[]> => {
@@ -1505,6 +1858,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
             const [uploadedUrls, damageUrls] = await Promise.all([uploadPhotos(), uploadDamagePhotos()]);
             await createServiceOrder.mutateAsync(buildPayload(data, uploadedUrls, damageUrls));
             toast({ title: 'OS lançada com sucesso!' });
+            discardDraft();
             fullReset();
             onClose();
         } catch (err: unknown) {
@@ -1525,6 +1879,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
             const [uploadedUrls, damageUrls] = await Promise.all([uploadPhotos(), uploadDamagePhotos()]);
             await createServiceOrder.mutateAsync(buildPayload(data, uploadedUrls, damageUrls));
             toast({ title: 'OS lançada! Próxima OS...' });
+            discardDraft();
             partialReset(savedDept, savedFormStore);
         } catch (err) {
             toast({ variant: 'destructive', title: 'Erro ao lançar OS', description: getApiErrorMessage(err as Error, 'Verifique os dados e tente novamente.') });
@@ -1541,6 +1896,7 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
             const [uploadedUrls, damageUrls] = await Promise.all([uploadPhotos(), uploadDamagePhotos()]);
             await createServiceOrder.mutateAsync(buildPayload(data, uploadedUrls, damageUrls));
             toast({ title: 'O.S. lançada!', description: 'Escolha o próximo departamento.' });
+            discardDraft();
             keepVehicleReset(data);
         } catch (err) {
             toast({ variant: 'destructive', title: 'Erro ao lançar OS', description: getApiErrorMessage(err as Error, 'Verifique os dados e tente novamente.') });
@@ -1578,6 +1934,10 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                         O campo Placa/Chassi agora aceita apenas placa (ABC1234 ou ABC1D23) ou o chassi gravado no vidro
                         (8 caracteres, com letras e números). O chassi completo de 17 caracteres não é mais aceito.
                     </DismissibleNotice>
+
+                    {draftRestored && (
+                        <DraftRestoredBanner onDiscard={() => { discardDraft(); fullReset(); }} />
+                    )}
 
                     {/* Row 1: Loja | Cortesia/Retorno + Galpão */}
                     <div className="space-y-3">
@@ -1654,6 +2014,181 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                             )}
                         </div>
                     </div>
+
+                    {/* O.S. de origem (visível apenas quando is_return = true) */}
+                    {isReturn && (
+                        <div className="rounded-md border border-[#D1D1D1] dark:border-[#333333] bg-[#FAFAFA] dark:bg-[#181818] p-3 space-y-2" data-field="original_service_order_id">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+                                <Repeat className="h-3.5 w-3.5" />
+                                O.S. de origem
+                            </p>
+
+                            {/* Owner pode lançar retorno sem O.S. de origem — observação vira obrigatória */}
+                            {isOwner && (
+                                <p className="text-xs text-muted-foreground">
+                                    Como Proprietário, você pode lançar sem O.S. de origem — informe o motivo na Observação.
+                                </p>
+                            )}
+
+                            {/* Estado: carregando */}
+                            {originLoadingPlate && !originConfirmed && (
+                                <p className="text-xs text-muted-foreground">Buscando O.S. original...</p>
+                            )}
+
+                            {/* Estado: sugestão disponível e não confirmada */}
+                            {!originLoadingPlate && originSuggestion && !originConfirmed && !originChanging && (
+                                <div className="space-y-1.5">
+                                    <div className="rounded-md bg-white dark:bg-[#1A1A1A] border border-[#D1D1D1] dark:border-[#333333] px-3 py-2 text-sm">
+                                        <p className="font-medium text-[#111111] dark:text-white">
+                                            {originSuggestion.order_number ?? `#${originSuggestion.id}`}
+                                            {originSuggestion.external_os_number && (
+                                                <span className="ml-1.5 text-muted-foreground font-normal">
+                                                    ({originSuggestion.external_os_number})
+                                                </span>
+                                            )}
+                                        </p>
+                                        {originSuggestion.service_date && (
+                                            <p className="text-xs text-muted-foreground">
+                                                {new Date(originSuggestion.service_date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                                            </p>
+                                        )}
+                                        {originSuggestion.services.length > 0 && (
+                                            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                                                {originSuggestion.services.join(', ')}
+                                            </p>
+                                        )}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setValue('original_service_order_id', originSuggestion.id);
+                                                setOriginConfirmed(true);
+                                            }}
+                                            className="flex items-center gap-1 rounded-md bg-[#F5A800] px-3 py-1 text-xs font-semibold text-[#111111] hover:bg-[#e09800] transition-colors"
+                                        >
+                                            <Check className="h-3 w-3" /> Confirmar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setOriginChanging(true);
+                                                setOriginInputValue('');
+                                            }}
+                                            className="rounded-md border border-[#D1D1D1] dark:border-[#333333] px-3 py-1 text-xs font-semibold text-[#444444] dark:text-zinc-300 hover:bg-[#F5F5F5] dark:hover:bg-[#2A2A2A] transition-colors"
+                                        >
+                                            Trocar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setOriginSuggestion(null);
+                                                setValue('original_service_order_id', undefined);
+                                            }}
+                                            className="rounded-md border border-[#D1D1D1] dark:border-[#333333] px-3 py-1 text-xs font-semibold text-[#444444] dark:text-zinc-300 hover:bg-[#F5F5F5] dark:hover:bg-[#2A2A2A] transition-colors"
+                                        >
+                                            Limpar
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Estado: confirmado */}
+                            {originConfirmed && originSuggestion && (
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 text-sm">
+                                        <Check className="h-4 w-4 text-green-600 shrink-0" />
+                                        <span className="font-medium text-[#111111] dark:text-white">
+                                            {originSuggestion.order_number ?? `#${originSuggestion.id}`}
+                                        </span>
+                                        {originSuggestion.external_os_number && (
+                                            <span className="text-xs text-muted-foreground">({originSuggestion.external_os_number})</span>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setOriginConfirmed(false);
+                                            setOriginSuggestion(null);
+                                            setValue('original_service_order_id', undefined);
+                                        }}
+                                        className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                                        aria-label="Limpar O.S. de origem"
+                                    >
+                                        <X className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Estado: trocar — input manual por placa/chassi */}
+                            {originChanging && (
+                                <div className="space-y-1.5">
+                                    <p className="text-xs text-muted-foreground">Informe a placa/chassi da O.S. de origem:</p>
+                                    <div className="flex gap-2">
+                                        <Input
+                                            type="text"
+                                            placeholder="Placa/chassi da O.S. de origem"
+                                            value={originInputValue}
+                                            onChange={(e) => setOriginInputValue(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                                            className="h-8 text-sm font-mono tracking-widest uppercase"
+                                            maxLength={17}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                const searchPlate = originInputValue.trim() || (watchedPlate ?? '').toUpperCase().trim();
+                                                if (!searchPlate) return;
+                                                try {
+                                                    const suggestion = await serviceOrdersService.suggestReturnOrigin(searchPlate, undefined, storeId, department || undefined);
+                                                    if (suggestion) {
+                                                        setOriginSuggestion(suggestion);
+                                                        setValue('original_service_order_id', suggestion.id);
+                                                        setOriginConfirmed(true);
+                                                        setOriginChanging(false);
+                                                    } else {
+                                                        setOriginSuggestion(null);
+                                                    }
+                                                } catch {
+                                                    setOriginSuggestion(null);
+                                                }
+                                            }}
+                                            className="flex items-center gap-1 rounded-md bg-[#F5A800] px-3 py-1 text-xs font-semibold text-[#111111] hover:bg-[#e09800] transition-colors whitespace-nowrap"
+                                        >
+                                            <Search className="h-3 w-3" /> Buscar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setOriginChanging(false);
+                                                setOriginInputValue('');
+                                            }}
+                                            className="rounded-md border border-[#D1D1D1] dark:border-[#333333] px-2 py-1 text-xs text-muted-foreground hover:bg-[#F5F5F5] dark:hover:bg-[#2A2A2A] transition-colors"
+                                        >
+                                            <X className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                    {originInputValue.trim() && !originLoadingPlate && originSuggestion === null && !originConfirmed && (
+                                        <p className="text-xs text-muted-foreground">Nenhuma O.S. encontrada para essa placa/chassi.</p>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Estado: sem sugestão e não está carregando */}
+                            {!originLoadingPlate && !originSuggestion && !originConfirmed && !originChanging && (
+                                <p className="text-xs text-muted-foreground">
+                                    {isValidPlateOrChassi((watchedPlate ?? '').toUpperCase().trim())
+                                        ? 'Nenhuma O.S. anterior encontrada para esta placa.'
+                                        : 'Informe a placa para buscar a O.S. original.'}
+                                </p>
+                            )}
+
+                            {errors.original_service_order_id && (
+                                <p className="text-xs text-destructive">
+                                    {errors.original_service_order_id.message}
+                                </p>
+                            )}
+                        </div>
+                    )}
 
                     {/* Departamento */}
                     <div data-field="department">
@@ -1895,18 +2430,33 @@ export function QuickCreateModal({ open, onClose, prefill }: QuickCreateModalPro
                         <CompactPhotoUploader photos={damagePhotos} onChange={setDamagePhotos} label="Foto de Avaria" />
                     </div>
 
+                    {/* Vídeo */}
+                    <div className="space-y-1">
+                        <span className="text-xs font-medium uppercase text-muted-foreground">Vídeo da OS</span>
+                        <VideoCapture videoUrl={videoUrl} onChange={setVideoUrl} />
+                    </div>
+
                     {/* Observações */}
-                    <div className="space-y-1.5">
+                    <div className="space-y-1.5" data-field="notes">
                         <Label htmlFor="notes" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                             Observações
+                            {isReturn && isOwner && !watchedOriginalServiceOrderId && (
+                                <span className="text-destructive"> *</span>
+                            )}
                         </Label>
                         <Textarea
                             id="notes"
                             {...register('notes')}
                             placeholder="Informações adicionais..."
                             rows={2}
-                            className="resize-none bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]"
+                            className={cn(
+                                'resize-none bg-white dark:bg-[#1A1A1A] border-[#D1D1D1] dark:border-[#333333] text-[#111111] dark:text-white placeholder:text-[#999999] dark:placeholder:text-zinc-500 focus-visible:ring-[#F5A800]',
+                                errors.notes && 'border-destructive'
+                            )}
                         />
+                        {errors.notes && (
+                            <p className="text-xs text-destructive">{errors.notes.message}</p>
+                        )}
                     </div>
                 </form>
 

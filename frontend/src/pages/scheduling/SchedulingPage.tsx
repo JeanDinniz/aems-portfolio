@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Plus, CalendarDays, List, Calendar, X } from 'lucide-react'
+import { Plus, CalendarDays, List, Calendar, X, ClipboardList, Loader2, Link2, FileSpreadsheet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -12,19 +12,23 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
 import { AlertBanner } from '@/components/features/scheduling/AlertBanner'
 import { StatusLegend } from '@/components/features/scheduling/StatusLegend'
 import { TodaySummaryModal } from '@/components/features/scheduling/TodaySummaryModal'
+import { CarrosParaFazerModal } from '@/components/features/scheduling/CarrosParaFazerModal'
 import { AppointmentListView } from '@/components/features/scheduling/AppointmentListView'
 import { CalendarMonthView } from '@/components/features/scheduling/CalendarMonthView'
 import { CalendarWeekView } from '@/components/features/scheduling/CalendarWeekView'
 import { SchedulingFilters } from '@/components/features/scheduling/SchedulingFilters'
 import { AppointmentDetailDrawer } from '@/components/features/scheduling/AppointmentDetailDrawer'
 import { AppointmentForm } from '@/components/features/scheduling/AppointmentForm'
-import { SchedulingSummaryCards } from '@/components/features/scheduling/SchedulingSummaryCards'
-import { useAppointments, useTodaySummary, useSchedulingStoreSummary, useCancelAppointment } from '@/hooks/useScheduling'
-import { useCanEdit, useCanDelete } from '@/hooks/useMyPermissions'
-import { useStoreStore } from '@/stores/store.store'
+import { schedulingService } from '@/services/api/scheduling.service'
+import { useToast } from '@/hooks/use-toast'
+import { useAppointments, useTodaySummary, useCancelAppointment } from '@/hooks/useScheduling'
+import { DEPARTMENT_LABELS } from '@/constants/scheduling'
+import { useCanEdit, useCanDelete, useSchedulingDepartments } from '@/hooks/useMyPermissions'
 import { useStores } from '@/hooks/useStores'
 import { cn } from '@/lib/utils'
 import type { Appointment, AppointmentDisplayStatus, AppointmentFilters } from '@/types/scheduling.types'
@@ -41,31 +45,43 @@ function shouldShowSummaryModal(): boolean {
 }
 
 export default function SchedulingPage() {
-  const { selectedStoreId } = useStoreStore()
-
   const [view, setView] = useState<ViewMode>('lista')
   const [currentDate, setCurrentDate] = useState(() => new Date())
   const [filters, setFilters] = useState<AppointmentFilters>({})
-  const [statusFilter, setStatusFilter] = useState<AppointmentDisplayStatus | null>(null)
+  const [statusFilters, setStatusFilters] = useState<AppointmentDisplayStatus[]>([])
   const [page] = useState(1)
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null)
   const [showSummaryModal, setShowSummaryModal] = useState(() => shouldShowSummaryModal())
   const [cancelConfirmAppointment, setCancelConfirmAppointment] = useState<Appointment | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
   const [showTerminal, setShowTerminal] = useState(false)
+  const [showCarrosPreview, setShowCarrosPreview] = useState(false)
+  const [isExportingExcel, setIsExportingExcel] = useState(false)
+  const { toast } = useToast()
+
+  // Uma busca por placa/O.S. procura um carro específico, que pode já estar
+  // finalizado ou cancelado. Nesse caso incluímos/exibimos os terminais
+  // automaticamente, sem exigir o toggle "Mostrar finalizados/cancelados".
+  const hasSearch = !!filters.search?.trim()
 
   // Build effective filters
   const effectiveFilters = useMemo<AppointmentFilters>(() => {
     const f = { ...filters }
-    if (statusFilter === 'cancelado') f.include_cancelled = true
+    if (hasSearch || statusFilters.includes('cancelado')) f.include_cancelled = true
     // Terminais (finalizados/cancelados) só são buscados quando o usuário pede — evita
-    // truncar os agendamentos ativos pela paginação.
-    if (showTerminal || statusFilter === 'finalizado' || statusFilter === 'cancelado') {
+    // truncar os agendamentos ativos pela paginação. A busca textual é um pedido explícito.
+    if (
+      showTerminal ||
+      hasSearch ||
+      statusFilters.includes('finalizado') ||
+      statusFilters.includes('cancelado')
+    ) {
       f.include_terminal = true
     }
     return f
-  }, [filters, statusFilter, showTerminal])
+  }, [filters, statusFilters, showTerminal, hasSearch])
 
   // Queries
   const { data: appointmentsData, isLoading: apptLoading } = useAppointments(
@@ -73,12 +89,7 @@ export default function SchedulingPage() {
     page,
     200
   )
-  const { data: summary } = useTodaySummary(selectedStoreId)
-  const { data: storeSummary, isLoading: storeSummaryLoading } = useSchedulingStoreSummary({
-    date_from: effectiveFilters.date_from,
-    date_to: effectiveFilters.date_to,
-    department: effectiveFilters.department,
-  })
+  const { data: summary } = useTodaySummary(filters.store_id ?? null)
 
   const { stores: allStores } = useStores()
 
@@ -87,10 +98,11 @@ export default function SchedulingPage() {
   const canEditScheduling = useCanEdit('scheduling')
   const canCancelScheduling = useCanDelete('scheduling')
   const canGenerateOS = useCanEdit('scheduling_os')
+  const allowedDepartments = useSchedulingDepartments()
 
   const allAppointments = appointmentsData?.items ?? []
-  const appointments = statusFilter
-    ? allAppointments.filter((a) => a.display_status === statusFilter)
+  const appointments = statusFilters.length
+    ? allAppointments.filter((a) => statusFilters.includes(a.display_status))
     : allAppointments
   const totalCount = appointmentsData?.pagination.total ?? 0
 
@@ -99,6 +111,7 @@ export default function SchedulingPage() {
     atencao: 0,
     agendado: 0,
     em_execucao: 0,
+    duplicidade: 0,
     finalizado: 0,
     cancelado: 0,
   }
@@ -110,17 +123,20 @@ export default function SchedulingPage() {
 
   const handleViewAllFromSummary = () => {
     setFilters({})
-    setStatusFilter(null)
+    setStatusFilters([])
     setView('lista')
     setShowSummaryModal(false)
   }
 
+  // Multi-seleção: clicar num status alterna ele na lista, mantendo os demais.
   const handleStatusClick = (status: AppointmentDisplayStatus) => {
-    setStatusFilter((prev) => (prev === status ? null : status))
+    setStatusFilters((prev) =>
+      prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status]
+    )
   }
 
   const hasActiveStatusOrFilters =
-    statusFilter !== null ||
+    statusFilters.length > 0 ||
     !!filters.search ||
     !!filters.store_id ||
     !!filters.department ||
@@ -130,16 +146,7 @@ export default function SchedulingPage() {
 
   const handleClearAll = () => {
     setFilters({})
-    setStatusFilter(null)
-  }
-
-  const handleSummaryCardClick = (storeId: number, filterType: AppointmentDisplayStatus | 'all') => {
-    setFilters((f) => ({ ...f, store_id: storeId }))
-    if (filterType !== 'all') {
-      setStatusFilter(filterType)
-    } else {
-      setStatusFilter(null) // limpar filtro de status ao clicar em "total"
-    }
+    setStatusFilters([])
   }
 
   const handleDayClick = (d: Date) => {
@@ -161,13 +168,53 @@ export default function SchedulingPage() {
 
   const handleCancelAppointment = (appt: Appointment) => {
     setSelectedAppointment(null)
+    setCancelReason('')
     setCancelConfirmAppointment(appt)
   }
 
   const handleConfirmCancel = () => {
     if (!cancelConfirmAppointment) return
-    cancelMutation.mutate({ id: cancelConfirmAppointment.id })
+    const reason = cancelReason.trim()
+    if (!reason) return
+    cancelMutation.mutate({ id: cancelConfirmAppointment.id, reason })
     setCancelConfirmAppointment(null)
+    setCancelReason('')
+  }
+
+  // "Carros para fazer" = status pendentes selecionados na legenda (ou nenhum filtro = todos os pendentes)
+  const pendingCarrosStatuses = useMemo(
+    () =>
+      (['atrasado', 'atencao', 'agendado', 'em_execucao'] as AppointmentDisplayStatus[]).filter(
+        (s) => statusFilters.includes(s)
+      ),
+    [statusFilters]
+  )
+
+  const handleExportExcel = async () => {
+    setIsExportingExcel(true)
+    try {
+      // Espelha a tela: os mesmos filtros efetivos (incl. toggle de terminais) e a
+      // seleção de status da legenda (todos os status marcados, não só pendentes).
+      const blob = await schedulingService.exportExcel(effectiveFilters, statusFilters)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const range =
+        filters.date_from && filters.date_to
+          ? `${filters.date_from}_${filters.date_to}`
+          : getTodayKey()
+      a.download = `agendamento_${range}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: 'Erro ao exportar Excel',
+        description: 'Não foi possível gerar a planilha de agendamentos.',
+      })
+    } finally {
+      setIsExportingExcel(false)
+    }
   }
 
   return (
@@ -203,16 +250,41 @@ export default function SchedulingPage() {
             <AlertBanner atrasado={safeSummary.atrasado} atencao={safeSummary.atencao} />
           </div>
 
-          {canEditScheduling && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center w-full sm:w-auto shrink-0">
             <Button
-              onClick={handleOpenNewForm}
-              className="w-full sm:w-auto shrink-0 flex items-center justify-center gap-1.5 font-semibold"
-              style={{ backgroundColor: '#F5A800', color: '#000' }}
+              variant="outline"
+              onClick={handleExportExcel}
+              disabled={isExportingExcel}
+              className="w-full sm:w-auto font-semibold gap-2 shrink-0 border-[#D1D1D1] dark:border-[#333333] text-[#666666] dark:text-zinc-300 hover:border-[#F5A800] hover:text-[#F5A800] bg-transparent"
             >
-              <Plus className="h-4 w-4" />
-              Novo Agendamento
+              {isExportingExcel ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <FileSpreadsheet className="h-4 w-4" />
+              )}
+              Exportar Excel
             </Button>
-          )}
+
+            <Button
+              variant="outline"
+              onClick={() => setShowCarrosPreview(true)}
+              className="w-full sm:w-auto font-semibold gap-2 shrink-0 border-[#D1D1D1] dark:border-[#333333] text-[#666666] dark:text-zinc-300 hover:border-[#F5A800] hover:text-[#F5A800] bg-transparent"
+            >
+              <ClipboardList className="h-4 w-4" />
+              Carros para fazer
+            </Button>
+
+            {canEditScheduling && (
+              <Button
+                onClick={handleOpenNewForm}
+                className="w-full sm:w-auto shrink-0 flex items-center justify-center gap-1.5 font-semibold"
+                style={{ backgroundColor: '#F5A800', color: '#000' }}
+              >
+                <Plus className="h-4 w-4" />
+                Novo Agendamento
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Filters */}
@@ -221,22 +293,16 @@ export default function SchedulingPage() {
             filters={filters}
             onFiltersChange={setFilters}
             stores={allStores}
+            allowedDepartments={allowedDepartments}
           />
         </div>
       </div>
-
-      {/* Store summary bar */}
-      <SchedulingSummaryCards
-        summary={storeSummary ?? []}
-        isLoading={storeSummaryLoading}
-        onFilterClick={handleSummaryCardClick}
-      />
 
       {/* Legend + View tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <StatusLegend
-            selectedStatus={statusFilter}
+            selectedStatuses={statusFilters}
             onStatusClick={handleStatusClick}
           />
           {hasActiveStatusOrFilters && (
@@ -311,8 +377,9 @@ export default function SchedulingPage() {
             <AppointmentListView
               appointments={appointments}
               onCardClick={setSelectedAppointment}
-              showTerminal={showTerminal}
+              showTerminal={showTerminal || hasSearch}
               onToggleTerminal={() => setShowTerminal((v) => !v)}
+              hideToggle={hasSearch}
             />
           )}
           {view === 'semana' && (
@@ -343,6 +410,14 @@ export default function SchedulingPage() {
         summary={safeSummary}
       />
 
+      {/* Carros para fazer — preview do resumo antes de gerar o PDF */}
+      <CarrosParaFazerModal
+        open={showCarrosPreview}
+        onClose={() => setShowCarrosPreview(false)}
+        filters={effectiveFilters}
+        displayStatuses={pendingCarrosStatuses}
+      />
+
       {/* Detail drawer */}
       <AppointmentDetailDrawer
         appointment={selectedAppointment}
@@ -353,6 +428,18 @@ export default function SchedulingPage() {
         canEdit={canEditScheduling}
         canCancel={canCancelScheduling}
         canGenerateOS={canGenerateOS}
+        onOpenSibling={async (siblingId) => {
+          try {
+            const sibling = await schedulingService.getById(siblingId)
+            setSelectedAppointment(sibling)
+          } catch {
+            toast({
+              variant: 'destructive',
+              title: 'Sem acesso ao agendamento vinculado',
+              description: 'Não foi possível abrir o agendamento do outro departamento.',
+            })
+          }
+        }}
       />
 
       {/* Create / edit form */}
@@ -369,26 +456,69 @@ export default function SchedulingPage() {
       {/* Cancel confirmation dialog */}
       <AlertDialog
         open={!!cancelConfirmAppointment}
-        onOpenChange={(open) => { if (!open) setCancelConfirmAppointment(null) }}
+        onOpenChange={(open) => { if (!open) { setCancelConfirmAppointment(null); setCancelReason('') } }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Cancelar agendamento</AlertDialogTitle>
-            <AlertDialogDescription>
-              Deseja cancelar o agendamento da placa{' '}
-              <span className="font-semibold text-gray-900 dark:text-white">
-                {cancelConfirmAppointment?.vehicle_plate}
-              </span>
-              {cancelConfirmAppointment?.vehicle_model && (
-                <> — {cancelConfirmAppointment.vehicle_model}</>
-              )}
-              ? Esta ação não pode ser desfeita.
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Deseja cancelar o agendamento da placa{' '}
+                  <span className="font-semibold text-gray-900 dark:text-white">
+                    {cancelConfirmAppointment?.vehicle_plate}
+                  </span>
+                  {cancelConfirmAppointment?.vehicle_model && (
+                    <> — {cancelConfirmAppointment.vehicle_model}</>
+                  )}
+                  ? Esta ação não pode ser desfeita.
+                </p>
+                {/* Aviso sobre O.S. vinculada */}
+                {cancelConfirmAppointment?.service_order_id && (
+                  cancelConfirmAppointment.display_status === 'finalizado' ? (
+                    <div className="flex items-start gap-1.5 rounded-md border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-800 dark:text-blue-300">
+                      <span>
+                        A O.S. vinculada está finalizada e <strong>não será cancelada</strong>.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-1.5 rounded-md border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-3 py-2 text-xs text-red-800 dark:text-red-300">
+                      <span>
+                        A O.S. vinculada também será cancelada.
+                      </span>
+                    </div>
+                  )
+                )}
+                {(cancelConfirmAppointment?.group_siblings?.length ?? 0) > 0 && (
+                  <div className="flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                    <Link2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      Somente este agendamento de{' '}
+                      <strong>{DEPARTMENT_LABELS[cancelConfirmAppointment!.department] ?? cancelConfirmAppointment!.department}</strong>{' '}
+                      será cancelado; os demais agendamentos do grupo permanecem.
+                    </span>
+                  </div>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="cancel-reason" className="text-sm font-medium">
+              Motivo do cancelamento <span className="text-red-600">*</span>
+            </Label>
+            <Textarea
+              id="cancel-reason"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder="Descreva o motivo do cancelamento…"
+              rows={3}
+            />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Voltar</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmCancel}
+              disabled={!cancelReason.trim()}
               className="bg-red-600 hover:bg-red-700 text-white"
             >
               Confirmar cancelamento

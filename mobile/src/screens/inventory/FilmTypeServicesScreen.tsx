@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { useConfirm } from '@/components/ui';
 import { ScreenHeader } from '@/components/common/ScreenHeader';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
@@ -35,6 +36,7 @@ export function FilmTypeServicesScreen({
 }: InventoryStackScreenProps<'FilmTypeServices'>) {
     const { id } = route.params;
     const canEdit = useCanEdit('inventory');
+    const { confirm } = useConfirm();
     const toast = useToast();
 
     const { data: types, isLoading, isError, refetch } = useFilmTypes();
@@ -90,16 +92,14 @@ export function FilmTypeServicesScreen({
         );
     };
 
-    const confirmRemove = (link: FilmTypeServiceLink) => {
-        Alert.alert('Remover serviço', `Desvincular "${link.service_name}" deste tipo?`, [
-            { text: 'Cancelar', style: 'cancel' },
-            {
-                text: 'Remover',
-                style: 'destructive',
-                onPress: () =>
-                    removeService.mutate({ filmTypeId: id, serviceId: link.service_id }),
-            },
-        ]);
+    const confirmRemove = async (link: FilmTypeServiceLink) => {
+        const ok = await confirm({
+            title: 'Remover serviço',
+            message: `Desvincular "${link.service_name}" deste tipo?`,
+            confirmLabel: 'Remover',
+            destructive: true,
+        });
+        if (ok) removeService.mutate({ filmTypeId: id, serviceId: link.service_id });
     };
 
     if (isLoading) {

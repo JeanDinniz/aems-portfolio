@@ -38,6 +38,14 @@ jest.mock('@/hooks/useStores', () => ({
     }),
 }));
 
+// Metas de Faturamento (Owner) usam TanStack Query; mockadas para dispensar o
+// QueryClientProvider neste teste de UI.
+const mockUpdateGoalsMutate = jest.fn();
+jest.mock('@/hooks/useSettings', () => ({
+    useRevenueGoals: () => ({ data: undefined, isLoading: false }),
+    useUpdateRevenueGoals: () => ({ mutate: mockUpdateGoalsMutate, isPending: false }),
+}));
+
 const metrics = {
     frame: { x: 0, y: 0, width: 390, height: 844 },
     insets: { top: 47, left: 0, right: 0, bottom: 34 },

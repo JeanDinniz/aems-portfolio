@@ -5,7 +5,7 @@
  * tipos JPEG/PNG/WebP/HEIC). Retorna `{ url }`.
  *
  * Diferenças vs web: no RN o `file` do FormData é o objeto
- * `{ uri, name, type }` (não um `Blob`/`File` do DOM). Timeout de 120s por
+ * `{ uri, name, type }` (não um `Blob`/`File` do DOM). Timeout de 60s por
  * request (o apiClient global usa 30s — sobrescrevemos aqui).
  *
  * Tratamento de erro: 413 (muito grande), 415 (tipo não suportado), 422
@@ -16,7 +16,10 @@ import { apiClient } from '@/services/api/client';
 import { getApiErrorMessage, getApiErrorStatus } from '@/lib/api-error';
 import type { LocalPhotoAsset } from '@/types/photo.types';
 
-const UPLOAD_TIMEOUT_MS = 120_000;
+// Upload mobile "moderado" (ADR 2026-08-31): 60s em vez de 120s para uma conexão
+// morta cair no backoff/retry da fila mais cedo (rede instável de galpão), em vez
+// de "pendurar" até 2min. REVERTER = 120_000. Ver ADR.
+const UPLOAD_TIMEOUT_MS = 60_000;
 
 /** Progresso 0-100 do upload de uma foto. */
 export type UploadProgressHandler = (percent: number) => void;

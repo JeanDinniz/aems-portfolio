@@ -2,20 +2,25 @@
 Inventory router - API endpoints for film type and roll management.
 """
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_profile_permission
+from app.core.redis import cached_catalog
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.dependencies import PaginatedResponse, get_pagination_params
 from app.modules.inventory import service as inventory_service
 from app.modules.inventory.schemas import (
+    AdjustMetersRequest,
     FilmConsumptionResponse,
     FilmRollCreate,
     FilmRollListResponse,
     FilmRollResponse,
     FilmRollTransfer,
+    FilmRollUpdate,
     FilmTypeCreate,
     FilmTypeForecastResponse,
     FilmTypeListResponse,
@@ -23,6 +28,11 @@ from app.modules.inventory.schemas import (
     FilmTypeServiceCreate,
     FilmTypeServiceResponse,
     FilmTypeUpdate,
+    FilmWithdrawalCreate,
+    FilmWithdrawalListResponse,
+    FilmWithdrawalResponse,
+    FilmWithdrawalSummaryItem,
+    FilmWithdrawalSummaryResponse,
 )
 
 # ---------------------------------------------------------------------------
@@ -41,53 +51,68 @@ async def list_film_types(
     department: str | None = Query(None, description="Filtrar por departamento: film ou ppf"),
     db: AsyncSession = Depends(get_db),
     pagination: dict = Depends(get_pagination_params),
-    current_user=Depends(check_profile_permission("inventory", "can_view")),
+    current_user=Depends(get_current_user),
 ):
     """
     Lista todos os tipos de película com seus serviços vinculados.
-    Requer permissão can_view no módulo inventory.
-    """
-    film_types, total = await inventory_service.list_film_types(
-        db=db,
-        page=pagination["page"],
-        limit=pagination["limit"],
-        include_inactive=include_inactive,
-        department=department,
-    )
 
-    items = []
-    for ft in film_types:
-        services_data = []
-        for assoc in ft.service_associations:
-            svc = assoc.service
-            services_data.append(
-                FilmTypeServiceResponse(
-                    service_id=assoc.service_id,
-                    service_name=svc.name if svc else None,
-                    service_code=svc.code if svc else None,
-                    meters_consumed=assoc.meters_consumed,
-                )
-            )
-        items.append(
-            FilmTypeResponse(
-                id=ft.id,
-                name=ft.name,
-                department=ft.department,
-                yellow_threshold_meters=ft.yellow_threshold_meters,
-                red_threshold_meters=ft.red_threshold_meters,
-                is_active=ft.is_active,
-                created_at=ft.created_at,
-                updated_at=ft.updated_at,
-                services=services_data,
-            )
+    Dado de referência cross-módulo (usado por Estoque, Agendamentos e O.S.):
+    acessível a qualquer usuário autenticado, como Marcas/Serviços/Consultores/
+    Modelos/Bobinas. O CRUD de tipos de película permanece restrito.
+
+    Sem escopo por loja (mesmo resultado para qualquer usuário autenticado) —
+    a chave de cache não precisa do escopo do usuário, só dos filtros.
+    """
+
+    async def _compute():
+        film_types, total = await inventory_service.list_film_types(
+            db=db,
+            page=pagination["page"],
+            limit=pagination["limit"],
+            include_inactive=include_inactive,
+            department=department,
         )
 
-    return PaginatedResponse.create(
-        items=items,
-        total=total,
-        page=pagination["page"],
-        limit=pagination["limit"],
+        items = []
+        for ft in film_types:
+            services_data = []
+            for assoc in ft.service_associations:
+                svc = assoc.service
+                services_data.append(
+                    FilmTypeServiceResponse(
+                        service_id=assoc.service_id,
+                        service_name=svc.name if svc else None,
+                        service_code=svc.code if svc else None,
+                        meters_consumed=assoc.meters_consumed,
+                    )
+                )
+            items.append(
+                FilmTypeResponse(
+                    id=ft.id,
+                    name=ft.name,
+                    department=ft.department,
+                    yellow_threshold_meters=ft.yellow_threshold_meters,
+                    red_threshold_meters=ft.red_threshold_meters,
+                    is_active=ft.is_active,
+                    available_tonalities=ft.available_tonalities,
+                    created_at=ft.created_at,
+                    updated_at=ft.updated_at,
+                    services=services_data,
+                )
+            )
+
+        return PaginatedResponse.create(
+            items=items,
+            total=total,
+            page=pagination["page"],
+            limit=pagination["limit"],
+        )
+
+    cache_key = (
+        f"filmtypes:list:p{pagination['page']}:l{pagination['limit']}:"
+        f"inactive{include_inactive}:dept{department}"
     )
+    return await cached_catalog(cache_key, _compute)
 
 
 @film_types_router.post("", response_model=FilmTypeResponse, status_code=status.HTTP_201_CREATED)
@@ -231,6 +256,7 @@ def _build_film_type_response(ft) -> FilmTypeResponse:
         yellow_threshold_meters=ft.yellow_threshold_meters,
         red_threshold_meters=ft.red_threshold_meters,
         is_active=ft.is_active,
+        available_tonalities=ft.available_tonalities,
         created_at=ft.created_at,
         updated_at=ft.updated_at,
         services=services_data,
@@ -253,7 +279,15 @@ async def list_rolls(
         description="Filtrar bobinas compatíveis com o serviço (resolve film_type via FilmTypeService)",
     ),
     status: str | None = Query(
-        None, description="Filtrar por status: em_estoque, em_uso, esgotada"
+        None,
+        description="Filtrar por status (singular, compat legado): em_estoque, em_uso, esgotada",
+    ),
+    statuses: list[str] | None = Query(
+        None,
+        description=(
+            "Filtrar por MÚLTIPLOS status numa única request "
+            "(ex.: ?statuses=em_uso&statuses=esgotada). Tem prioridade sobre `status`."
+        ),
     ),
     department: str | None = Query(None, description="Filtrar por departamento: film ou ppf"),
     use_galpon_store: bool = Query(
@@ -278,13 +312,15 @@ async def list_rolls(
     Quando use_galpon_store=True, retorna apenas bobinas da loja marcada como galpão,
     ignorando o filtro de permissão de loja.
     """
+    # statuses (lista) tem prioridade; status (singular) mantém compat legada.
+    effective_statuses = statuses or ([status] if status else None)
     rolls, total = await inventory_service.list_rolls(
         db=db,
         user=current_user,
         store_id=store_id,
         film_type_id=film_type_id,
         service_id=service_id,
-        status=status,
+        statuses=effective_statuses,
         department=department,
         page=pagination["page"],
         limit=pagination["limit"],
@@ -340,6 +376,27 @@ async def register_roll(
 
 
 @inventory_router.patch(
+    "/rolls/{film_roll_id}",
+    response_model=FilmRollResponse,
+)
+async def update_roll(
+    film_roll_id: int,
+    data: FilmRollUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_edit")),
+):
+    """
+    Edita os dados de uma bobina (tipo, tonalidade, fornecedor, NF, custo, lote,
+    data de recebimento, metros totais). O saldo não é editado aqui — alterar os
+    metros totais recalcula o restante preservando o consumo. Requer can_edit.
+    """
+    roll = await inventory_service.update_roll(
+        db=db, film_roll_id=film_roll_id, data=data, user=current_user
+    )
+    return _build_roll_response(roll)
+
+
+@inventory_router.patch(
     "/rolls/{film_roll_id}/exhaust",
     response_model=FilmRollResponse,
 )
@@ -370,6 +427,49 @@ async def restore_roll(
     return _build_roll_response(roll)
 
 
+@inventory_router.patch(
+    "/rolls/{film_roll_id}/open",
+    response_model=FilmRollResponse,
+)
+async def open_roll(
+    film_roll_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_edit")),
+):
+    """
+    Abre uma bobina para uso (em_estoque → em_uso).
+
+    Só bobinas 'em_estoque' podem ser abertas. Abrir é a condição para que a bobina
+    possa receber consumo. Requer permissão can_edit no módulo inventory.
+    """
+    roll = await inventory_service.open_roll(db=db, film_roll_id=film_roll_id, user=current_user)
+    return _build_roll_response(roll)
+
+
+@inventory_router.patch(
+    "/rolls/{film_roll_id}/adjust-meters",
+    response_model=FilmRollResponse,
+)
+async def adjust_roll_meters(
+    film_roll_id: int,
+    data: AdjustMetersRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_edit")),
+):
+    """
+    Ajusta os metros restantes de uma bobina para bater com a contagem física
+    (conferência de estoque). Auditado. Requer permissão can_edit no módulo inventory.
+    """
+    roll = await inventory_service.adjust_roll_meters(
+        db=db,
+        film_roll_id=film_roll_id,
+        new_remaining=data.remaining_meters,
+        user=current_user,
+        note=data.note,
+    )
+    return _build_roll_response(roll)
+
+
 @inventory_router.post(
     "/rolls/{film_roll_id}/transfer",
     response_model=FilmRollResponse,
@@ -383,7 +483,8 @@ async def transfer_film_roll(
     """
     Transfere uma bobina para outra loja.
 
-    Apenas bobinas com status 'em_estoque' podem ser transferidas.
+    Bobinas 'em_estoque' ou 'em_uso' podem ser transferidas (a parcialmente
+    usada leva os metros restantes e o histórico junto); 'esgotada' não.
     Requer permissão can_edit no módulo inventory.
     """
     roll = await inventory_service.transfer_film_roll(
@@ -410,9 +511,7 @@ async def delete_film_roll(
     Bloqueado com 409 se a bobina tiver registros de consumo (carros que a utilizaram).
     Requer permissão can_delete no módulo inventory.
     """
-    await inventory_service.delete_film_roll(
-        db=db, film_roll_id=film_roll_id, user_id=current_user.id
-    )
+    await inventory_service.delete_film_roll(db=db, film_roll_id=film_roll_id, user=current_user)
     return {"detail": "Bobina excluída com sucesso"}
 
 
@@ -461,12 +560,12 @@ async def export_inventory_rolls(
         department=department,
     )
 
-    # Enriquecer visual_id nos objetos antes de passar para o gerador
-    for roll in rolls:
-        computed = inventory_service._build_roll_response_dict(roll)
-        roll.visual_id = computed["visual_id"]  # type: ignore[attr-defined]
+    # visual_id computado por bobina (não muta o ORM: passa mapa ao gerador)
+    visual_ids = {
+        roll.id: inventory_service._build_roll_response_dict(roll)["visual_id"] for roll in rolls
+    }
 
-    content = so_export.generate_inventory_excel(rolls)
+    content = so_export.generate_inventory_excel(rolls, visual_ids)
     today = date.today().strftime("%Y%m%d")
     filename = f"estoque_pelicula_{today}.xlsx"
     return Response(
@@ -492,9 +591,8 @@ async def export_roll(
     )
 
     computed = inventory_service._build_roll_response_dict(roll)
-    roll.visual_id = computed["visual_id"]  # type: ignore[attr-defined]
 
-    content = so_export.generate_roll_excel(roll, items)
+    content = so_export.generate_roll_excel(roll, items, computed["visual_id"])
     visual_id_safe = (
         (computed["visual_id"] or f"bobina_{roll.id}")
         .replace(" ", "_")
@@ -509,6 +607,163 @@ async def export_roll(
     )
 
 
+# ---------------------------------------------------------------------------
+# Film Withdrawals (saída avulsa)
+# ---------------------------------------------------------------------------
+
+
+@inventory_router.get("/withdrawals", response_model=FilmWithdrawalListResponse)
+async def list_withdrawals(
+    store_id: int | None = Query(None, description="Filtrar por loja"),
+    employee_id: int | None = Query(None, description="Filtrar por funcionário"),
+    film_type_id: int | None = Query(None, description="Filtrar por tipo de película"),
+    date_from: date | None = Query(None, description="Data inicial (fuso local)"),
+    date_to: date | None = Query(None, description="Data final (fuso local, inclusiva)"),
+    pagination: dict = Depends(get_pagination_params),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_view")),
+):
+    """
+    Lista saídas avulsas de película (inclui estornadas, marcadas com is_reversed).
+    Requer permissão can_view no módulo inventory.
+    """
+    withdrawals, total = await inventory_service.list_withdrawals(
+        db=db,
+        user=current_user,
+        store_id=store_id,
+        employee_id=employee_id,
+        film_type_id=film_type_id,
+        date_from=date_from,
+        date_to=date_to,
+        page=pagination["page"],
+        limit=pagination["limit"],
+    )
+    items = [
+        FilmWithdrawalResponse(**inventory_service.build_withdrawal_response_dict(w))
+        for w in withdrawals
+    ]
+    return PaginatedResponse.create(
+        items=items,
+        total=total,
+        page=pagination["page"],
+        limit=pagination["limit"],
+    )
+
+
+@inventory_router.get("/withdrawals/summary", response_model=FilmWithdrawalSummaryResponse)
+async def get_withdrawals_summary(
+    store_id: int | None = Query(None, description="Filtrar por loja"),
+    employee_id: int | None = Query(None, description="Filtrar por funcionário"),
+    film_type_id: int | None = Query(None, description="Filtrar por tipo de película"),
+    date_from: date | None = Query(None, description="Data inicial (fuso local)"),
+    date_to: date | None = Query(None, description="Data final (fuso local, inclusiva)"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_view")),
+):
+    """
+    Totais de saídas avulsas por funcionário no período (base do desconto em folha).
+    Exclui saídas estornadas. Requer can_view no módulo inventory.
+    """
+    summary = await inventory_service.summarize_withdrawals(
+        db=db,
+        user=current_user,
+        store_id=store_id,
+        employee_id=employee_id,
+        film_type_id=film_type_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return FilmWithdrawalSummaryResponse(
+        items=[FilmWithdrawalSummaryItem(**item) for item in summary],
+        total_meters=sum(item["total_meters"] for item in summary),
+    )
+
+
+@inventory_router.get("/withdrawals/export")
+async def export_withdrawals(
+    store_id: int | None = Query(None, description="Filtrar por loja"),
+    employee_id: int | None = Query(None, description="Filtrar por funcionário"),
+    film_type_id: int | None = Query(None, description="Filtrar por tipo de película"),
+    date_from: date | None = Query(None, description="Data inicial (fuso local)"),
+    date_to: date | None = Query(None, description="Data final (fuso local, inclusiva)"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_view")),
+) -> Response:
+    """
+    Gera Excel das saídas avulsas: aba com todas as saídas do filtro + aba
+    de resumo por funcionário (exclui estornadas). Requer can_view.
+    """
+    from app.modules.inventory import export as inventory_export
+
+    withdrawals = await inventory_service.list_withdrawals_for_export(
+        db=db,
+        user=current_user,
+        store_id=store_id,
+        employee_id=employee_id,
+        film_type_id=film_type_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    summary = await inventory_service.summarize_withdrawals(
+        db=db,
+        user=current_user,
+        store_id=store_id,
+        employee_id=employee_id,
+        film_type_id=film_type_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    content = inventory_export.generate_withdrawals_excel(withdrawals, summary)
+    today = date.today().strftime("%Y%m%d")
+    filename = f"saidas_pelicula_{today}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@inventory_router.post(
+    "/withdrawals",
+    response_model=FilmWithdrawalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_withdrawal(
+    data: FilmWithdrawalCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_edit")),
+):
+    """
+    Registra uma saída avulsa de película: dá baixa nos metros da bobina e
+    registra o funcionário que pediu, para desconto no fim do mês.
+    Requer permissão can_edit no módulo inventory.
+    """
+    withdrawal = await inventory_service.create_withdrawal(db=db, data=data, user=current_user)
+    return FilmWithdrawalResponse(**inventory_service.build_withdrawal_response_dict(withdrawal))
+
+
+@inventory_router.post(
+    "/withdrawals/{withdrawal_id}/reverse",
+    response_model=FilmWithdrawalResponse,
+)
+async def reverse_withdrawal(
+    withdrawal_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(check_profile_permission("inventory", "can_delete")),
+):
+    """
+    Estorna uma saída avulsa: devolve os metros à bobina e marca a saída como
+    estornada (permanece no histórico, sai do resumo por funcionário).
+    Não restaura bobina esgotada (restauração é manual).
+    Requer permissão can_delete no módulo inventory.
+    """
+    withdrawal = await inventory_service.reverse_withdrawal(
+        db=db, withdrawal_id=withdrawal_id, user=current_user
+    )
+    return FilmWithdrawalResponse(**inventory_service.build_withdrawal_response_dict(withdrawal))
+
+
 def _build_roll_response(roll) -> FilmRollResponse:
     """Helper para construir FilmRollResponse com campos computados."""
     computed = inventory_service._build_roll_response_dict(roll)
@@ -520,7 +775,11 @@ def _build_roll_response(roll) -> FilmRollResponse:
         film_type_name=computed["film_type_name"],
         tonality=roll.tonality,
         supplier=roll.supplier,
+        supplier_id=roll.supplier_id,
+        supplier_name=computed["supplier_name"],
         nfe_number=roll.nfe_number,
+        cost=roll.cost,
+        lot_number=roll.lot_number,
         total_meters=roll.total_meters,
         remaining_meters=roll.remaining_meters,
         receipt_date=roll.receipt_date,

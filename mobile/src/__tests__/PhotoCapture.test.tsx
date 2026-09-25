@@ -4,6 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { PhotoCapture } from '@/components/features/PhotoCapture';
 import { ThemeProvider } from '@/theme';
+import { ConfirmProvider } from '@/components/ui';
 import type { LocalPhotoAsset, Photo } from '@/types/photo.types';
 import type { QueueItem } from '@/services/upload/uploadQueue';
 
@@ -100,15 +101,17 @@ function Harness({ onPhotos }: { onPhotos: (p: Photo[]) => void }) {
     return (
         <SafeAreaProvider initialMetrics={metrics}>
             <ThemeProvider>
-                <PhotoCapture
-                    value={photos}
-                    onChange={(next) => {
-                        setPhotos(next);
-                        onPhotos(next);
-                    }}
-                    label="Fotos da O.S."
-                    osDraftId="draft-1"
-                />
+                <ConfirmProvider>
+                    <PhotoCapture
+                        value={photos}
+                        onChange={(next) => {
+                            setPhotos(next);
+                            onPhotos(next);
+                        }}
+                        label="Fotos da O.S."
+                        osDraftId="draft-1"
+                    />
+                </ConfirmProvider>
             </ThemeProvider>
         </SafeAreaProvider>
     );
@@ -278,14 +281,16 @@ describe('PhotoCapture — foto remota (cópia de O.S.)', () => {
         return (
             <SafeAreaProvider initialMetrics={metrics}>
                 <ThemeProvider>
-                    <PhotoCapture
-                        value={photos}
-                        onChange={(next) => {
-                            setPhotos(next);
-                            onPhotos(next);
-                        }}
-                        label="Fotos da O.S."
-                    />
+                    <ConfirmProvider>
+                        <PhotoCapture
+                            value={photos}
+                            onChange={(next) => {
+                                setPhotos(next);
+                                onPhotos(next);
+                            }}
+                            label="Fotos da O.S."
+                        />
+                    </ConfirmProvider>
                 </ThemeProvider>
             </SafeAreaProvider>
         );

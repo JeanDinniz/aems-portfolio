@@ -32,6 +32,7 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
+import { useConfirm } from '@/components/ui';
 import { Button } from '@/components/ui/Button';
 import { Sheet, type SheetRef } from '@/components/ui/Sheet';
 import {
@@ -92,6 +93,7 @@ export function PhotoCapture({
     label,
     osDraftId,
 }: PhotoCaptureProps) {
+    const { alert } = useConfirm();
     const sheetRef = useRef<SheetRef>(null);
 
     // Mantém o `onChange`/`value` mais recentes acessíveis dentro das closures de
@@ -237,7 +239,7 @@ export function PhotoCapture({
                     );
                     return;
                 }
-                Alert.alert('Erro', 'Não foi possível obter a foto.');
+                await alert({ title: 'Erro', message: 'Não foi possível obter a foto.' });
                 return;
             }
 
@@ -253,7 +255,7 @@ export function PhotoCapture({
             commit([...valueRef.current, photo]);
             void runPipeline(id, asset);
         },
-        [maxPhotos, runPipeline, commit]
+        [maxPhotos, runPipeline, commit, alert]
     );
 
     const promptSource = useCallback(() => {

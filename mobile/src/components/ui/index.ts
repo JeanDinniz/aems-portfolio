@@ -34,3 +34,6 @@ export type { TextFieldProps } from './TextField';
 
 export { ToastProvider, useToast } from './Toast';
 export type { ToastOptions, ToastVariant } from './Toast';
+
+export { ConfirmProvider, useConfirm, confirmDialog, alertDialog } from './ConfirmDialog';
+export type { ConfirmOptions, AlertOptions } from './ConfirmDialog';

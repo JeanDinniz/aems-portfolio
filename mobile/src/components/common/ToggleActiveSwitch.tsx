@@ -1,15 +1,16 @@
 import { useCallback } from 'react';
-import { Alert, Switch, Text, View } from 'react-native';
+import { Switch, Text, View } from 'react-native';
 
+import { useConfirm } from '@/components/ui';
 import { brand, neutral } from '@/theme/tokens';
 
 /**
  * Switch de Ativar/Desativar padronizado dos catálogos Admin (Fatia 5 — UX).
  *
  * Comportamento (igual nas 6 telas de catálogo):
- * - Ligado → desligado (DESATIVAR): ação destrutiva. Abre `Alert` de confirmação;
- *   só chama `onToggle(false)` se confirmar. Ao cancelar, nada muta (o `value`
- *   permanece ligado, pois a fonte de verdade é a query).
+ * - Ligado → desligado (DESATIVAR): ação destrutiva. Abre o diálogo `confirm` do
+ *   design system; só chama `onToggle(false)` se confirmar. Ao cancelar, nada muta
+ *   (o `value` permanece ligado, pois a fonte de verdade é a query).
  * - Desligado → ligado (ATIVAR): ação não destrutiva. Aplica direto `onToggle(true)`.
  * - `pending`: desabilita o switch e reduz a opacidade enquanto a mutação roda.
  *
@@ -40,28 +41,24 @@ export function ToggleActiveSwitch({
     onToggle,
     pending = false,
 }: ToggleActiveSwitchProps) {
+    const { confirm } = useConfirm();
     const handleChange = useCallback(
-        (next: boolean) => {
+        async (next: boolean) => {
             if (next) {
                 // Ativar: direto, sem confirmação.
                 onToggle(true);
                 return;
             }
             // Desativar: confirma antes (destrutivo).
-            Alert.alert(
-                `Desativar ${resourceLabel}`,
-                `Desativar ${itemName}?`,
-                [
-                    { text: 'Cancelar', style: 'cancel' },
-                    {
-                        text: 'Desativar',
-                        style: 'destructive',
-                        onPress: () => onToggle(false),
-                    },
-                ]
-            );
+            const ok = await confirm({
+                title: `Desativar ${resourceLabel}`,
+                message: `Desativar ${itemName}?`,
+                confirmLabel: 'Desativar',
+                destructive: true,
+            });
+            if (ok) onToggle(false);
         },
-        [itemName, onToggle, resourceLabel]
+        [confirm, itemName, onToggle, resourceLabel]
     );
 
     return (

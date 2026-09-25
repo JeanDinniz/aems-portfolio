@@ -124,6 +124,28 @@ describe('NotificationsScreen — interações', () => {
         expect(navigation.navigate).toHaveBeenCalledWith('Tabs', { screen: 'Scheduling' });
     });
 
+    it('tap com related_url ?roll: navega aninhado para o detalhe da bobina', async () => {
+        mockListState.items = [
+            makeNotification({
+                id: 12,
+                type: 'inventory_alert',
+                title: 'Bobina crítica',
+                related_url: '/estoque?roll=123',
+            }),
+        ];
+        mockListState.total = 1;
+        const { getByLabelText, navigation } = await renderScreen();
+
+        await act(async () => {
+            fireEvent.press(getByLabelText('Bobina crítica'));
+        });
+        expect(mockMarkRead).toHaveBeenCalledWith(12);
+        expect(navigation.navigate).toHaveBeenCalledWith('Tabs', {
+            screen: 'Inventory',
+            params: { screen: 'RollDetail', params: { id: 123 } },
+        });
+    });
+
     it('tap em lida com tipo sem destino: não marca nem navega', async () => {
         mockListState.items = [
             makeNotification({ id: 5, type: 'approval_needed', title: 'Aprove', is_read: true }),

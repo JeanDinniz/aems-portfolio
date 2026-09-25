@@ -93,8 +93,9 @@ async def test_service_order(
         department="film",
         status="waiting",
         entry_time=datetime.now(UTC),
-        photos=json.dumps(["http://storage.example.com/photo1.jpg", "http://storage.example.com/photo2.jpg", "http://storage.example.com/photo3.jpg", "http://storage.example.com/photo4.jpg"]),
+        photos=json.dumps(["http://localhost:8000/uploads/photo1.jpg", "http://localhost:8000/uploads/photo2.jpg", "http://localhost:8000/uploads/photo3.jpg", "http://localhost:8000/uploads/photo4.jpg"]),
         requires_invoice=True,
+        invoice_number="NF-000123",
         created_by_id=test_user.id,
     )
     db_session.add(service_order)
@@ -225,7 +226,7 @@ class TestCreateServiceOrder:
                 "vehicle_year": 2023,
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -234,6 +235,148 @@ class TestCreateServiceOrder:
         assert data["vehicle_plate"] == "XYZ9A88"
         assert data["status"] == "waiting"
         assert data["department"] == "film"
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_external_photo_url(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_service: Service,
+    ):
+        """Foto de O.S. com host externo é recusada (não pode ser servida em contexto de confiança)."""
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "EXT1A23",
+                "department": "film",
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://evil.com/tracking.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],
+            },
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_create_finalize_on_create_marks_completed(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_service: Service,
+        test_employee,
+    ):
+        """Lançamento direto de película (finalize_on_create) nasce completed com completion_time.
+
+        Owner é isento da bobina obrigatória (#1) — por isso usa owner_client sem
+        film_roll_id. O bypass de não-Owner sem bobina é coberto em
+        test_permission_enforcement.py.
+        """
+        response = await owner_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "FIN1A23",
+                "department": "film",
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://localhost:8000/uploads/p1.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],
+                "workers": [{"employee_id": test_employee.id}],
+                "finalize_on_create": True,
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["status"] == "completed"
+
+        from sqlalchemy import select as sa_select
+
+        from app.modules.service_orders.models import ServiceOrder as SOModel
+
+        so = (
+            await db_session.execute(sa_select(SOModel).where(SOModel.id == data["id"]))
+        ).scalar_one()
+        assert so.completion_time is not None
+
+    @pytest.mark.asyncio
+    async def test_create_finalize_on_create_requires_worker(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_service: Service,
+    ):
+        """finalize_on_create sem instalador é rejeitado (não cria O.S. finalizada sem worker)."""
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "FIN2A23",
+                "department": "film",
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://localhost:8000/uploads/p1.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],
+                "finalize_on_create": True,
+            },
+        )
+        assert response.status_code in (400, 422)
+
+    @pytest.mark.asyncio
+    async def test_finalize_on_create_pelicula_sem_bobina_bloqueado_nao_owner(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_service: Service,
+        test_employee,
+    ):
+        """#1 — não-Owner não finaliza película no lançamento direto sem bobina (via API)."""
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "FIN3A23",
+                "department": "film",
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://localhost:8000/uploads/p1.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],  # sem film_roll_id
+                "workers": [{"employee_id": test_employee.id}],
+                "finalize_on_create": True,
+            },
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_create_without_finalize_stays_waiting(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_service: Service,
+        test_employee,
+    ):
+        """Sem finalize_on_create, mesmo com instalador, a O.S. segue em waiting."""
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "WAI1A23",
+                "department": "film",
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://localhost:8000/uploads/p1.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],
+                "workers": [{"employee_id": test_employee.id}],
+            },
+        )
+        assert response.status_code == 201
+        assert response.json()["status"] == "waiting"
 
     @pytest.mark.asyncio
     async def test_create_service_order_invalid_plate(
@@ -252,7 +395,7 @@ class TestCreateServiceOrder:
                 "vehicle_plate": "INV@LID!",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -297,7 +440,7 @@ class TestCreateServiceOrder:
                 "vehicle_plate": "ABC1D23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [],  # No items
             },
         )
@@ -345,16 +488,17 @@ class TestVerifyServiceOrder:
     @pytest.mark.asyncio
     async def test_verify_service_order_marks_verified(
         self,
-        authenticated_client: AsyncClient,
+        owner_client: AsyncClient,
         test_service_order: ServiceOrder,
     ):
         """Marking as verified should return 200 with the full detail response.
 
-        Regression: setting updated_by_id on the FK expires the eager-loaded
+        Verificar exige conference:can_edit — usa owner_client (verificador
+        legítimo). Regression: setting updated_by_id on the FK expires the eager-loaded
         updated_by relationship at commit; without re-fetching, model_validate of
         ServiceOrderDetailResponse triggers a lazy-load -> MissingGreenlet -> 500.
         """
-        response = await authenticated_client.patch(
+        response = await owner_client.patch(
             f"/api/v1/service-orders/{test_service_order.id}/verify",
             json={"verified": True},
         )
@@ -365,15 +509,15 @@ class TestVerifyServiceOrder:
     @pytest.mark.asyncio
     async def test_unverify_service_order(
         self,
-        authenticated_client: AsyncClient,
+        owner_client: AsyncClient,
         test_service_order: ServiceOrder,
     ):
         """Unmarking verification should also return 200."""
-        await authenticated_client.patch(
+        await owner_client.patch(
             f"/api/v1/service-orders/{test_service_order.id}/verify",
             json={"verified": True},
         )
-        response = await authenticated_client.patch(
+        response = await owner_client.patch(
             f"/api/v1/service-orders/{test_service_order.id}/verify",
             json={"verified": False},
         )
@@ -383,17 +527,58 @@ class TestVerifyServiceOrder:
     @pytest.mark.asyncio
     async def test_verify_service_order_idempotent(
         self,
-        authenticated_client: AsyncClient,
+        owner_client: AsyncClient,
         test_service_order: ServiceOrder,
     ):
         """Verifying twice should stay 200 and verified (idempotent)."""
         for _ in range(2):
-            response = await authenticated_client.patch(
+            response = await owner_client.patch(
                 f"/api/v1/service-orders/{test_service_order.id}/verify",
                 json={"verified": True},
             )
             assert response.status_code == 200
             assert response.json()["is_verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_verify_film_without_invoice_rejected(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_user: User,
+    ):
+        """Film/PPF/security_film sem NF não pode ser verificada (regra de conferência)."""
+        order = ServiceOrder(
+            store_id=test_store.id,
+            dealership_id=test_dealership.id,
+            vehicle_plate="NFX1A11",
+            vehicle_brand="Toyota",
+            vehicle_model="Corolla",
+            department="film",
+            status="completed",
+            entry_time=datetime.now(UTC),
+            photos=json.dumps(["http://localhost:8000/uploads/photo1.jpg"]),
+            requires_invoice=True,
+            invoice_number=None,
+            created_by_id=test_user.id,
+        )
+        db_session.add(order)
+        await db_session.commit()
+        await db_session.refresh(order)
+
+        response = await owner_client.patch(
+            f"/api/v1/service-orders/{order.id}/verify",
+            json={"verified": True},
+        )
+        assert response.status_code == 422
+        # Preencher a NF via update deve permitir verificar
+        response = await owner_client.patch(
+            f"/api/v1/service-orders/{order.id}",
+            json={"invoice_number": "NF-999", "is_verified": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["is_verified"] is True
 
 
 class TestUpdateServiceOrder:
@@ -413,6 +598,71 @@ class TestUpdateServiceOrder:
         assert response.status_code == 200
         data = response.json()
         assert data["notes"] == "Observação atualizada"
+
+    @pytest.mark.asyncio
+    async def test_editor_can_set_courtesy_and_galpon(
+        self,
+        authenticated_client: AsyncClient,
+        test_service_order: ServiceOrder,
+    ):
+        """Perfil com service_orders:can_edit PODE marcar cortesia/galpão via update.
+
+        Decisão de produto: quem tem permissão de editar O.S. ajusta cortesia e
+        galpão (ex.: conferente marcando uma O.S. como cortesia na Conferência).
+        Antes esses campos eram ignorados silenciosamente para não-owner, o que
+        fazia o front exibir "sucesso" sem persistir a mudança.
+        """
+        response = await authenticated_client.patch(
+            f"/api/v1/service-orders/{test_service_order.id}",
+            json={"notes": "x", "is_courtesy": True, "is_galpon": True},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_courtesy"] is True
+        assert data["is_galpon"] is True
+
+    @pytest.mark.asyncio
+    async def test_edit_verified_order_clears_verification(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_dealership: Dealership,
+        test_user: User,
+    ):
+        """A-01: editar uma O.S. já verificada remove a verificação; a NF é preservada."""
+        order = ServiceOrder(
+            store_id=test_store.id,
+            dealership_id=test_dealership.id,
+            vehicle_plate="VER1F00",
+            vehicle_brand="Toyota",
+            vehicle_model="Corolla",
+            department="workshop",
+            status="completed",
+            entry_time=datetime.now(UTC),
+            photos=json.dumps(["http://localhost:8000/uploads/photo1.jpg"]),
+            invoice_number="NF-123",
+            is_verified=True,
+            verified_at=datetime.now(UTC),
+            created_by_id=test_user.id,
+        )
+        db_session.add(order)
+        await db_session.commit()
+        await db_session.refresh(order)
+
+        response = await authenticated_client.patch(
+            f"/api/v1/service-orders/{order.id}",
+            json={"notes": "corrigido"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_verified"] is False  # desverificada pela edição
+        assert data["notes"] == "corrigido"
+        assert data["invoice_number"] == "NF-123"  # NF preservada
+
+        await db_session.refresh(order)
+        assert order.is_verified is False
+        assert order.verified_at is None
 
     @pytest.mark.asyncio
     async def test_update_service_order_vehicle_info(
@@ -475,6 +725,81 @@ class TestServiceOrderStatusWorkflow:
         assert response.status_code in [400, 422]
 
 
+class TestUndoWrong:
+    """Tests for undoing 'Lançado Errado' (restores the pre-wrong status)."""
+
+    @pytest.mark.asyncio
+    async def test_undo_wrong_restores_completed(
+        self,
+        authenticated_client: AsyncClient,
+        test_service_order: ServiceOrder,
+    ):
+        """A completed O.S. marked wrong should return to completed on undo — not waiting."""
+        sid = test_service_order.id
+        r = await authenticated_client.post(
+            f"/api/v1/service-orders/{sid}/status", json={"new_status": "completed"}
+        )
+        assert r.status_code == 200
+        r = await authenticated_client.post(
+            f"/api/v1/service-orders/{sid}/status", json={"new_status": "wrong"}
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "wrong"
+        r = await authenticated_client.post(f"/api/v1/service-orders/{sid}/undo-wrong")
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_undo_wrong_rejects_non_wrong(
+        self,
+        authenticated_client: AsyncClient,
+        test_service_order: ServiceOrder,
+    ):
+        """Undo-wrong on an O.S. that is not in 'wrong' should be rejected."""
+        r = await authenticated_client.post(
+            f"/api/v1/service-orders/{test_service_order.id}/undo-wrong"
+        )
+        assert r.status_code in [400, 422]
+
+
+class TestCancelServiceOrder:
+    """Cancelamento de O.S.: motivo vira a Observação Interna (substitui a atual)."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_reason_goes_to_internal_notes(
+        self,
+        owner_client: AsyncClient,
+        test_service_order: ServiceOrder,
+    ):
+        """O motivo informado no cancelamento é gravado em internal_notes."""
+        r = await owner_client.delete(
+            f"/api/v1/service-orders/{test_service_order.id}",
+            params={"reason": "Cliente desistiu do serviço"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "cancelled"
+        assert body["internal_notes"] == "Cliente desistiu do serviço"
+
+    @pytest.mark.asyncio
+    async def test_cancel_reason_overwrites_existing_internal_notes(
+        self,
+        owner_client: AsyncClient,
+        db_session: AsyncSession,
+        test_service_order: ServiceOrder,
+    ):
+        """Se já houver Observação Interna, o motivo do cancelamento a substitui."""
+        test_service_order.internal_notes = "Observação antiga que deve sumir"
+        await db_session.commit()
+
+        r = await owner_client.delete(
+            f"/api/v1/service-orders/{test_service_order.id}",
+            params={"reason": "O.S. lançada em duplicidade"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["internal_notes"] == "O.S. lançada em duplicidade"
+
+
 class TestStatusRequirements:
     """Tests for status transition requirements."""
 
@@ -510,7 +835,7 @@ class TestServiceOrderWorkers:
                 "vehicle_plate": "WRK1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
                 "workers": [{"employee_id": test_employee.id}],
             },
@@ -538,9 +863,9 @@ class TestServiceOrderDamageMap:
                 "store_id": test_store.id,
                 "dealership_id": test_dealership.id,
                 "vehicle_plate": "DMG1A23",
-                "department": "vn",
+                "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
                 "damage_map": [
                     {"x": 50.0, "y": 60.0, "type": "scratch", "description": "Scratch"},
@@ -591,7 +916,7 @@ class TestServiceOrderPhotos:
                 "vehicle_plate": "PHO1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -614,7 +939,7 @@ class TestServiceOrderPhotos:
                 "vehicle_plate": "PHO2A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg", "http://storage.example.com/p5.jpg", "http://storage.example.com/p6.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg", "http://localhost:8000/uploads/p5.jpg", "http://localhost:8000/uploads/p6.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -709,7 +1034,7 @@ class TestServiceOrderPermissions:
             department="film",
             status="waiting",
             entry_time=datetime.now(UTC),
-            photos=json.dumps(["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"]),
+            photos=json.dumps(["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"]),
             requires_invoice=True,
             created_by_id=test_user.id,
         )
@@ -859,7 +1184,7 @@ class TestCreateServiceOrderStoretypes:
                 "vehicle_plate": "NDP1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -884,7 +1209,7 @@ class TestCreateServiceOrderStoretypes:
                 "vehicle_plate": "CST1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": test_service.id, "quantity": 1}],
             },
         )
@@ -908,7 +1233,7 @@ class TestCreateServiceOrderStoretypes:
                 "vehicle_plate": "INV1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": 99999, "quantity": 1}],
             },
         )
@@ -997,7 +1322,7 @@ class TestUpdateServiceOrderExtended:
         test_service_order: ServiceOrder,
     ):
         """Should update photos list."""
-        new_photos = ["http://storage.example.com/new1.jpg", "http://storage.example.com/new2.jpg", "http://storage.example.com/new3.jpg", "http://storage.example.com/new4.jpg", "http://storage.example.com/new5.jpg"]
+        new_photos = ["http://localhost:8000/uploads/new1.jpg", "http://localhost:8000/uploads/new2.jpg", "http://localhost:8000/uploads/new3.jpg", "http://localhost:8000/uploads/new4.jpg", "http://localhost:8000/uploads/new5.jpg"]
         response = await authenticated_client.patch(
             f"/api/v1/service-orders/{test_service_order.id}",
             json={"photos": new_photos},
@@ -1043,7 +1368,7 @@ class TestServiceOrdersListFilters:
             department="film",
             status="in_progress",
             entry_time=datetime.now(UTC),
-            photos=json.dumps(["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"]),
+            photos=json.dumps(["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"]),
             requires_invoice=True,
             created_by_id=test_user.id,
         )
@@ -1076,7 +1401,7 @@ class TestServiceOrdersListFilters:
             department="vn",
             status="waiting",
             entry_time=datetime.now(UTC),
-            photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+            photos=json.dumps(["http://localhost:8000/uploads/p1.jpg"]),
             requires_invoice=False,
             created_by_id=test_user.id,
         )
@@ -1110,7 +1435,7 @@ class TestServiceOrdersListFilters:
             department="film",
             status="waiting",
             entry_time=datetime.now(UTC),
-            photos=json.dumps(["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"]),
+            photos=json.dumps(["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"]),
             requires_invoice=True,
             created_by_id=test_user.id,
         )
@@ -1164,7 +1489,7 @@ class TestServiceOrdersListFilters:
                 department="workshop",
                 status="waiting",
                 entry_time=datetime.now(UTC),
-                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                photos=json.dumps(["http://localhost:8000/uploads/p1.jpg"]),
                 requires_invoice=True,
                 created_by_id=test_user.id,
             )
@@ -1241,7 +1566,7 @@ class TestServiceOrdersListFilters:
                 status=status,
                 is_verified=is_verified,
                 entry_time=datetime.now(UTC),
-                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                photos=json.dumps(["http://localhost:8000/uploads/p1.jpg"]),
                 requires_invoice=True,
                 created_by_id=test_user.id,
             )
@@ -1298,7 +1623,7 @@ class TestServiceOrdersListFilters:
                 department=department,
                 status="waiting",
                 entry_time=datetime.now(UTC),
-                photos=json.dumps(["http://storage.example.com/p1.jpg"]),
+                photos=json.dumps(["http://localhost:8000/uploads/p1.jpg"]),
                 requires_invoice=True,
                 created_by_id=test_user.id,
             )
@@ -1386,7 +1711,7 @@ class TestServiceOrdersListFilters:
             department="film",
             status="waiting",
             entry_time=datetime.now(UTC),
-            photos=json.dumps(["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"]),
+            photos=json.dumps(["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"]),
             requires_invoice=True,
             created_by_id=test_user.id,
         )
@@ -1547,7 +1872,7 @@ class TestServiceOrderUpdatePhotos:
         db_session.add(so)
         await db_session.commit()
 
-        new_photos = ["http://storage.example.com/new_photo1.jpg", "http://storage.example.com/new_photo2.jpg"]
+        new_photos = ["http://localhost:8000/uploads/new_photo1.jpg", "http://localhost:8000/uploads/new_photo2.jpg"]
         response = await authenticated_client.patch(
             f"/api/v1/service-orders/{so.id}",
             json={"photos": new_photos},
@@ -1622,9 +1947,168 @@ class TestServiceOrderUpdatePhotos:
                 "vehicle_plate": "NDL1A23",
                 "department": "film",
                 "entry_time": datetime.now(UTC).isoformat(),
-                "photos": ["http://storage.example.com/p1.jpg", "http://storage.example.com/p2.jpg", "http://storage.example.com/p3.jpg", "http://storage.example.com/p4.jpg"],
+                "photos": ["http://localhost:8000/uploads/p1.jpg", "http://localhost:8000/uploads/p2.jpg", "http://localhost:8000/uploads/p3.jpg", "http://localhost:8000/uploads/p4.jpg"],
                 "items": [{"service_id": svc.id, "quantity": 1}],
                 "workers": [],
             },
         )
         assert response.status_code in [400, 422]
+
+
+class TestServiceDomainValidation:
+    """B-01/B-03: O.S. não aceita serviço de outro departamento/marca."""
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_service_of_other_department(
+        self,
+        authenticated_client: AsyncClient,
+        test_store: Store,
+        test_dealership: "Dealership",
+        test_service: Service,
+    ):
+        """Serviço 'film' numa O.S. 'vn' deve ser recusado (422)."""
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "DOM1A23",
+                "department": "vn",  # diverge do serviço (film)
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://s/p1.jpg"],
+                "items": [{"service_id": test_service.id, "quantity": 1}],
+            },
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_service_of_other_brand(
+        self,
+        authenticated_client: AsyncClient,
+        db_session: AsyncSession,
+        test_store: Store,
+        test_dealership: "Dealership",
+        test_brand: Brand,
+    ):
+        """Serviço de outra marca numa O.S. com modelo vinculado deve ser recusado."""
+        from app.modules.vehicle_models.models import VehicleModel
+
+        other_brand = Brand(name="MarcaIntrusa", code="INTRUSA", is_active=True)
+        db_session.add(other_brand)
+        await db_session.flush()
+        intruder = Service(
+            name="Serviço Intruso",
+            code="INTR",
+            department="film",
+            base_price=100.0,
+            is_active=True,
+            brand_id=other_brand.id,
+        )
+        vm = VehicleModel(name="Modelo Teste Dom", brand_id=test_brand.id, is_active=True)
+        db_session.add_all([intruder, vm])
+        await db_session.commit()
+
+        response = await authenticated_client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": test_store.id,
+                "dealership_id": test_dealership.id,
+                "vehicle_plate": "DOM2B34",
+                "department": "film",
+                "vehicle_model_id": vm.id,
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": ["http://s/p1.jpg"],
+                "items": [{"service_id": intruder.id, "quantity": 1}],
+            },
+        )
+        assert response.status_code == 422
+
+
+class TestRequiresInvoiceByDepartment:
+    """🟠 (auditoria): requires_invoice é marcado na criação para Película, PPF E
+    Película de Segurança — mesma regra do enforcement na verificação. Antes só
+    marcava `film`, então security_film/ppf eram verificáveis sem NF."""
+
+    async def _make_service(self, db_session, brand_id, department: str) -> Service:
+        svc = Service(
+            name=f"Serviço {department}",
+            department=department,
+            base_price=100.0,
+            is_active=True,
+            brand_id=brand_id,
+        )
+        db_session.add(svc)
+        await db_session.commit()
+        await db_session.refresh(svc)
+        return svc
+
+    async def _create_os(self, client, store, dealership, service, department: str) -> dict:
+        resp = await client.post(
+            "/api/v1/service-orders",
+            json={
+                "store_id": store.id,
+                "dealership_id": dealership.id,
+                "vehicle_plate": "XYZ9A88",
+                "vehicle_brand": "Honda",
+                "vehicle_model": "Civic",
+                "vehicle_color": "Preto",
+                "vehicle_year": 2023,
+                "department": department,
+                "entry_time": datetime.now(UTC).isoformat(),
+                "photos": [
+                    "http://localhost:8000/uploads/p1.jpg",
+                    "http://localhost:8000/uploads/p2.jpg",
+                    "http://localhost:8000/uploads/p3.jpg",
+                    "http://localhost:8000/uploads/p4.jpg",
+                ],
+                "items": [{"service_id": service.id, "quantity": 1}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("department", ["film", "security_film", "ppf"])
+    async def test_invoice_required_departments_set_flag(
+        self, authenticated_client, db_session, test_store, test_dealership, test_brand, department
+    ):
+        svc = await self._make_service(db_session, test_brand.id, department)
+        data = await self._create_os(
+            authenticated_client, test_store, test_dealership, svc, department
+        )
+        assert data["requires_invoice"] is True
+
+    @pytest.mark.asyncio
+    async def test_non_invoice_department_does_not_require(
+        self, authenticated_client, db_session, test_store, test_dealership, test_brand
+    ):
+        svc = await self._make_service(db_session, test_brand.id, "bodywork")
+        data = await self._create_os(
+            authenticated_client, test_store, test_dealership, svc, "bodywork"
+        )
+        assert data["requires_invoice"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_department_recomputes_requires_invoice(
+        self, authenticated_client, db_session, test_store, test_dealership, test_brand
+    ):
+        """🟠 (auditoria): trocar o departamento no update recomputa requires_invoice."""
+        body_svc = await self._make_service(db_session, test_brand.id, "bodywork")
+        film_svc = await self._make_service(db_session, test_brand.id, "security_film")
+
+        # Nasce bodywork → requires_invoice False.
+        created = await self._create_os(
+            authenticated_client, test_store, test_dealership, body_svc, "bodywork"
+        )
+        assert created["requires_invoice"] is False
+
+        # Muda para security_film (+ item do novo depto) → requires_invoice True.
+        resp = await authenticated_client.patch(
+            f"/api/v1/service-orders/{created['id']}",
+            json={
+                "department": "security_film",
+                "items": [{"service_id": film_svc.id, "quantity": 1}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["requires_invoice"] is True
